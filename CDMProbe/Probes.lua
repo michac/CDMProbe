@@ -209,10 +209,38 @@ ns.RegisterCommand("log", "toggle event logger; add 'verbose' for the cd/charge/
   end
 end)
 
+--------------------------------------------------------------------------------
+-- Cast probe: can we roll our own cooldown timers?  Tests whether
+-- UNIT_SPELLCAST_SUCCEEDED reaches us in restricted combat AND whether its
+-- spellID is readable (not secret). If readable, we can detect a cast and start
+-- our own approximate cooldown timer (haste/CDR imprecision accepted).
+--------------------------------------------------------------------------------
+local castFrame = CreateFrame("Frame")
+local castOn = false
+castFrame:SetScript("OnEvent", function(_, _, unit, _, spellID)
+  if unit ~= "player" then return end
+  local readable = not ns.IsSecret(spellID)
+  local name = readable and (ns.SpellName(spellID) or "?") or "?"
+  ns.Printf("|cff9a7fffCAST|r %s  spellID=%s%s", name, ns.Describe(spellID),
+    readable and "  |cff88ff88(readable → own-timer works)|r" or "  |cffff4040(secret → can't attribute)|r")
+end)
+
+ns.RegisterCommand("casts", "toggle logging player casts (is the spellID readable? decides roll-our-own timers)", function()
+  castOn = not castOn
+  if castOn then
+    castFrame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
+    ns.Print("cast log |cff88ff88ON|r — cast a few spells in a delve; watch if spellID prints or |cffff4040<secret>|r.")
+  else
+    castFrame:UnregisterAllEvents()
+    ns.Print("cast log |cffff8080OFF|r")
+  end
+end)
+
 ns.RegisterCommand("reset", "turn every experiment off (unskin, hide shard bar, log off)", function()
   if ns.db.skinOn then ns.SetSkin(false) end
   if shardFrame and shardFrame:IsShown() then shardFrame:Hide(); shardEventsOn(false); ns.db.shardShown = false end
   if ns.db.logMode and ns.db.logMode ~= "off" then logSet("off") end
+  if castOn then castOn = false; castFrame:UnregisterAllEvents() end
   ns.Print("all experiments off.")
 end)
 
