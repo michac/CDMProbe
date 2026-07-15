@@ -60,6 +60,7 @@ function ns.ItemSpellID(item)
 end
 
 ns.RegisterCommand("dump", "introspect viewers, items, spellIDs, item anatomy + which APIs exist", function()
+  ns.BeginCapture()
   ns.Heading("Environment")
   ns.Printf("  in combat: %s   |   Secret Values API (issecretvalue): %s",
     tostring(InCombatLockdown()), tostring(ns.SecretAPI()))
@@ -100,4 +101,5 @@ ns.RegisterCommand("dump", "introspect viewers, items, spellIDs, item anatomy + 
     end
   end
   ns.Print("tip: run |cffffffff/cdmp dump|r again while in combat on a dummy — compare what turns |cffff4040<secret>|r.")
+  ns.EndCapture("dump_" .. (InCombatLockdown() and "combat" or "ooc"))
 end)

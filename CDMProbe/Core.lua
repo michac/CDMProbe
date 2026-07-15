@@ -11,16 +11,36 @@ ns.version = (C_AddOns and C_AddOns.GetAddOnMetadata and C_AddOns.GetAddOnMetada
 -- Saved-variable defaults -----------------------------------------------------
 local DEFAULTS = {
   skinOn = false,
-  logOn = false,
+  logMode = "off",       -- "off" | "quiet" | "verbose"
   shardShown = false,
   shardFrame = { point = "CENTER", x = 0, y = -140 },
+  reports = {},          -- persisted /cdmp dump + /cdmp secret output (read off disk)
 }
 
 -- Chat helpers ----------------------------------------------------------------
+-- Print also tees a color-stripped copy into an optional capture buffer, so a
+-- command can persist its whole (untruncated) output to SavedVariables for
+-- off-disk reading — chat scrollback/paste eats the most important lines.
 local PREFIX = "|cff8788eeCDMProbe|r "
-function ns.Print(msg) DEFAULT_CHAT_FRAME:AddMessage(PREFIX .. tostring(msg)) end
+local function strip(s) return (tostring(s):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")) end
+function ns.Print(msg)
+  DEFAULT_CHAT_FRAME:AddMessage(PREFIX .. tostring(msg))
+  if ns._cap then ns._cap[#ns._cap + 1] = strip(msg) end
+end
 function ns.Printf(fmt, ...) ns.Print(string.format(fmt, ...)) end
 function ns.Heading(t) ns.Print("|cffffd100" .. tostring(t) .. "|r") end
+
+-- Capture: buffer every Print, then store the joined text under reports[key].
+-- Keyed by combat state so out-of-combat and in-combat runs don't clobber.
+function ns.BeginCapture() ns._cap = {} end
+function ns.EndCapture(key)
+  if not ns._cap then return end
+  ns.db.reports = ns.db.reports or {}
+  ns.db.reports[key] = table.concat(ns._cap, "\n")
+  ns.db.reports[key .. "_combat"] = InCombatLockdown() and true or false
+  ns._cap = nil
+  ns.Printf("saved report '%s' — |cffffffff/reload|r then read SavedVariables/CDMProbe.lua", key)
+end
 
 -- Command registry ------------------------------------------------------------
 ns.commands = {}       -- name -> { fn = function(argString), help = string }

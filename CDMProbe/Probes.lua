@@ -109,9 +109,11 @@ local function cdFields(spellID, label)
 end
 
 ns.RegisterCommand("secret", "test which values are secret RIGHT NOW (run once out of combat, once in combat)", function()
+  ns.BeginCapture()
   ns.Heading(string.format("Secret probe  (in combat: %s)", tostring(InCombatLockdown())))
   if not ns.SecretAPI() then
     ns.Print("  issecretvalue() absent — Secret Values not present on this build; everything is readable.")
+    ns.EndCapture("secret_" .. (InCombatLockdown() and "combat" or "ooc"))
     return
   end
   ns.Printf("  UnitPower(SoulShards): %s", ns.Describe(UnitPower("player", SOUL)))
@@ -128,19 +130,22 @@ ns.RegisterCommand("secret", "test which values are secret RIGHT NOW (run once o
       ns.Print("  Demonic Core aura: not active (proc it and re-run to test aura secrecy)")
     end
   end
+  ns.EndCapture("secret_" .. (InCombatLockdown() and "combat" or "ooc"))
 end)
 
 --------------------------------------------------------------------------------
 -- Event logger
 --------------------------------------------------------------------------------
-local LOG_EVENTS = {
+-- Quiet default: only the events that actually tell us something. GLOW show/hide
+-- is the proc-detection test; COOLDOWN_VIEWER_DATA_LOADED marks a tracked-set
+-- rebuild. The high-frequency SPELL_UPDATE_*/UNIT_AURA firehose is opt-in.
+local QUIET_EVENTS = {
   "COOLDOWN_VIEWER_DATA_LOADED",
-  "SPELL_UPDATE_COOLDOWN",
-  "SPELL_UPDATE_CHARGES",
   "SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",
   "SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",
-  "UNIT_AURA",
 }
+local VERBOSE_EVENTS = { "SPELL_UPDATE_COOLDOWN", "SPELL_UPDATE_CHARGES", "UNIT_AURA" }
+
 local lastAt = {}
 local function throttle(key, secs)
   local t = GetTime()
@@ -159,38 +164,43 @@ logFrame:SetScript("OnEvent", function(_, event, ...)
     ns.Print("|cffffd100COOLDOWN_VIEWER_DATA_LOADED|r — tracked-spell set (re)built")
   elseif event == "UNIT_AURA" then
     local unit = ...
-    if unit == "player" and throttle("UNIT_AURA", 1.0) then
-      ns.Print("|cff999999UNIT_AURA player|r (throttled 1/s)")
-    end
+    if unit == "player" and throttle("UNIT_AURA", 2.0) then ns.Print("|cff999999UNIT_AURA player|r (2s)") end
   elseif event == "SPELL_UPDATE_COOLDOWN" then
-    if throttle("SPELL_UPDATE_COOLDOWN", 1.0) then ns.Print("|cff999999SPELL_UPDATE_COOLDOWN|r (throttled)") end
+    if throttle("SPELL_UPDATE_COOLDOWN", 2.0) then ns.Print("|cff999999SPELL_UPDATE_COOLDOWN|r (2s)") end
   elseif event == "SPELL_UPDATE_CHARGES" then
-    if throttle("SPELL_UPDATE_CHARGES", 1.0) then ns.Print("|cff999999SPELL_UPDATE_CHARGES|r (throttled)") end
+    if throttle("SPELL_UPDATE_CHARGES", 2.0) then ns.Print("|cff999999SPELL_UPDATE_CHARGES|r (2s)") end
   end
 end)
 
-local function logOn(on)
-  ns.db.logOn = on and true or false
+-- mode: "off" | "quiet" | "verbose"
+local function logSet(mode)
+  ns.db.logMode = mode
   logFrame:UnregisterAllEvents()
-  if on then
-    for _, e in ipairs(LOG_EVENTS) do
+  if mode == "off" then ns.Print("event log |cffff8080OFF|r"); return end
+  for _, e in ipairs(QUIET_EVENTS) do logFrame:RegisterEvent(e) end
+  if mode == "verbose" then
+    for _, e in ipairs(VERBOSE_EVENTS) do
       if e == "UNIT_AURA" then logFrame:RegisterUnitEvent("UNIT_AURA", "player")
       else logFrame:RegisterEvent(e) end
     end
-    ns.Print("event log |cff88ff88ON|r — glow show/hide printed in full (does the Demonic Core proc show its spellID?).")
-  else
-    ns.Print("event log |cffff8080OFF|r")
   end
+  ns.Printf("event log |cff88ff88%s|r — GLOW show/hide = proc detection%s",
+    mode, mode == "verbose" and "; cd/charge/aura spam ON (2s throttle)" or " (glow + CDM-data only)")
 end
 
-ns.RegisterCommand("log", "toggle event logger (CDM data-loaded, glow show/hide, cd/charge/aura updates)", function()
-  logOn(not ns.db.logOn)
+ns.RegisterCommand("log", "toggle event logger; add 'verbose' for the cd/charge/aura firehose", function(rest)
+  rest = (rest or ""):lower()
+  if rest:find("verbose") then
+    logSet(ns.db.logMode == "verbose" and "off" or "verbose")
+  else
+    logSet(ns.db.logMode == "quiet" and "off" or "quiet")
+  end
 end)
 
 ns.RegisterCommand("reset", "turn every experiment off (unskin, hide shard bar, log off)", function()
   if ns.db.skinOn then ns.SetSkin(false) end
   if shardFrame and shardFrame:IsShown() then shardFrame:Hide(); shardEventsOn(false); ns.db.shardShown = false end
-  if ns.db.logOn then logOn(false) end
+  if ns.db.logMode and ns.db.logMode ~= "off" then logSet("off") end
   ns.Print("all experiments off.")
 end)
 
@@ -199,7 +209,7 @@ end)
 --------------------------------------------------------------------------------
 function ns.OnLogin()
   if ns.RestoreSkin then ns.RestoreSkin() end
-  if ns.db.logOn then logOn(true) end
+  if ns.db.logMode and ns.db.logMode ~= "off" then logSet(ns.db.logMode) end
   if ns.db.shardShown then
     local f = buildShardFrame()
     f:Show(); shardEventsOn(true); updateShards()
