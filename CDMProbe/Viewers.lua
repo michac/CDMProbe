@@ -90,13 +90,18 @@ ns.RegisterCommand("dump", "introspect viewers, items, spellIDs, item anatomy + 
       local items, how = ns.GetItemFrames(viewer)
       ns.Printf("  %d item(s) via %s", #items, how)
       for i, item in ipairs(items) do
-        local id, src = ns.ItemSpellID(item)
-        local name = (id and ns.SpellName(id)) or "?"
-        local present = {}
-        for _, f in ipairs(ITEM_FIELDS) do if item[f] ~= nil then present[#present + 1] = f end end
-        local vis = ns.HasMethod(item, "IsShown") and item:IsShown()
-        ns.Printf("   [%d] |cffffffff%s|r  id=%s (%s)  shown=%s  {%s}",
-          i, name, tostring(id), src, tostring(vis), table.concat(present, ", "))
+        local ok, err = pcall(function()
+          local id, src = ns.ItemSpellID(item)
+          -- Never format a secret directly — check first, substitute in place.
+          local idStr = ns.Describe(id)
+          local name = ns.IsSecret(id) and "|cffff4040<secret>|r" or ((id and ns.SpellName(id)) or "?")
+          local present = {}
+          for _, f in ipairs(ITEM_FIELDS) do if item[f] ~= nil then present[#present + 1] = f end end
+          local vis = ns.HasMethod(item, "IsShown") and item:IsShown()
+          ns.Printf("   [%d] |cffffffff%s|r  id=%s (%s)  shown=%s  {%s}",
+            i, name, idStr, src, tostring(vis), table.concat(present, ", "))
+        end)
+        if not ok then ns.Printf("   [%d] |cffff4040<unreadable: %s>|r", i, ns.Describe(err)) end
       end
     end
   end

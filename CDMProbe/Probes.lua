@@ -98,14 +98,23 @@ end)
 --------------------------------------------------------------------------------
 -- On-demand secret probe
 --------------------------------------------------------------------------------
+-- Indexing a *secret table* throws, so guard with issecrettable + pcall.
+local function secretTable(t)
+  if type(issecrettable) == "function" then
+    local ok, s = pcall(issecrettable, t)
+    return ok and s
+  end
+  return false
+end
+
 local function cdFields(spellID, label)
   if not (C_Spell and C_Spell.GetSpellCooldown) then return end
   local ok, info = pcall(C_Spell.GetSpellCooldown, spellID)
-  if ok and type(info) == "table" then
-    ns.Printf("  %s: duration=%s startTime=%s", label, ns.Describe(info.duration), ns.Describe(info.startTime))
-  else
-    ns.Printf("  %s: <call failed>", label)
-  end
+  if not ok or type(info) ~= "table" then ns.Printf("  %s: <call failed>", label); return end
+  if secretTable(info) then ns.Printf("  %s: |cffff4040<secret table>|r (cannot index in Lua)", label); return end
+  local dur, start = "?", "?"
+  pcall(function() dur = ns.Describe(info.duration); start = ns.Describe(info.startTime) end)
+  ns.Printf("  %s: duration=%s startTime=%s", label, dur, start)
 end
 
 ns.RegisterCommand("secret", "test which values are secret RIGHT NOW (run once out of combat, once in combat)", function()
@@ -123,11 +132,14 @@ ns.RegisterCommand("secret", "test which values are secret RIGHT NOW (run once o
   cdFields(265187, "Summon Demonic Tyrant (265187)")
   if C_UnitAuras and C_UnitAuras.GetAuraDataBySpellName then
     local ok, aura = pcall(C_UnitAuras.GetAuraDataBySpellName, "player", "Demonic Core", "HELPFUL")
-    if ok and type(aura) == "table" then
-      ns.Printf("  Demonic Core aura: expirationTime=%s applications=%s",
-        ns.Describe(aura.expirationTime), ns.Describe(aura.applications))
-    else
+    if not ok or type(aura) ~= "table" then
       ns.Print("  Demonic Core aura: not active (proc it and re-run to test aura secrecy)")
+    elseif secretTable(aura) then
+      ns.Print("  Demonic Core aura: |cffff4040<secret table>|r (cannot index in Lua)")
+    else
+      local exp, apps = "?", "?"
+      pcall(function() exp = ns.Describe(aura.expirationTime); apps = ns.Describe(aura.applications) end)
+      ns.Printf("  Demonic Core aura: expirationTime=%s applications=%s", exp, apps)
     end
   end
   ns.EndCapture("secret_" .. (InCombatLockdown() and "combat" or "ooc"))

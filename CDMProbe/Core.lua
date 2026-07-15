@@ -22,9 +22,21 @@ local DEFAULTS = {
 -- command can persist its whole (untruncated) output to SavedVariables for
 -- off-disk reading — chat scrollback/paste eats the most important lines.
 local PREFIX = "|cff8788eeCDMProbe|r "
-local function strip(s) return (tostring(s):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")) end
+-- Secret-safe: a Secret Value must never be indexed/formatted (that taints).
+local function secret(v)
+  if type(issecretvalue) == "function" then
+    local ok, s = pcall(issecretvalue, v)
+    return ok and s
+  end
+  return false
+end
+local function strip(s)
+  if secret(s) then return "<secret>" end
+  return (tostring(s):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""))
+end
 function ns.Print(msg)
-  DEFAULT_CHAT_FRAME:AddMessage(PREFIX .. tostring(msg))
+  local disp = secret(msg) and "<secret>" or tostring(msg)
+  DEFAULT_CHAT_FRAME:AddMessage(PREFIX .. disp)
   if ns._cap then ns._cap[#ns._cap + 1] = strip(msg) end
 end
 function ns.Printf(fmt, ...) ns.Print(string.format(fmt, ...)) end
