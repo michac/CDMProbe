@@ -1,0 +1,6 @@
+# WoW SavedVariables never live in the source repo
+*.lua.bak
+
+# OS / editor cruft
+.DS_Store
+*.swp

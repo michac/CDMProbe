@@ -1,0 +1,207 @@
+-- Probes.lua — the "what actually works in combat" experiments:
+--   * a draggable Soul Shard bar that is Secret-Values-aware,
+--   * an on-demand secret probe (run out of combat, then in combat),
+--   * an event logger (glow show/hide tests proc detection; CDM data-loaded etc).
+local ADDON, ns = ...
+
+local SHARD_MAX = 5
+local SOUL = Enum.PowerType and Enum.PowerType.SoulShards
+local shardFrame
+
+--------------------------------------------------------------------------------
+-- Soul Shard bar
+--------------------------------------------------------------------------------
+local function buildShardFrame()
+  if shardFrame then return shardFrame end
+  local f = CreateFrame("Frame", "CDMProbeShards", UIParent)
+  f:SetSize(SHARD_MAX * 26 + (SHARD_MAX - 1) * 3 + 8, 40)
+  local p = ns.db.shardFrame
+  f:SetPoint(p.point, UIParent, p.point, p.x, p.y)
+  f:SetMovable(true); f:EnableMouse(true); f:RegisterForDrag("LeftButton")
+  f:SetScript("OnDragStart", f.StartMoving)
+  f:SetScript("OnDragStop", function(self)
+    self:StopMovingOrSizing()
+    local point, _, _, x, y = self:GetPoint()
+    ns.db.shardFrame = { point = point, x = x, y = y }
+  end)
+
+  local bg = f:CreateTexture(nil, "BACKGROUND")
+  bg:SetAllPoints(f)
+  bg:SetColorTexture(0, 0, 0, 0.4)
+
+  f.segs = {}
+  for i = 1, SHARD_MAX do
+    local s = f:CreateTexture(nil, "ARTWORK")
+    s:SetSize(26, 22)
+    s:SetPoint("LEFT", f, "LEFT", 4 + (i - 1) * (26 + 3), 6)
+    s:SetColorTexture(0.2, 0.2, 0.25, 1)
+    f.segs[i] = s
+  end
+
+  f.text = f:CreateFontString(nil, "OVERLAY")
+  f.text:SetFont(STANDARD_TEXT_FONT, 12, "OUTLINE")
+  f.text:SetPoint("BOTTOM", f, "TOP", 0, 2)
+
+  shardFrame = f
+  return f
+end
+
+local function updateShards()
+  local f = shardFrame
+  if not f or not f:IsShown() then return end
+  local val = UnitPower("player", SOUL) -- may be a Secret Value in restricted combat
+
+  if ns.IsSecret(val) then
+    -- We must NOT compare a secret; just show that fact.  This IS the experiment.
+    for i = 1, SHARD_MAX do f.segs[i]:SetColorTexture(0.45, 0.12, 0.5, 1) end
+    f.text:SetText("shards = |cffff4040<secret>|r  (can't read in Lua here)")
+  else
+    local n = tonumber(val) or 0
+    local pr, pg, pb = ns.HSV(275, 0.7, 0.98) -- Warlock purple
+    for i = 1, SHARD_MAX do
+      if i <= n then f.segs[i]:SetColorTexture(pr, pg, pb, 1)
+      else f.segs[i]:SetColorTexture(0.2, 0.2, 0.25, 1) end
+    end
+    if n >= SHARD_MAX then
+      f.text:SetText("shards = |cffffd100" .. n .. " (MAX)|r")
+    else
+      f.text:SetText("shards = " .. n)
+    end
+  end
+end
+
+local shardEvents = CreateFrame("Frame")
+shardEvents:SetScript("OnEvent", updateShards)
+local function shardEventsOn(on)
+  if on then
+    shardEvents:RegisterUnitEvent("UNIT_POWER_UPDATE", "player")
+    shardEvents:RegisterUnitEvent("UNIT_POWER_FREQUENT", "player")
+    shardEvents:RegisterEvent("PLAYER_REGEN_ENABLED")
+    shardEvents:RegisterEvent("PLAYER_REGEN_DISABLED")
+    shardEvents:RegisterEvent("PLAYER_ENTERING_WORLD")
+  else
+    shardEvents:UnregisterAllEvents()
+  end
+end
+
+ns.RegisterCommand("shards", "toggle a draggable Soul Shard bar (reports <secret> if unreadable in combat)", function()
+  local f = buildShardFrame()
+  if f:IsShown() then
+    f:Hide(); shardEventsOn(false); ns.db.shardShown = false
+    ns.Print("shard bar hidden")
+  else
+    f:Show(); shardEventsOn(true); ns.db.shardShown = true; updateShards()
+    ns.Print("shard bar shown (drag to move). Pull a dummy and watch whether it flips to |cffff4040<secret>|r in combat.")
+  end
+end)
+
+--------------------------------------------------------------------------------
+-- On-demand secret probe
+--------------------------------------------------------------------------------
+local function cdFields(spellID, label)
+  if not (C_Spell and C_Spell.GetSpellCooldown) then return end
+  local ok, info = pcall(C_Spell.GetSpellCooldown, spellID)
+  if ok and type(info) == "table" then
+    ns.Printf("  %s: duration=%s startTime=%s", label, ns.Describe(info.duration), ns.Describe(info.startTime))
+  else
+    ns.Printf("  %s: <call failed>", label)
+  end
+end
+
+ns.RegisterCommand("secret", "test which values are secret RIGHT NOW (run once out of combat, once in combat)", function()
+  ns.Heading(string.format("Secret probe  (in combat: %s)", tostring(InCombatLockdown())))
+  if not ns.SecretAPI() then
+    ns.Print("  issecretvalue() absent — Secret Values not present on this build; everything is readable.")
+    return
+  end
+  ns.Printf("  UnitPower(SoulShards): %s", ns.Describe(UnitPower("player", SOUL)))
+  ns.Printf("  UnitPower(SoulShards, unmodified/fragments): %s", ns.Describe(UnitPower("player", SOUL, true)))
+  cdFields(61304, "GCD (61304)")
+  cdFields(105174, "Hand of Gul'dan (105174)")
+  cdFields(265187, "Summon Demonic Tyrant (265187)")
+  if C_UnitAuras and C_UnitAuras.GetAuraDataBySpellName then
+    local ok, aura = pcall(C_UnitAuras.GetAuraDataBySpellName, "player", "Demonic Core", "HELPFUL")
+    if ok and type(aura) == "table" then
+      ns.Printf("  Demonic Core aura: expirationTime=%s applications=%s",
+        ns.Describe(aura.expirationTime), ns.Describe(aura.applications))
+    else
+      ns.Print("  Demonic Core aura: not active (proc it and re-run to test aura secrecy)")
+    end
+  end
+end)
+
+--------------------------------------------------------------------------------
+-- Event logger
+--------------------------------------------------------------------------------
+local LOG_EVENTS = {
+  "COOLDOWN_VIEWER_DATA_LOADED",
+  "SPELL_UPDATE_COOLDOWN",
+  "SPELL_UPDATE_CHARGES",
+  "SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",
+  "SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",
+  "UNIT_AURA",
+}
+local lastAt = {}
+local function throttle(key, secs)
+  local t = GetTime()
+  if lastAt[key] and (t - lastAt[key]) < secs then return false end
+  lastAt[key] = t
+  return true
+end
+
+local logFrame = CreateFrame("Frame")
+logFrame:SetScript("OnEvent", function(_, event, ...)
+  if event == "SPELL_ACTIVATION_OVERLAY_GLOW_SHOW" or event == "SPELL_ACTIVATION_OVERLAY_GLOW_HIDE" then
+    local spellID = ...
+    local verb = event:match("GLOW_(%a+)")
+    ns.Printf("|cff66ccffGLOW %s|r %s (id=%s)", verb, ns.SpellName(spellID) or "?", tostring(spellID))
+  elseif event == "COOLDOWN_VIEWER_DATA_LOADED" then
+    ns.Print("|cffffd100COOLDOWN_VIEWER_DATA_LOADED|r — tracked-spell set (re)built")
+  elseif event == "UNIT_AURA" then
+    local unit = ...
+    if unit == "player" and throttle("UNIT_AURA", 1.0) then
+      ns.Print("|cff999999UNIT_AURA player|r (throttled 1/s)")
+    end
+  elseif event == "SPELL_UPDATE_COOLDOWN" then
+    if throttle("SPELL_UPDATE_COOLDOWN", 1.0) then ns.Print("|cff999999SPELL_UPDATE_COOLDOWN|r (throttled)") end
+  elseif event == "SPELL_UPDATE_CHARGES" then
+    if throttle("SPELL_UPDATE_CHARGES", 1.0) then ns.Print("|cff999999SPELL_UPDATE_CHARGES|r (throttled)") end
+  end
+end)
+
+local function logOn(on)
+  ns.db.logOn = on and true or false
+  logFrame:UnregisterAllEvents()
+  if on then
+    for _, e in ipairs(LOG_EVENTS) do
+      if e == "UNIT_AURA" then logFrame:RegisterUnitEvent("UNIT_AURA", "player")
+      else logFrame:RegisterEvent(e) end
+    end
+    ns.Print("event log |cff88ff88ON|r — glow show/hide printed in full (does the Demonic Core proc show its spellID?).")
+  else
+    ns.Print("event log |cffff8080OFF|r")
+  end
+end
+
+ns.RegisterCommand("log", "toggle event logger (CDM data-loaded, glow show/hide, cd/charge/aura updates)", function()
+  logOn(not ns.db.logOn)
+end)
+
+ns.RegisterCommand("reset", "turn every experiment off (unskin, hide shard bar, log off)", function()
+  if ns.db.skinOn then ns.SetSkin(false) end
+  if shardFrame and shardFrame:IsShown() then shardFrame:Hide(); shardEventsOn(false); ns.db.shardShown = false end
+  if ns.db.logOn then logOn(false) end
+  ns.Print("all experiments off.")
+end)
+
+--------------------------------------------------------------------------------
+-- Login restore (Core calls ns.OnLogin once, after saved vars are ready)
+--------------------------------------------------------------------------------
+function ns.OnLogin()
+  if ns.RestoreSkin then ns.RestoreSkin() end
+  if ns.db.logOn then logOn(true) end
+  if ns.db.shardShown then
+    local f = buildShardFrame()
+    f:Show(); shardEventsOn(true); updateShards()
+  end
+end
