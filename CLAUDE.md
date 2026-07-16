@@ -31,6 +31,11 @@ Design context + research synthesis live in the parent workspace:
   exist. Run **out of combat and again in combat** to see what turns `<secret>`.
 - `skin` — hide icons on Essential+Utility, paint color blocks + labels, keep
   Blizzard's secure cooldown swipe. The "no icons, color-coded" concept, live.
+- `resource` — the **resource-centric** skin (design direction 3): group-colored
+  Essential/Utility blocks + 4-letter labels, recolored BuffBar duration bars,
+  and a hero Soul Shard rail we own (partial fill, generate→spend→cap recolor,
+  cap flash + spark burst + earcon). Opinionated Demo tracked set; untracked
+  spells go slate-neutral rather than hidden.
 - `shards` — draggable Soul Shard bar; Secret-Values-aware (flips to `<secret>`
   if the value is unreadable in restricted combat).
 - `secret` — on-demand probe of which values are secret right now.
@@ -52,6 +57,8 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
     Viewers.lua                   locate viewers, enumerate items, `dump`
     Skin.lua                      the visible color-block skin experiment
     Probes.lua                    shard bar, `secret`, `log`, `reset`
+    Resource.lua                  resource-centric skin: group-color blocks +
+                                  duration bars + soul-shard rail (`resource`)
 ```
 
 ## Licensing note
