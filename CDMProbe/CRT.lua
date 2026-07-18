@@ -16,13 +16,15 @@
 --   F5  persist off the per-ITEM RefreshData/RefreshSpellTexture hook, not a poll
 --
 -- F5 detail (source: Blizzard_CooldownViewer/CooldownViewer.lua @ 68453):
---   CooldownViewerCooldownItemMixin:RefreshData() runs, in order,
---   RefreshSpellTexture (SetTexture resets the icon) -> RefreshIconDesaturation
---   -> RefreshIconColor: Blizzard re-desaturates AND re-colors every refresh,
---   clobbering our tint (the white flash).  The methods are Mixin()-copied onto
---   each frame, so we hook the ITEM INSTANCE (not the shared mixin table) and
---   re-apply AFTER Blizzard.  The viewer-level RefreshLayout only fires on
---   relayout — it reflows chrome + re-hooks new items, it is NOT the tint fix.
+--   Blizzard re-colors the icon from MANY paths, most OUTSIDE RefreshData:
+--   RefreshIconColor sets ITEM_USABLE_COLOR (white) from SPELL_UPDATE_USABLE (776),
+--   spell-range-check (785) and cooldownID-set (715); RefreshIconDesaturation from
+--   OnCooldownDone (743); RefreshSpellTexture (SetTexture) from the icon event (191).
+--   v0.5.1 hooked only RefreshData and still flashed on the usable/range paths.
+--   These are Mixin()-copied per frame, so we hook the ITEM INSTANCE (not the
+--   shared mixin) on all three LEAF methods and re-force our green AFTER Blizzard,
+--   making us the last writer on every path.  The viewer-level RefreshLayout only
+--   fires on relayout — it reflows chrome + re-hooks new items, not the tint fix.
 --
 -- Toggle: /cdmp crt   ·   verdicts: /cdmp crt status.  New command only, so
 -- /cdmp skin + /cdmp resource stay as reference.
@@ -59,21 +61,29 @@ local function reTint(item)
 end
 
 -- Hook a single item INSTANCE once (methods are Mixin()-copied per frame, so a
--- shared-mixin hook wouldn't reach already-created frames).  Both callbacks
--- run AFTER Blizzard's, and are gated on M.on so toggling off leaves clean.
+-- shared-mixin hook wouldn't reach already-created frames).  We hook the three
+-- LEAF methods that actually touch the icon, because Blizzard calls them from
+-- many event paths OUTSIDE RefreshData (source @ 68453):
+--   RefreshIconColor       — SPELL_UPDATE_USABLE (776), range-check (785),
+--                            cooldownID-set (715): sets ITEM_USABLE_COLOR = WHITE
+--   RefreshIconDesaturation — OnCooldownDone (743)
+--   RefreshSpellTexture    — OnSpellUpdateIconEvent (191): SetTexture resets both
+-- Hooking only RefreshData (v0.5.1) missed the usable/range paths → still flashed.
+-- Each callback runs AFTER Blizzard's and is gated on M.on so toggling off leaves
+-- clean.  reTint re-forces our green, so it's the last writer every path.
+local CRT_LEAF = { "RefreshIconColor", "RefreshIconDesaturation", "RefreshSpellTexture" }
 local function hookItem(item)
   if item.__crtHooked then return end
-  if ns.HasMethod(item, "RefreshData") then
-    hooksecurefunc(item, "RefreshData", function(self)
-      if M.on then M.fires.item = M.fires.item + 1; reTint(self) end
-    end)
+  local hooked = false
+  for _, method in ipairs(CRT_LEAF) do
+    if ns.HasMethod(item, method) then
+      hooksecurefunc(item, method, function(self)
+        if M.on then M.fires.item = M.fires.item + 1; reTint(self) end
+      end)
+      hooked = true
+    end
   end
-  if ns.HasMethod(item, "RefreshSpellTexture") then           -- standalone icon-event path
-    hooksecurefunc(item, "RefreshSpellTexture", function(self)
-      if M.on then reTint(self) end
-    end)
-  end
-  item.__crtHooked = true
+  item.__crtHooked = hooked
 end
 
 --------------------------------------------------------------------------------
@@ -195,20 +205,20 @@ local function buildTerminal(viewer)
   f:SetAllPoints(viewer)
   f:SetFrameLevel((ns.HasMethod(viewer, "GetFrameLevel") and viewer:GetFrameLevel() or 1) + 12)
 
-  -- header (above the column)
+  -- header (above the column) — center-anchored + compact so it auto-sizes over
+  -- the narrow vertical column instead of being clipped to its width.
   local hd = f:CreateFontString(nil, "OVERLAY")
   hd:SetFont(TERM_FONT, 11, "OUTLINE")
-  hd:SetPoint("BOTTOMLEFT", viewer, "TOPLEFT", 0, 6)
-  hd:SetPoint("BOTTOMRIGHT", viewer, "TOPRIGHT", 0, 6)
+  hd:SetPoint("BOTTOM", viewer, "TOP", 0, 9)
   hd:SetJustifyH("CENTER")
   hd:SetTextColor(PHOS[1], PHOS[2], PHOS[3])
-  hd:SetText(">> DEMONOLOGY.SYS")
+  hd:SetText("DEMO.SYS")
   local sub = f:CreateFontString(nil, "OVERLAY")
   sub:SetFont(TERM_FONT, 8, "OUTLINE")
-  sub:SetPoint("TOP", hd, "BOTTOM", 0, 0)
+  sub:SetPoint("TOP", hd, "BOTTOM", 0, -1)
   sub:SetJustifyH("CENTER")
   sub:SetTextColor(PHOS_DIM[1], PHOS_DIM[2], PHOS_DIM[3])
-  sub:SetText("v12.0.7 // CDM OVERLAY")
+  sub:SetText("v12.0.7")
   rule(f, viewer, "TOPLEFT", "TOPRIGHT", 4)        -- rule just above the icons
 
   -- side borders (enclose the column)
@@ -220,16 +230,16 @@ local function buildTerminal(viewer)
   end
   vrule("L"); vrule("R")
 
-  -- footer (below the column) — blinking terminal prompt
+  -- footer (below the column) — compact blinking DOS prompt, centered
   rule(f, viewer, "BOTTOMLEFT", "BOTTOMRIGHT", -4)
   local ft = f:CreateFontString(nil, "OVERLAY")
   ft:SetFont(TERM_FONT, 10, "OUTLINE")
-  ft:SetPoint("TOPLEFT", viewer, "BOTTOMLEFT", 1, -6)
-  ft:SetJustifyH("LEFT")
+  ft:SetPoint("TOP", viewer, "BOTTOM", 0, -6)
+  ft:SetJustifyH("CENTER")
   ft:SetTextColor(PHOS_MID[1], PHOS_MID[2], PHOS_MID[3])
   f.footer = ft
   f.cursorOn = true
-  f.footer:SetText("C:\\WOW\\HUD> _")
+  f.footer:SetText("C:\\>_")
 
   viewer.__crtTerm = f
   return f
@@ -241,7 +251,7 @@ local function setBlink(on)
     blinkTicker = C_Timer.NewTicker(0.53, function()
       if not terminal or not terminal.footer then return end
       terminal.cursorOn = not terminal.cursorOn
-      terminal.footer:SetText("C:\\WOW\\HUD> " .. (terminal.cursorOn and "_" or " "))
+      terminal.footer:SetText("C:\\>" .. (terminal.cursorOn and "_" or " "))
     end)
   elseif blinkTicker then
     blinkTicker:Cancel(); blinkTicker = nil
@@ -370,7 +380,7 @@ local function printStatus()
     (essV and essV.__crtScan) and "|cff88ff88viewer|r" or "|cffff4040none yet|r")
   ns.Printf("  F4 anchor     : rail anchored to viewer=%s (drag the CDM in Edit Mode — it should follow)",
     (rail and rail.anchoredToViewer) and "|cff88ff88yes|r" or "|cffffd100fallback UIParent|r")
-  ns.Printf("  F5 persist    : per-item RefreshData hooks fired=%d  (viewer RefreshLayout=%d) %s",
+  ns.Printf("  F5 persist    : per-item icon-repaint hooks fired=%d  (viewer RefreshLayout=%d) %s",
     M.fires.item, M.fires.layout,
     M.fires.item > 0 and "|cff88ff88(tint persists off the hook — no more white flash)|r"
                        or "|cffffd100(cast/use a spell so an item refreshes)|r")
