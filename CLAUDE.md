@@ -16,28 +16,39 @@ installed copy is what `ghaddons` deploys.
 An **experiment / kitchen sink**, not a finished product. It probes what a
 custom addon can actually do on top of Blizzard's built-in **Cooldown Manager**
 (a.k.a. Cooldown Viewer) under Midnight 12.0's **Secret Values** restrictions,
-so we can *see at a target dummy* what updates, what's readable, and how a
-"no-icons, color-coded" skin looks — before committing to the real HUD.
+so we can *see at a target dummy* what updates, what's readable, and how the skin
+looks — before committing to the real HUD. The v1 direction is a **CRT /
+green-phosphor overlay that keeps Blizzard's icons and tints them in place**
+(`/cdmp crt`); the older "no-icons, solid color block" experiments (`/cdmp skin`,
+`/cdmp resource`) are kept as reference, not the direction.
 
 Target spec for v1 experiments: **Demonology Warlock**.
 
-Design context + research synthesis live in the parent workspace:
-`wwt-keyboard/projects/cooldown-hud/` (not this repo).
+Design context + status live in the parent workspace at
+`projects/cooldown-hud/docs/` (`spec.md` vision · `notes.md` technical findings ·
+`milestones.md` roadmap) — not this repo.
 
 ## Commands (`/cdmp <cmd>`, alias `/cdmprobe`)
 
 - `dump` — introspect the live API: viewer frames, item frames, resolved
   spellIDs, item anatomy, and which APIs (`C_CooldownViewer`, Secret Values)
   exist. Run **out of combat and again in combat** to see what turns `<secret>`.
-- `skin` — hide icons on Essential+Utility, paint color blocks + labels, keep
-  Blizzard's secure cooldown swipe. The "no icons, color-coded" concept, live.
-- `resource` — the **resource-centric** skin (design direction 3): group-colored
-  Essential/Utility blocks + 4-letter labels, recolored BuffBar duration bars,
-  and a hero Soul Shard rail we own (partial fill, generate→spend→cap recolor,
-  cap flash + spark burst + earcon). Opinionated Demo tracked set; untracked
-  spells go slate-neutral rather than hidden.
+- `crt` — **the v1 direction (M1 prototype).** Keeps the Essential/Utility icons
+  and desaturates + green-tints them in place; DUMMY 4-letter labels / keybinds /
+  block-char meters; scanline+vignette overlay; a viewer-anchored Soul Shard rail;
+  a `DEMONOLOGY.SYS` terminal frame. Tint persists via per-item leaf-method hooks
+  (no white flash). `crt status` prints the F1–F5 feasibility verdicts.
+- `skin` — *(reference, retired direction)* hide icons on Essential+Utility, paint
+  solid color blocks + labels, keep Blizzard's secure cooldown swipe.
+- `resource` — *(reference, retired direction)* resource-centric skin: group-color
+  blocks + 4-letter labels, recolored BuffBar duration bars, and a Soul Shard rail
+  we own (fill, generate→spend→cap recolor, cap flash + spark + earcon).
 - `shards` — draggable Soul Shard bar; Secret-Values-aware (flips to `<secret>`
   if the value is unreadable in restricted combat).
+- `layout` — probe whether `C_CooldownViewer.SetLayoutData()` is addon-writable
+  (auto-apply viability); `layout write` attempts the safe round-trip OOC.
+- `casts` — log player casts to test whether the spellID is readable in combat
+  (decides roll-your-own cooldown timers).
 - `secret` — on-demand probe of which values are secret right now.
 - `log` — event logger (CDM data-loaded, glow show/hide = proc detection test).
 - `reset` — turn every experiment off.
@@ -55,10 +66,13 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
     Core.lua                      namespace, saved vars, slash cmds, registry
     Util.lua                      color, spell-name, Secret-Values-aware describe
     Viewers.lua                   locate viewers, enumerate items, `dump`
-    Skin.lua                      the visible color-block skin experiment
-    Probes.lua                    shard bar, `secret`, `log`, `reset`
+    Skin.lua                      color-block skin experiment (retired direction)
+    Probes.lua                    shard bar, `secret`, `log`, `casts`, `reset`
     Resource.lua                  resource-centric skin: group-color blocks +
                                   duration bars + soul-shard rail (`resource`)
+    Layout.lua                    `layout` probe: is SetLayoutData addon-writable?
+    CRT.lua                       the v1 CRT/green-phosphor prototype (`crt`) —
+                                  keep+tint icons, leaf-hook persistence, chrome
 ```
 
 ## Licensing note
