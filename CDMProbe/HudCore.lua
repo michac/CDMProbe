@@ -53,7 +53,7 @@ M.IsIconViewer = isIconViewer
 -- First real user settings land in M3c (the opener variant); M3a only needs the
 -- on/off flag.  Defaults are filled defensively here as well as in Core.lua so a
 -- db written by an older build picks up new keys.
-local HUD_DEFAULTS = { on = false, opener = "1b" }
+local HUD_DEFAULTS = { on = false, opener = "1b", debug = false }
 
 local function ensureDB()
   ns.db.hud = ns.db.hud or {}
@@ -203,11 +203,13 @@ function ns.SetHud(on)
     ev:RegisterEvent("PLAYER_ENTERING_WORLD")
     rebind()
     ns.HudState.Start()
+    if ensureDB().debug then ns.HudDebug.Set(true) end
     ns.Print("HUD |cff88ff88ON|r — native icons + group accents, keybinds, readiness + proc glows, DEMO.SYS chrome. |cffffffff/cdmp hud status|r for the readout.")
   else
     M.on = false
     ev:UnregisterAllEvents()
     ns.HudState.Stop()
+    ns.HudDebug.Hide()
     ns.HudBinds.Stop()
     ns.HudChrome.HideTerminal()
     for _, entry in pairs(M.items) do
@@ -272,10 +274,11 @@ end
 -- Commands
 --------------------------------------------------------------------------------
 ns.RegisterCommand("hud",
-  "the real spec HUD: native icons + group accents + keybinds + DEMO.SYS chrome. 'hud status' = bind readout.",
+  "the real spec HUD. 'hud status' = the readout in chat; 'hud debug' = every tracked fact in words beside each icon.",
   function(rest)
     rest = (rest or ""):lower()
     if rest:find("status") then return printStatus() end
+    if rest:find("debug") then return ns.HudDebug.Set(not ns.HudDebug.on) end
     ns.SetHud(not ensureDB().on)
   end)
 
