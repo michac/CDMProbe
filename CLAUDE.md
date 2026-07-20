@@ -17,10 +17,12 @@ An **experiment / kitchen sink**, not a finished product. It probes what a
 custom addon can actually do on top of Blizzard's built-in **Cooldown Manager**
 (a.k.a. Cooldown Viewer) under Midnight 12.0's **Secret Values** restrictions,
 so we can *see at a target dummy* what updates, what's readable, and how the skin
-looks — before committing to the real HUD. The v1 direction is a **CRT /
-green-phosphor overlay that keeps Blizzard's icons and tints them in place**
-(`/cdmp crt`); the older "no-icons, solid color block" experiments (`/cdmp skin`,
-`/cdmp resource`) are kept as reference, not the direction.
+looks. It now also carries **the real HUD** (`/cdmp hud`, M3+). The v1 direction
+is a **terminal / CRT-flavoured overlay that leaves Blizzard's icons native and
+untouched** and builds all value-add in the chrome around them; the green-phosphor
+icon-tint era (`/cdmp crt`) was **retired in v0.6.0** — its tint machinery survives
+dormant in `HudTint.lua`. The older "no-icons, solid color block" experiments
+(`/cdmp skin`, `/cdmp resource`) are kept as reference, not the direction.
 
 Target spec for v1 experiments: **Demonology Warlock**.
 
@@ -33,11 +35,15 @@ Design context + status live in the parent workspace at
 - `dump` — introspect the live API: viewer frames, item frames, resolved
   spellIDs, item anatomy, and which APIs (`C_CooldownViewer`, Secret Values)
   exist. Run **out of combat and again in combat** to see what turns `<secret>`.
-- `crt` — **the v1 direction (M1 prototype).** Keeps the Essential/Utility icons
-  and desaturates + green-tints them in place; DUMMY 4-letter labels / keybinds /
-  block-char meters; scanline+vignette overlay; a viewer-anchored Soul Shard rail;
-  a `DEMONOLOGY.SYS` terminal frame. Tint persists via per-item leaf-method hooks
-  (no white flash). `crt status` prints the F1–F5 feasibility verdicts.
+- `hud` — **the real HUD (M3+).** Binds per item to the **live** CDM layout by
+  `cooldownID` off the `RefreshLayout` hook (+ `COOLDOWN_VIEWER_DATA_LOADED` /
+  `PLAYER_ENTERING_WORLD`) — no ticker. Blizzard's icons stay **native and
+  untouched**; we draw group-colour accents with a generator/consumer batch tint,
+  real keybinds (action-bar scan, cached, OOC-only), a scanline overlay and the
+  `DEMO.SYS` terminal frame.
+  - `hud status` — bound items per viewer, resolved spellIDs + group/role,
+    keybind hits/misses, and the per-source rebind fire counts.
+  - `hud opener 1a|1b` — *(M3c)* which opener the pre-pull queue ghosts.
 - `skin` — *(reference, retired direction)* hide icons on Essential+Utility, paint
   solid color blocks + labels, keep Blizzard's secure cooldown swipe.
 - `resource` — *(reference, retired direction)* resource-centric skin: group-color
@@ -71,8 +77,20 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
     Resource.lua                  resource-centric skin: group-color blocks +
                                   duration bars + soul-shard rail (`resource`)
     Layout.lua                    `layout` probe: is SetLayoutData addon-writable?
-    CRT.lua                       the v1 CRT/green-phosphor prototype (`crt`) —
-                                  keep+tint icons, leaf-hook persistence, chrome
+    SpecDemonology.lua            per-spec data: spellID -> group / role / ghost
+                                  shard yield / base CD.  The seam a 2nd spec
+                                  plugs into (M7); render modules hold no
+                                  spell constants of their own.
+    HudCore.lua                   registry bound by cooldownID, RefreshLayout +
+                                  event binding, enable/disable, `hud` cmds
+    HudChrome.lua                 everything we DRAW: per-item group accents +
+                                  keybind text, DEMO.SYS terminal frame,
+                                  scanline/vignette overlay
+    HudBinds.lua                  action-bar scan -> keybind per spellID (cached,
+                                  out-of-combat only)
+    HudTint.lua                   DORMANT leaf-method icon-tint machinery rescued
+                                  from the deleted CRT.lua — unwired; gates a
+                                  future optional solid-colour mode (notes.md §9)
 ```
 
 ## Licensing note
@@ -122,8 +140,13 @@ Deploy a build (`ghaddons update michac/CDMProbe` → `/reload`), then:
 1. `/cdmp dump` **out of combat** → the four viewers are found, items list with
    real spellIDs + names, item anatomy fields print. Note the `C_CooldownViewer`
    function list and whether the Secret Values API is present.
-2. `/cdmp skin` → Essential + Utility icons become color blocks with 4-letter
-   labels; the cooldown swipe still animates over them. Toggle off → icons back.
+2. `/cdmp hud` → Essential + Utility icons keep their **native art, swipe and
+   countdown**; group-colour accents appear around them (Tyrant/Dreadstalkers/
+   Grimoire green, HoG/Demonbolt violet, Implosion lime, defensives blue, CC
+   slate, Circle gold), real keybinds in the corner, DEMO.SYS frame + scanlines.
+   Drag the CDM in Edit Mode → chrome rides along. Change Orientation/# Rows →
+   `/cdmp hud status` fire counts increment and nothing detaches. Toggle off →
+   Blizzard's UI is pixel-clean.
 3. `/cdmp shards` → shard bar appears; spend/generate shards out of combat and
    watch it track. Drag to reposition (persists).
 4. Pull a **target dummy**. `/cdmp secret` **in combat** and `/cdmp dump` in

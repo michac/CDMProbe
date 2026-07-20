@@ -14,6 +14,9 @@ local DEFAULTS = {
   logMode = "off",       -- "off" | "quiet" | "verbose"
   shardShown = false,
   shardFrame = { point = "CENTER", x = 0, y = -140 },
+  -- The real HUD's settings (HudCore fills missing sub-keys defensively too, so
+  -- a db written by an older build picks up keys added later).
+  hud = { on = false, opener = "1b" },
   reports = {},          -- persisted /cdmp dump + /cdmp secret output (read off disk)
 }
 
