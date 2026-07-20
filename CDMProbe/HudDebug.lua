@@ -159,14 +159,22 @@ end
 --------------------------------------------------------------------------------
 -- Refresh / toggle
 --------------------------------------------------------------------------------
+-- Returns the number of rows actually drawn, so the toggle can REPORT it.  A
+-- silent zero is what made the first build indistinguishable from a no-op.
 function D.Refresh()
-  if not D.on or not (ns.Hud and ns.Hud.on) then return end
+  if not D.on or not (ns.Hud and ns.Hud.on) then return 0 end
+  local drawn = 0
   for key, e in pairs(ns.Hud.items) do
     if e.item then
-      local ok, line = pcall(lineFor, key, e)
-      local row = ensureRow(e.item)
-      row.text:SetText(ok and line or (RED .. "<row error>|r"))
-      row:Show()
+      -- Per-item pcall around the FRAME work too, not just the string build:
+      -- one unco-operative item must not take the other nineteen rows down.
+      local okRow = pcall(function()
+        local ok, line = pcall(lineFor, key, e)
+        local row = ensureRow(e.item)
+        row.text:SetText(ok and line or (RED .. "<row error>|r"))
+        row:Show()
+      end)
+      if okRow then drawn = drawn + 1 end
     end
   end
   local s = ensureSummary()
@@ -174,6 +182,30 @@ function D.Refresh()
     local ok, line = pcall(summaryLine)
     s.text:SetText(ok and line or "")
     s:Show()
+  end
+  return drawn
+end
+
+-- The same readout, to CHAT.  The on-screen rows depend on our frame layer
+-- behaving; chat does not.  "Write out what you're tracking" should never be
+-- contingent on the fancy path working, so the toggle always dumps once — and
+-- this is also the copy/pasteable form for talking about what we're seeing.
+function D.Dump()
+  ns.Heading("HUD debug — everything tracked, per item")
+  if not (ns.Hud and ns.Hud.on) then
+    ns.Print("  |cffff4040the HUD is off|r — /cdmp hud first.")
+    return
+  end
+  local ok, line = pcall(summaryLine)
+  ns.Print("  " .. (ok and line or "<summary error>"))
+  for _, viewer in ipairs({ "EssentialCooldownViewer", "UtilityCooldownViewer",
+                            "BuffBarCooldownViewer", "BuffIconCooldownViewer" }) do
+    for key, e in pairs(ns.Hud.items) do
+      if e.viewer == viewer then
+        local okL, l = pcall(lineFor, key, e)
+        ns.Printf("  %s", okL and l or "<row error>")
+      end
+    end
   end
 end
 
@@ -188,16 +220,27 @@ function D.Set(on)
     if not (ns.Hud and ns.Hud.on) then
       ns.Print("debug readout armed, but the HUD is off — |cffffffff/cdmp hud|r to turn it on.")
     end
-    if not ticker then ticker = C_Timer.NewTicker(REFRESH, D.Refresh) end
-    D.Refresh()
+    -- Print BEFORE doing any work.  v0.8.0 refreshed first, so a throw in the
+    -- frame layer was caught by the slash dispatcher's pcall and the ON message
+    -- never printed — making a crash look exactly like "the command did nothing".
     ns.Print("HUD debug |cff88ff88ON|r — every tracked fact in words beside each icon. "
       .. "Group names print in their own hue, so the colour map reads itself.")
+    if not ticker then ticker = C_Timer.NewTicker(REFRESH, D.Refresh) end
+    local okR, drawn = pcall(D.Refresh)
+    if not okR then
+      ns.Printf("|cffff4040on-screen rows failed:|r %s — falling back to chat.", tostring(drawn))
+    elseif (drawn or 0) == 0 then
+      ns.Print("|cffffd100no rows drawn|r (0 bound items?) — see the chat dump below.")
+    else
+      ns.Printf("  %d row(s) drawn beside the icons.", drawn)
+    end
+    pcall(D.Dump)
   else
     if ticker then ticker:Cancel(); ticker = nil end
     hideAll()
     ns.Print("HUD debug |cffff8080OFF|r.")
   end
-  ns.db.hud.debug = D.on
+  if ns.db and ns.db.hud then ns.db.hud.debug = D.on end
 end
 
 -- Called by HudCore when the HUD itself goes off, so rows never outlive it.

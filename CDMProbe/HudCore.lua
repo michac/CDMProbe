@@ -278,6 +278,7 @@ ns.RegisterCommand("hud",
   function(rest)
     rest = (rest or ""):lower()
     if rest:find("status") then return printStatus() end
+    if rest:find("dump") then return ns.HudDebug.Dump() end
     if rest:find("debug") then return ns.HudDebug.Set(not ns.HudDebug.on) end
     ns.SetHud(not ensureDB().on)
   end)
