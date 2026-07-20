@@ -344,6 +344,12 @@ function H.SetGlow(item, on, strength, group)
   end
 end
 
+-- Current glow strength (1.0 full, <1 softened by the shard gate), or nil.
+function H.GlowStrength(item)
+  local o = item and item.__hud
+  return (o and o.glowOn) and (o.glowStrength or 1.0) or nil
+end
+
 function H.IsGlowing(item)
   local o = item and item.__hud
   return (o and o.glowOn) and true or false

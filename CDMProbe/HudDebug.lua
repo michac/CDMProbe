@@ -29,9 +29,30 @@ local ADDON, ns = ...
 ns.HudDebug = { on = false }
 local D = ns.HudDebug
 
-local FONT = "Fonts\\ARIALN.TTF"
-local SIZE = 11
+-- Bundled JetBrains Mono, same as the BucketBinds console.  A genuine monospace
+-- is the whole point of a terminal readout: columns line up, and glyphs stay
+-- distinguishable at small sizes in a way ARIALN's condensed forms do not.
+-- SetFont returns false if the .ttf can't load, so every call falls back.
+local FONT = "Interface\\AddOns\\CDMProbe\\Media\\JetBrainsMono.ttf"
+local SIZE = 14                 -- was 11 — unreadable at 1440p+
 local REFRESH = 0.15            -- debug mode; a few string ops at ~7 Hz is free
+
+-- Which side of the icon each viewer's text runs.  Bracketing the character with
+-- two columns means the left-hand one must read leftward, or the text collides
+-- with the icons instead of framing them.
+local SIDE = {
+  EssentialCooldownViewer = "RIGHT",
+  UtilityCooldownViewer   = "LEFT",
+  BuffBarCooldownViewer   = "RIGHT",
+  BuffIconCooldownViewer  = "RIGHT",
+}
+
+local function applyFont(obj, size)
+  if not (obj and obj.SetFont) then return end
+  if not obj:SetFont(FONT, size, "OUTLINE") then
+    obj:SetFont("Fonts\\ARIALN.TTF", size, "OUTLINE")
+  end
+end
 
 -- Weak keys: rows hang off pooled item frames we don't own.
 local rows = setmetatable({}, { __mode = "k" })
@@ -60,17 +81,23 @@ local GREEN, RED, AMBER, CYAN = "|cff55ff55", "|cffff5555", "|cffffd100", "|cff4
 --------------------------------------------------------------------------------
 -- Nothing clips our overlay (notes.md §9 — no clipsChildren in the CDM
 -- templates), so a row can run as far right as it likes past the narrow column.
-local function ensureRow(item)
+local function ensureRow(item, viewer)
   if rows[item] then return rows[item] end
   local lvl = (ns.HasMethod(item, "GetFrameLevel") and item:GetFrameLevel() or 1) + 20
   local f = CreateFrame("Frame", nil, item)
   f:SetSize(1, 1)
   f:SetFrameLevel(lvl)
-  f:SetPoint("LEFT", item, "RIGHT", 8, 0)
   local fs = f:CreateFontString(nil, "OVERLAY")
-  fs:SetFont(FONT, SIZE, "OUTLINE")
-  fs:SetPoint("LEFT", f, "LEFT", 0, 0)
-  fs:SetJustifyH("LEFT")
+  applyFont(fs, SIZE)
+  if (SIDE[viewer] or "RIGHT") == "LEFT" then
+    f:SetPoint("RIGHT", item, "LEFT", -8, 0)
+    fs:SetPoint("RIGHT", f, "RIGHT", 0, 0)
+    fs:SetJustifyH("RIGHT")
+  else
+    f:SetPoint("LEFT", item, "RIGHT", 8, 0)
+    fs:SetPoint("LEFT", f, "LEFT", 0, 0)
+    fs:SetJustifyH("LEFT")
+  end
   f.text = fs
   rows[item] = f
   return f
@@ -101,11 +128,24 @@ local function lineFor(key, e)
     -- secret read).  Showing "?" rather than defaulting to READY or CD is the
     -- whole point — see HudChrome's note on `ready = nil`.
     local ready = ns.HudChrome.GetReady(e.item)
+    local baseCD = ns.BaseCooldown(e.baseSpellID or e.spellID)
     if ready == true then parts[#parts + 1] = GREEN .. "READY|r"
     elseif ready == false then parts[#parts + 1] = RED .. "on-CD|r"
+    elseif baseCD == 0 then
+      -- NOT "unknown".  A spell with no cooldown never fires a cooldown edge,
+      -- so readiness is the wrong question for it entirely — its gate is
+      -- RESOURCE (shards / a proc), which is M3c's rail, not M3b's accent.
+      parts[#parts + 1] = GREY .. "no-CD (resource-gated)|r"
     else parts[#parts + 1] = GREY .. "? (no edge seen yet)|r" end
+    if baseCD and baseCD > 0 then
+      parts[#parts + 1] = GREY .. string.format("cd %ds|r", baseCD)
+    end
 
-    if ns.HudChrome.IsGlowing(e.item) then parts[#parts + 1] = CYAN .. "GLOW|r" end
+    if ns.HudChrome.IsGlowing(e.item) then
+      local st = ns.HudChrome.GlowStrength(e.item)
+      parts[#parts + 1] = CYAN .. "GLOW" ..
+        ((st and st < 1) and string.format(" (soft %.2f)", st) or "") .. "|r"
+    end
   else
     -- Buff viewers: presence is the interesting fact, plus where it came from.
     local present = ns.HudState.presence[key]
@@ -136,7 +176,7 @@ local function ensureSummary()
   f:SetFrameLevel((ns.HasMethod(anchor, "GetFrameLevel") and anchor:GetFrameLevel() or 1) + 20)
   f:SetPoint("BOTTOMLEFT", anchor, "TOPLEFT", 0, 26)
   local fs = f:CreateFontString(nil, "OVERLAY")
-  fs:SetFont(FONT, SIZE, "OUTLINE")
+  applyFont(fs, SIZE)
   fs:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 0, 0)
   fs:SetJustifyH("LEFT")
   f.text = fs
@@ -170,7 +210,7 @@ function D.Refresh()
       -- one unco-operative item must not take the other nineteen rows down.
       local okRow = pcall(function()
         local ok, line = pcall(lineFor, key, e)
-        local row = ensureRow(e.item)
+        local row = ensureRow(e.item, e.viewer)
         row.text:SetText(ok and line or (RED .. "<row error>|r"))
         row:Show()
       end)

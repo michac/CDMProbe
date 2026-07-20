@@ -60,3 +60,25 @@ function ns.Describe(v)
   elseif t == "nil" then return "nil"
   else return "<" .. t .. ">" end
 end
+
+-- Base cooldown in SECONDS for a spellID, or nil if unreadable.  Static spell
+-- metadata, not live cooldown state — readable and branchable (notes.md §1);
+-- the *remaining* time is the secret, the base length is not.
+--
+-- 0 is a MEANINGFUL answer, not a failure: Hand of Gul'dan and Demonbolt have no
+-- cooldown at all, so they never fire a cooldown alert edge and "readiness" is
+-- simply the wrong frame for them — their gate is shards / a proc.
+function ns.BaseCooldown(spellID)
+  if type(spellID) ~= "number" or ns.IsSecret(spellID) then return nil end
+  local ms
+  if C_Spell and C_Spell.GetSpellBaseCooldown then
+    local ok, v = pcall(C_Spell.GetSpellBaseCooldown, spellID)
+    if ok and type(v) == "number" then ms = v end
+  end
+  if ms == nil and type(GetSpellBaseCooldown) == "function" then
+    local ok, v = pcall(GetSpellBaseCooldown, spellID)
+    if ok and type(v) == "number" then ms = v end
+  end
+  if ms == nil then return nil end
+  return math.floor(ms / 1000 + 0.5)
+end
