@@ -210,26 +210,40 @@ ns.RegisterCommand("log", "toggle event logger; add 'verbose' for the cd/charge/
 end)
 
 --------------------------------------------------------------------------------
--- Cast probe: can we roll our own cooldown timers?  Tests whether
--- UNIT_SPELLCAST_SUCCEEDED reaches us in restricted combat AND whether its
--- spellID is readable (not secret). If readable, we can detect a cast and start
--- our own approximate cooldown timer (haste/CDR imprecision accepted).
+-- Cast probe: can we roll our own cooldown timers AND anticipate in-flight casts?
+-- Tests whether the player-cast spellcast events reach us in restricted combat
+-- AND whether each event's spellID is readable (not secret).  Two consumers:
+--   * SUCCEEDED (fires at cast COMPLETION for cast-time spells, at press for
+--     instants) → drives the napkin-math cooldown timer: the cooldown starts when
+--     the spell actually goes off, so this is the right trigger.
+--   * START (fires at cast BEGIN; cast-time spells only — instants never fire it)
+--     → drives the anticipation ghost-shard-fill: show incoming shards DURING the
+--     in-flight builder cast (Shadow Bolt +1, Infernal Bolt +3, Demonbolt +2).
+--     Whether START's spellID enjoys the same personal-cast relaxation as
+--     SUCCEEDED is the open question this probe now answers.
+-- STOP / INTERRUPTED are logged too: the ghost lifecycle retires on them (match by
+-- castGUID — not a secret — so we only need spellID readable at START).
 --------------------------------------------------------------------------------
+local CAST_EVENTS = {
+  "UNIT_SPELLCAST_START", "UNIT_SPELLCAST_SUCCEEDED",
+  "UNIT_SPELLCAST_STOP", "UNIT_SPELLCAST_INTERRUPTED",
+}
 local castFrame = CreateFrame("Frame")
 local castOn = false
-castFrame:SetScript("OnEvent", function(_, _, unit, _, spellID)
+castFrame:SetScript("OnEvent", function(_, event, unit, castGUID, spellID)
   if unit ~= "player" then return end
+  local phase = event:match("UNIT_SPELLCAST_(.+)") or event
   local readable = not ns.IsSecret(spellID)
   local name = readable and (ns.SpellName(spellID) or "?") or "?"
-  ns.Printf("|cff9a7fffCAST|r %s  spellID=%s%s", name, ns.Describe(spellID),
-    readable and "  |cff88ff88(readable → own-timer works)|r" or "  |cffff4040(secret → can't attribute)|r")
+  ns.Printf("|cff9a7fffCAST %s|r %s  spellID=%s  guid=%s%s", phase, name, ns.Describe(spellID),
+    tostring(castGUID), readable and "  |cff88ff88(readable)|r" or "  |cffff4040(secret)|r")
 end)
 
-ns.RegisterCommand("casts", "toggle logging player casts (is the spellID readable? decides roll-our-own timers)", function()
+ns.RegisterCommand("casts", "toggle logging player casts across START/SUCCEEDED/STOP/INTERRUPTED (is each spellID readable? decides own-timer + ghost-fill)", function()
   castOn = not castOn
   if castOn then
-    castFrame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
-    ns.Print("cast log |cff88ff88ON|r — cast a few spells in a delve; watch if spellID prints or |cffff4040<secret>|r.")
+    for _, e in ipairs(CAST_EVENTS) do castFrame:RegisterUnitEvent(e, "player") end
+    ns.Print("cast log |cff88ff88ON|r — cast a cast-time spell (e.g. Shadow Bolt/Demonbolt) at a dummy: watch for a |cff9a7fffCAST START|r line and whether its spellID is |cff88ff88readable|r or |cffff4040<secret>|r.")
   else
     castFrame:UnregisterAllEvents()
     ns.Print("cast log |cffff8080OFF|r")
