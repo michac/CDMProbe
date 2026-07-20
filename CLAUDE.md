@@ -123,8 +123,18 @@ clean). Updating the in-game addon:
    ```
    (No BigWigs packager, so ghaddons uses the release **source zip**, which
    contains `CDMProbe/CDMProbe.toc` — installs correctly.)
-6. **Deploy**: `cd ../../../addon-manager && python3 -m ghaddons.cli update michac/CDMProbe`
-   (first time: `... add michac/CDMProbe` then `... install michac/CDMProbe`).
+6. **Deploy** — this pulls the release into `Interface/AddOns/`. Runnable from
+   any directory (ghaddons keeps its config next to its own package, not in the
+   cwd), from WSL or from Windows `python`:
+   ```bash
+   PYTHONPATH=~/code/fun/wow/addon-manager python3 -m ghaddons.cli update michac/CDMProbe
+   ```
+   First time only: `... add michac/CDMProbe` then `... install michac/CDMProbe`.
+   Confirm with `... list` — CDMProbe should read `ok` at the new version, and
+   the `.toc` under `…/_retail_/Interface/AddOns/CDMProbe/` should show it too.
+   *(If it reports "AddOns directory not found", `addons_dir` in
+   `addon-manager/config.json` points at a WoW install that isn't there — the
+   `/mnt/c` vs `C:\` distinction is handled automatically and is not the cause.)*
 7. In-game: `/reload`, then `/cdmp help`.
 
 ## Conventions
