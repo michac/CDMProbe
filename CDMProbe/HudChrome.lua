@@ -50,12 +50,40 @@ local KEY_COL   = { 0.78, 0.92, 0.80 }  -- keybind text: near-white, reads on an
 --   width — edge thickness in px, the redundant non-colour channel
 --   alpha — presence
 local BATCH = {
-  spender = { sat = 1.25, width = 2, alpha = 0.95 },  -- consumers: warm/bright end
-  burst   = { sat = 1.25, width = 2, alpha = 0.95 },
-  builder = { sat = 0.62, width = 1, alpha = 0.60 },  -- generators: cool/dim end
-  utility = { sat = 0.50, width = 1, alpha = 0.45 },
-  proc    = { sat = 1.00, width = 1, alpha = 0.70 },
+  spender = { sat = 1.35, width = 5, alpha = 1.00 },  -- consumers: warm/bright end
+  burst   = { sat = 1.35, width = 5, alpha = 1.00 },
+  builder = { sat = 0.62, width = 3, alpha = 0.85 },  -- generators: cool/dim end
+  utility = { sat = 0.50, width = 2, alpha = 0.70 },
+  proc    = { sat = 1.00, width = 3, alpha = 0.85 },
 }
+
+--------------------------------------------------------------------------------
+-- ============================ TUNING (one edit site) ========================
+--------------------------------------------------------------------------------
+-- LOUD PASS (v0.7.2).  The first in-game look at M3b found every state signal
+-- too subtle to read at a glance, so these were deliberately cranked well past
+-- where they'll probably settle.  The instruction was "crank them up so I see
+-- them, tone them down later" — so treat these as a starting point for tuning,
+-- NOT as considered final values.  They all live here, and only here, so that
+-- toning down is one edit rather than a scavenger hunt through the module.
+--
+-- Everything below is OUR chrome only.  However loud these get, nothing here
+-- ever touches Blizzard's icon art, swipe, countdown or charge text.
+local READY_LIFT   = 0.75   -- ready -> toward white   (was 0.38)
+local READY_WIDEN  = 2      -- ...and THICKEN the edge: the [X1] non-colour cue
+local COOL_DROP    = 0.65   -- on-cooldown -> toward black (was 0.45)
+local RECEDE_MIN   = 0.25   -- board-quiet alpha floor (was 0.45)
+
+local SETTLE_TIME  = 0.55   -- one-shot ready flash, seconds (was 0.40)
+local SETTLE_ALPHA = 0.85   -- ...and its peak alpha       (was 0.38)
+local SETTLE_LIFT  = 0.75   -- ...how far toward white     (was 0.55)
+
+local GLOW_INSET   = 4      -- how far outside the icon the proc ring sits (was 2)
+local GLOW_WIDTH   = 5      -- proc ring thickness                         (was 2)
+local GLOW_ALPHA   = 1.00   -- proc ring peak alpha                        (was 0.90)
+local GLOW_MIN     = 0.55   -- pulse trough (higher = less blinky)         (was 0.40)
+local GLOW_MAX     = 1.00
+local GLOW_PERIOD  = 0.55
 
 -- Push a colour toward/away from its own grey, holding luminance constant.
 local function saturate(r, g, b, mul)
@@ -119,12 +147,9 @@ end
 -- The composed accent: identity (hue+sat) x readiness (luminance) x recede (alpha)
 --------------------------------------------------------------------------------
 
--- Luminance shift for readiness.  Deliberately a pure lighten/darken so the hue
--- the group encodes survives the shift — the two channels never fight ([V2]).
-local READY_LIFT = 0.38   -- ready    -> toward white
-local COOL_DROP  = 0.45   -- on-CD    -> toward black
-local RECEDE_MIN = 0.45   -- board-quiet alpha multiplier (§0.5.8.3 #5)
-
+-- Luminance shift for readiness lives in the TUNING block at the top.  It is
+-- deliberately a pure lighten/darken so the hue the group encodes survives the
+-- shift — the two channels never fight ([V2]).
 local recede = 1.0
 -- Weak keys: chrome objects hang off pooled item frames we don't own.
 local chromes = setmetatable({}, { __mode = "k" })
@@ -152,7 +177,10 @@ function H.Apply(o)
   local id = o.identity
   if not id then return end
   local r, g, b = readyShift(id.r, id.g, id.b, o.ready)
-  layoutEdges(o, id.width)
+  -- Readiness is carried on THREE channels, not just luminance: brighter, and
+  -- thicker ([X1] — never colour-alone, and thickness survives colourblindness
+  -- and a dim monitor where a luminance lift alone might not).
+  layoutEdges(o, id.width + (o.ready == true and READY_WIDEN or 0))
   local a = id.alpha * recede
   for _, t in pairs(o.edges) do
     t:SetColorTexture(r, g, b, a)
@@ -198,8 +226,6 @@ H.RECEDE_MIN = RECEDE_MIN
 -- A one-shot alpha fade on a dedicated overlay, ~0.4 s, then steady bright.  An
 -- AnimationGroup, never an OnUpdate: the engine drives it and it costs nothing
 -- once finished.
-local SETTLE_TIME = 0.4
-
 local function ensureSettle(o)
   if o.settle then return o.settle end
   local f = CreateFrame("Frame", nil, o.frame)
@@ -227,7 +253,8 @@ function H.Settle(item)
   if not o or not o.identity then return end
   local f = ensureSettle(o)
   local id = o.identity
-  f.tex:SetColorTexture(lighten(id.r, 0.55), lighten(id.g, 0.55), lighten(id.b, 0.55), 0.38)
+  f.tex:SetColorTexture(lighten(id.r, SETTLE_LIFT), lighten(id.g, SETTLE_LIFT),
+                        lighten(id.b, SETTLE_LIFT), SETTLE_ALPHA)
   f.ag:Stop()
   f:SetAlpha(1)
   f:Show()
@@ -241,9 +268,6 @@ end
 -- spell-activation overlay — which stays untouched underneath, so a native proc
 -- glow and ours can coexist rather than one hiding the other.  A terminal-
 -- aesthetic border pulse: a thicker second border just outside the accent.
-local GLOW_INSET, GLOW_WIDTH = 2, 2
-local GLOW_MIN, GLOW_MAX, GLOW_PERIOD = 0.40, 1.00, 0.55
-
 local function ensureGlow(o, item)
   if o.glow then return o.glow end
   local f = CreateFrame("Frame", nil, item)
@@ -274,7 +298,7 @@ function H.paintGlow(o)
   local f = o.glow
   if not f then return end
   local c = ns.SpecGroups[o.glowGroup or "proc"] or ns.SpecGroups.proc
-  local a = 0.9 * (o.glowStrength or 1.0) * recede
+  local a = GLOW_ALPHA * (o.glowStrength or 1.0) * recede
   local e = f.edges
   e.TOP:ClearAllPoints()
   e.TOP:SetPoint("TOPLEFT", f, "TOPLEFT", 0, 0)

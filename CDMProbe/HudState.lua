@@ -69,7 +69,7 @@ local S = ns.HudState
 
 local LOW_SHARDS   = 3      -- "board quiet" only below the SPEND threshold
 local RECEDE_DELAY = 0.5    -- debounce; long enough not to strobe between GCDs
-local RECEDE_MULT  = 0.45
+local RECEDE_MULT  = 0.25   -- LOUD PASS: match HudChrome RECEDE_MIN (was 0.45)
 local POLL_PERIOD  = 0.1    -- ~10 Hz level backstop (a boolean read, no secret)
 
 local function hudOn() return ns.Hud and ns.Hud.on end
