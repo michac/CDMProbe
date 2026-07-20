@@ -6,6 +6,8 @@
 --
 --   * per-item group accent   — §0.5.8.3 #4: hue = GROUP (spec.md §3 colour map),
 --                               role = the generator/consumer BATCH TINT
+--   * per-item readiness      — §0.5.8.3 #5: LUMINANCE + the one-shot ready settle
+--   * per-item proc glow      — §0.5.8.3 #2/#3: our own border pulse overlay
 --   * per-item keybind text   — identity chrome, outside the indicator contract
 --   * the DEMO.SYS terminal frame — header / rules / side borders / blinking footer
 --   * the scanline + vignette overlay
@@ -17,6 +19,20 @@
 --              the two channels can never fight.
 --   [X1]       never colour-alone: edge thickness is a redundant, non-colour
 --              signifier of the builder/spender axis.
+--
+-- COMPOSED ACCENT (v0.7.0).  M3a wrote the edge colours straight out of
+-- group+role in Attach(), and HudBinds calls Attach on every keybind change —
+-- which would have stomped whatever readiness M3b had just set.  So the accent
+-- is now composed from independent fields and there is exactly ONE writer:
+--
+--   o.identity = { r, g, b, width, alpha }   -- M3a: hue = group, sat = role
+--   o.ready    = nil | true | false          -- M3b: luminance.  nil = UNKNOWN
+--   recede     = module-level alpha multiplier (board-quiet, §0.5.8.3 #5)
+--   H.Apply(o) -- the single writer
+--
+-- `ready = nil` is load-bearing: at bind time we cannot know whether a cooldown
+-- is up without a secret read, so the accent sits at BASE luminance until we
+-- observe an edge.  Unknown is a state, not a value to guess.
 local ADDON, ns = ...
 
 ns.HudChrome = {}
@@ -99,29 +115,244 @@ local function layoutEdges(o, w)
   e.RIGHT:SetWidth(w)
 end
 
+--------------------------------------------------------------------------------
+-- The composed accent: identity (hue+sat) x readiness (luminance) x recede (alpha)
+--------------------------------------------------------------------------------
+
+-- Luminance shift for readiness.  Deliberately a pure lighten/darken so the hue
+-- the group encodes survives the shift — the two channels never fight ([V2]).
+local READY_LIFT = 0.38   -- ready    -> toward white
+local COOL_DROP  = 0.45   -- on-CD    -> toward black
+local RECEDE_MIN = 0.45   -- board-quiet alpha multiplier (§0.5.8.3 #5)
+
+local recede = 1.0
+-- Weak keys: chrome objects hang off pooled item frames we don't own.
+local chromes = setmetatable({}, { __mode = "k" })
+
+local function lighten(c, t) return c + (1 - c) * t end
+local function darken(c, t)  return c * (1 - t) end
+
+local function readyShift(r, g, b, ready)
+  if ready == true then
+    return lighten(r, READY_LIFT), lighten(g, READY_LIFT), lighten(b, READY_LIFT)
+  elseif ready == false then
+    return darken(r, COOL_DROP), darken(g, COOL_DROP), darken(b, COOL_DROP)
+  end
+  return r, g, b            -- UNKNOWN: base luminance.  Never a guess.
+end
+
+-- The ONE writer.  Everything else sets a field and calls this.
+function H.Apply(o)
+  local id = o.identity
+  if not id then return end
+  local r, g, b = readyShift(id.r, id.g, id.b, o.ready)
+  layoutEdges(o, id.width)
+  local a = id.alpha * recede
+  for _, t in pairs(o.edges) do
+    t:SetColorTexture(r, g, b, a)
+    t:Show()
+  end
+  o.key:SetAlpha(recede)
+  if o.glow then H.paintGlow(o) end
+end
+
+-- Readiness.  `ready` is tri-state; passing nil resets to UNKNOWN.
+function H.SetReady(item, ready)
+  local o = item and item.__hud
+  if not o then return end
+  o.ready = ready
+  H.Apply(o)
+end
+
+-- Tri-state: true / false / nil.  NOT `o and o.ready or nil` — that collapses a
+-- genuine `false` (on cooldown) into `nil` (unknown), which is exactly the
+-- distinction this milestone exists to keep.
+function H.GetReady(item)
+  local o = item and item.__hud
+  if not o then return nil end
+  return o.ready
+end
+
+-- Board-quiet recede.  Global (the whole board dims together — common fate),
+-- and it only ever touches OUR chrome; Blizzard's icons are never faded.
+function H.SetRecede(mult)
+  mult = math.max(RECEDE_MIN, math.min(1.0, tonumber(mult) or 1.0))
+  if mult == recede then return end
+  recede = mult
+  for o in pairs(chromes) do H.Apply(o) end
+end
+
+function H.GetRecede() return recede end
+H.RECEDE_MIN = RECEDE_MIN
+
+--------------------------------------------------------------------------------
+-- Ready settle — [V4], the one place motion is allowed
+--------------------------------------------------------------------------------
+-- A one-shot alpha fade on a dedicated overlay, ~0.4 s, then steady bright.  An
+-- AnimationGroup, never an OnUpdate: the engine drives it and it costs nothing
+-- once finished.
+local SETTLE_TIME = 0.4
+
+local function ensureSettle(o)
+  if o.settle then return o.settle end
+  local f = CreateFrame("Frame", nil, o.frame)
+  f:SetAllPoints(o.frame)
+  f:SetFrameLevel(o.frame:GetFrameLevel() + 1)
+  local t = f:CreateTexture(nil, "OVERLAY")
+  t:SetAllPoints(f)
+  f.tex = t
+  local ag = f:CreateAnimationGroup()
+  local a = ag:CreateAnimation("Alpha")
+  a:SetDuration(SETTLE_TIME)
+  a:SetFromAlpha(1)
+  a:SetToAlpha(0)
+  ag:SetScript("OnFinished", function() f:Hide() end)
+  f.ag = ag
+  f:Hide()
+  o.settle = f
+  return f
+end
+
+-- Fire exactly once per observed ready edge; a re-fire restarts rather than
+-- stacking, so a rapid re-trigger can never leave a latched-on wash.
+function H.Settle(item)
+  local o = item and item.__hud
+  if not o or not o.identity then return end
+  local f = ensureSettle(o)
+  local id = o.identity
+  f.tex:SetColorTexture(lighten(id.r, 0.55), lighten(id.g, 0.55), lighten(id.b, 0.55), 0.38)
+  f.ag:Stop()
+  f:SetAlpha(1)
+  f:Show()
+  f.ag:Play()
+end
+
+--------------------------------------------------------------------------------
+-- Proc glow — §0.5.8.3 #2 / #3
+--------------------------------------------------------------------------------
+-- OURS, not LibCustomGlow (no new dependency) and not Blizzard's
+-- spell-activation overlay — which stays untouched underneath, so a native proc
+-- glow and ours can coexist rather than one hiding the other.  A terminal-
+-- aesthetic border pulse: a thicker second border just outside the accent.
+local GLOW_INSET, GLOW_WIDTH = 2, 2
+local GLOW_MIN, GLOW_MAX, GLOW_PERIOD = 0.40, 1.00, 0.55
+
+local function ensureGlow(o, item)
+  if o.glow then return o.glow end
+  local f = CreateFrame("Frame", nil, item)
+  f:SetPoint("TOPLEFT", item, "TOPLEFT", -GLOW_INSET, GLOW_INSET)
+  f:SetPoint("BOTTOMRIGHT", item, "BOTTOMRIGHT", GLOW_INSET, -GLOW_INSET)
+  f:SetFrameLevel(o.frame:GetFrameLevel() + 2)
+  f.edges = {}
+  for _, side in ipairs({ "TOP", "BOTTOM", "LEFT", "RIGHT" }) do
+    f.edges[side] = f:CreateTexture(nil, "OVERLAY")
+  end
+  local ag = f:CreateAnimationGroup()
+  local a = ag:CreateAnimation("Alpha")
+  a:SetDuration(GLOW_PERIOD)
+  a:SetFromAlpha(GLOW_MIN)
+  a:SetToAlpha(GLOW_MAX)
+  ag:SetLooping("BOUNCE")
+  f.ag = ag
+  f:Hide()
+  o.glow = f
+  o.glowStrength = 1.0
+  return f
+end
+
+-- Repaint the glow border at the current strength x recede.  Strength is the
+-- §0.5.8.4 softening knob: a Core proc at >=4 shards would overcap, so the glow
+-- SOFTENS rather than clearing — the cap cue outranks it but the proc is real.
+function H.paintGlow(o)
+  local f = o.glow
+  if not f then return end
+  local c = ns.SpecGroups[o.glowGroup or "proc"] or ns.SpecGroups.proc
+  local a = 0.9 * (o.glowStrength or 1.0) * recede
+  local e = f.edges
+  e.TOP:ClearAllPoints()
+  e.TOP:SetPoint("TOPLEFT", f, "TOPLEFT", 0, 0)
+  e.TOP:SetPoint("TOPRIGHT", f, "TOPRIGHT", 0, 0)
+  e.TOP:SetHeight(GLOW_WIDTH)
+  e.BOTTOM:ClearAllPoints()
+  e.BOTTOM:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 0, 0)
+  e.BOTTOM:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", 0, 0)
+  e.BOTTOM:SetHeight(GLOW_WIDTH)
+  e.LEFT:ClearAllPoints()
+  e.LEFT:SetPoint("TOPLEFT", f, "TOPLEFT", 0, 0)
+  e.LEFT:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 0, 0)
+  e.LEFT:SetWidth(GLOW_WIDTH)
+  e.RIGHT:ClearAllPoints()
+  e.RIGHT:SetPoint("TOPRIGHT", f, "TOPRIGHT", 0, 0)
+  e.RIGHT:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", 0, 0)
+  e.RIGHT:SetWidth(GLOW_WIDTH)
+  for _, t in pairs(e) do
+    t:SetColorTexture(c[1], c[2], c[3], a)
+    t:Show()
+  end
+end
+
+-- on=false clears; strength scales it (1.0 = full, ~0.45 = softened).
+function H.SetGlow(item, on, strength, group)
+  local o = item and item.__hud
+  if not o then return end
+  if not on then
+    if o.glow then o.glow.ag:Stop(); o.glow:Hide() end
+    o.glowOn = false
+    return
+  end
+  local f = ensureGlow(o, item)
+  o.glowStrength = tonumber(strength) or 1.0
+  o.glowGroup = group or "proc"
+  H.paintGlow(o)
+  if not o.glowOn then
+    f:SetAlpha(GLOW_MIN)
+    f:Show()
+    f.ag:Stop()
+    f.ag:Play()
+    o.glowOn = true
+  end
+end
+
+function H.IsGlowing(item)
+  local o = item and item.__hud
+  return (o and o.glowOn) and true or false
+end
+
+--------------------------------------------------------------------------------
+-- Attach / detach
+--------------------------------------------------------------------------------
+
 -- Attach (or refresh) the chrome for one item.  Returns true if a keybind text
 -- was resolved, so HudCore can report hits/misses in `hud status`.
+--
+-- Sets IDENTITY only, then Apply()s — so readiness and glow survive a re-attach
+-- (a relayout, or HudBinds' keybind refresh).  That is the whole point of the
+-- composed accent.
 function H.Attach(item, spellID)
   local o = ensure(item)
+  chromes[o] = true
   local info = ns.SpecInfo(spellID)
   local batch = BATCH[info.role] or BATCH.utility
   local r, g, b = ns.SpecColor(spellID)
   r, g, b = saturate(r, g, b, batch.sat)
+  o.identity = { r = r, g = g, b = b, width = batch.width, alpha = batch.alpha }
+  H.Apply(o)
 
-  layoutEdges(o, batch.width)
-  for _, t in pairs(o.edges) do
-    t:SetColorTexture(r, g, b, batch.alpha)
-    t:Show()
-  end
-
-  local key = ns.HudBinds.Get(spellID)
+  -- Keybind off the BASE spell: while Demonic Art has the button transformed,
+  -- item:GetSpellID() reports the override, which is on no action bar (v0.7.0).
+  local key = ns.HudBinds.GetForItem(item, spellID)
   o.key:SetText(key or "")           -- unbound -> blank, never a placeholder
   o.frame:Show()
   return key ~= nil
 end
 
 function H.Detach(item)
-  if item.__hud then item.__hud.frame:Hide() end
+  local o = item and item.__hud
+  if not o then return end
+  H.SetGlow(item, false)
+  if o.settle then o.settle.ag:Stop(); o.settle:Hide() end
+  o.ready = nil                       -- next enable starts at UNKNOWN, not stale
+  o.frame:Hide()
 end
 
 --------------------------------------------------------------------------------

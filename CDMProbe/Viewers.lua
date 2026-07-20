@@ -59,6 +59,28 @@ function ns.ItemSpellID(item)
   return nil, "unresolved"
 end
 
+-- The BASE spell — `cooldownInfo.spellID`, before any override.  Distinct from
+-- ns.ItemSpellID: `CooldownViewerItemDataMixin:GetSpellID()` prefers the aura /
+-- linked / override / overrideTooltip spell (CooldownViewerItemData.lua:174), so
+-- a Demonic Art transform (HoG -> Ruination) silently changes what that returns.
+-- Anything keyed on ability IDENTITY — keybinds, the proc-glow registry — must
+-- key on the base, or it misses for the whole duration of the transform.
+function ns.ItemBaseSpellID(item)
+  if ns.HasMethod(item, "GetBaseSpellID") then
+    local ok, id = pcall(item.GetBaseSpellID, item)
+    if ok and type(id) == "number" then return id end
+  end
+  -- Fallback: the C_CooldownViewer info table carries the un-overridden spellID.
+  local cdID = ns.ItemCooldownID and ns.ItemCooldownID(item) or item.cooldownID
+  if cdID and C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo then
+    local ok, info = pcall(C_CooldownViewer.GetCooldownViewerCooldownInfo, cdID)
+    if ok and type(info) == "table" and type(info.spellID) == "number" then
+      return info.spellID
+    end
+  end
+  return nil
+end
+
 ns.RegisterCommand("dump", "introspect viewers, items, spellIDs, item anatomy + which APIs exist", function()
   ns.BeginCapture()
   ns.Heading("Environment")

@@ -172,6 +172,18 @@ function B.Get(spellID)
   return B.map[spellID]
 end
 
+-- Resolve for an ITEM rather than a bare spellID — the finding-3 fix (v0.7.0).
+-- `item:GetSpellID()` prefers the OVERRIDE spell, so while Demonic Art has HoG
+-- transformed into Ruination the item reports `434635`, which is on nobody's
+-- action bar, and the keybind blanked out mid-rotation.  The action bar holds
+-- the BASE spell, so resolve off that first and only fall back to the reported
+-- (possibly overridden) ID for items with no base — never the other way round.
+function B.GetForItem(item, reportedSpellID)
+  local key = B.Get(ns.ItemBaseSpellID and ns.ItemBaseSpellID(item) or nil)
+  if key then return key end
+  return B.Get(reportedSpellID ~= nil and reportedSpellID or ns.ItemSpellID(item))
+end
+
 local ev = CreateFrame("Frame")
 ev:SetScript("OnEvent", function(_, event)
   -- PLAYER_REGEN_ENABLED is only interesting if a rescan was owed; every other

@@ -24,7 +24,7 @@ or manually: drop the `CDMProbe/` folder into
 
 | Command | What it does |
 | --- | --- |
-| `/cdmp hud` | **The real HUD (v1).** Binds per item to the *live* Cooldown Manager layout by `cooldownID` and draws terminal chrome around Blizzard's untouched icons: group-colour accents with a generator/consumer batch tint, real keybinds, a scanline overlay and a `DEMO.SYS` terminal frame. `/cdmp hud status` prints the bind readout. |
+| `/cdmp hud` | **The real HUD (v1).** Binds per item to the *live* Cooldown Manager layout by `cooldownID` and draws terminal chrome around Blizzard's untouched icons: group-colour accents with a generator/consumer batch tint, real keybinds, a scanline overlay and a `DEMO.SYS` terminal frame. Since v0.7.0 it also carries **state**: a ready accent off the observed ready edge, proc glows for Demonic Core (on Demonbolt) and Demonic Art (on the transformed button), and an empty-board recede. `/cdmp hud status` prints the bind + state readout. |
 | `/cdmp dump` | Introspects the live viewer frames, item spellIDs, item anatomy, and which APIs (incl. Secret Values) exist. Run in and out of combat. |
 | `/cdmp shards` | A draggable Soul Shard bar that flips to `<secret>` if the value can't be read in restricted combat. |
 | `/cdmp layout` | Probes whether `C_CooldownViewer.SetLayoutData()` is addon-writable (auto-apply viability). |

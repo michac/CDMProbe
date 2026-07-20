@@ -42,7 +42,8 @@ ns.SpecIDs = {
   DEMONBOLT     = 264178,
   SHADOW_BOLT   = 686,
   IMPLOSION     = 196277,
-  -- Buff viewers (M3b proc presence via item:IsShown()):
+  -- Buff viewers (M3b proc presence via the TriggerAlertEvent aura edges;
+  -- item:IsShown() is only the best-effort LEVEL backstop — see HudState.lua):
   DEMONIC_CORE   = 264173,   -- BuffBar
   DIABOLIC_RITUAL = 428514,  -- BuffIcon — the Demonic Art container
   WILD_IMP       = 296553,   -- BuffIcon — M5 #17 stack text
@@ -96,6 +97,35 @@ ns.Spec = {
   [S.DIABOLIC_RITUAL] = { group = "proc", role = "proc", label = "Diabolic Ritual" },
   [S.WILD_IMP]        = { group = "summon", role = "proc", label = "Wild Imp" },
   [S.DOMINION]        = { group = "core", role = "proc", label = "Dominion of Argus" },
+}
+
+-- Proc routing (M3b, §0.5.8.3 #2/#3) -------------------------------------------
+--
+-- source buff spellID -> which BUTTON lights up.  The mapping lives here, in the
+-- per-spec table, so HudState stays spec-agnostic: it observes presence edges and
+-- asks this table where to put the glow.
+--
+--   target      — base spellID of the icon to glow (nil = "wherever the spell
+--                 override lands", resolved live from
+--                 COOLDOWN_VIEWER_SPELL_OVERRIDE_UPDATED)
+--   softenAbove — shard count at or above which the glow SOFTENS instead of
+--                 clearing (§0.5.8.4): Demonbolt refunds +2, so from 4 shards it
+--                 overcaps and the cap cue outranks the Core glow.  The proc is
+--                 still real, so we dim it rather than lie about it.
+--   transform   — this proc arms a spell OVERRIDE; the override event is the
+--                 primary trigger and this presence edge only corroborates.
+ns.SpecProcGlow = {
+  [S.DEMONIC_CORE] = {
+    target = S.DEMONBOLT, group = "proc", softenAbove = 4,
+    label = "Demonic Core -> Demonbolt",
+  },
+  [S.DIABOLIC_RITUAL] = {
+    -- v1 blind spot: only the HoG -> Ruination half is glowable.  Shadow Bolt is
+    -- NOT in the tracked set (notes.md §2), so SB -> Infernal Bolt has no icon to
+    -- light — flagged in guidance-model.md §0.5.5, never faked.
+    target = S.HAND_OF_GULDAN, group = "summon", transform = true,
+    label = "Diabolic Ritual -> transformed button (HoG half only)",
+  },
 }
 
 -- Lookup helpers ---------------------------------------------------------------

@@ -47,6 +47,7 @@ local VIEWER_TAG = {
 local function isIconViewer(name)
   return name == ICON_VIEWERS[1] or name == ICON_VIEWERS[2]
 end
+M.IsIconViewer = isIconViewer
 
 -- Settings --------------------------------------------------------------------
 -- First real user settings land in M3c (the opener variant); M3a only needs the
@@ -87,8 +88,16 @@ local function bindViewer(name)
     local ok = pcall(function()
       local cdID = ns.ItemCooldownID(item)
       local spellID = ns.ItemSpellID(item)
+      -- The base spell is the STABLE identity: item:GetSpellID() flips to the
+      -- override while a Demonic Art transform is armed, which is why keybinds
+      -- and the proc registry both key on this instead (v0.7.0).
+      local baseID = ns.ItemBaseSpellID(item)
       local key = cdID and (name .. ":cd" .. cdID) or (name .. ":ix" .. i)
-      M.items[key] = { item = item, spellID = spellID, viewer = name, index = i, cooldownID = cdID }
+      M.items[key] = { item = item, spellID = spellID, baseSpellID = baseID,
+                       viewer = name, index = i, cooldownID = cdID }
+      -- Every item gets the state hook, buff viewers included: they are where
+      -- the proc aura edges come from.
+      ns.HudState.Install(item)
       if isIconViewer(name) then
         if ns.HudChrome.Attach(item, spellID) then
           M.keyStats.hits = M.keyStats.hits + 1
@@ -114,6 +123,11 @@ local function rebind()
     if v then ns.HudChrome.FlowScan(v) end
   end
   ns.HudChrome.ShowTerminal(ns.GetViewer(ICON_VIEWERS[1]))
+  -- Item frames are pooled and reused across relayouts, so readiness survives;
+  -- presence is re-synced from the level read (where it's meaningful) and the
+  -- glows re-resolved onto whatever frames the new layout handed us.
+  ns.HudState.SyncLevels()
+  ns.HudState.RefreshGlows()
 end
 M.Rebind = rebind
 
@@ -184,10 +198,12 @@ function ns.SetHud(on)
     ev:RegisterEvent("COOLDOWN_VIEWER_DATA_LOADED")
     ev:RegisterEvent("PLAYER_ENTERING_WORLD")
     rebind()
-    ns.Print("HUD |cff88ff88ON|r — native icons + group accents, keybinds, DEMO.SYS chrome. |cffffffff/cdmp hud status|r for the bind readout.")
+    ns.HudState.Start()
+    ns.Print("HUD |cff88ff88ON|r — native icons + group accents, keybinds, readiness + proc glows, DEMO.SYS chrome. |cffffffff/cdmp hud status|r for the readout.")
   else
     M.on = false
     ev:UnregisterAllEvents()
+    ns.HudState.Stop()
     ns.HudBinds.Stop()
     ns.HudChrome.HideTerminal()
     for _, entry in pairs(M.items) do
@@ -212,7 +228,7 @@ end
 --------------------------------------------------------------------------------
 local function printStatus()
   local db = ensureDB()
-  ns.Heading("HUD status — M3a (identity + chrome)")
+  ns.Heading("HUD status — M3b (identity + chrome + readiness + procs)")
   ns.Printf("  state: %s   opener setting: |cffffffff%s|r (M3c)", M.on and "|cff88ff88ON|r" or "|cffff8080OFF|r", tostring(db.opener))
   ns.Printf("  bind fires: RefreshLayout=%d  DATA_LOADED=%d  ENTERING_WORLD=%d  -> rebinds=%d  (|cffffd100no ticker running|r)",
     M.fires.layout, M.fires.dataLoaded, M.fires.enterWorld, M.fires.binds)
@@ -225,16 +241,24 @@ local function printStatus()
     ns.HudBinds.stats.slots, ns.HudBinds.stats.scans, ns.HudBinds.stats.coalesced,
     ns.HudBinds.stats.deferred,
     ns.HudBinds.dirty and ", |cffffd100dirty|r" or "")
+  ns.HudState.PrintStatus()
   ns.Heading("  bound items")
   for _, name in ipairs(ALL_VIEWERS) do
     for _, e in pairs(M.items) do
       if e.viewer == name then
         local info, known = ns.SpecInfo(e.spellID)
-        ns.Printf("   [%s] cd=%s id=%s %s  group=%s role=%s%s  key=%s",
+        -- `base` differs from `id` exactly while a spell override is armed
+        -- (Demonic Art) — the one case M3a's keybind lookup used to miss.
+        local ready = ns.HudChrome.GetReady(e.item)
+        ns.Printf("   [%s] cd=%s id=%s%s %s  group=%s role=%s%s  key=%s  ready=%s%s",
           VIEWER_TAG[name] or name:sub(1, 4), tostring(e.cooldownID), ns.Describe(e.spellID),
+          (e.baseSpellID and e.baseSpellID ~= e.spellID)
+            and (" |cffffd100(base " .. tostring(e.baseSpellID) .. ", overridden)|r") or "",
           (e.spellID and ns.SpellName(e.spellID)) or "?",
           info.group, info.role, known and "" or " |cffffd100(not in ns.Spec — neutral)|r",
-          ns.HudBinds.Get(e.spellID) or "|cff808080none|r")
+          ns.HudBinds.GetForItem(e.item, e.spellID) or "|cff808080none|r",
+          ready == nil and "|cff808080unknown|r" or (ready and "|cff88ff88yes|r" or "no"),
+          ns.HudChrome.IsGlowing(e.item) and "  |cff44e0ffGLOW|r" or "")
       end
     end
   end

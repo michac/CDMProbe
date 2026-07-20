@@ -2,7 +2,7 @@
 ## Title: CDMProbe
 ## Notes: Experimental probe / kitchen-sink for skinning Blizzard's Cooldown Manager (Demonology v1).
 ## Author: Michael Christiansen
-## Version: 0.6.1
+## Version: 0.7.0
 ## SavedVariables: CDMProbeDB
 
 Core.lua
@@ -16,4 +16,5 @@ SpecDemonology.lua
 HudTint.lua
 HudBinds.lua
 HudChrome.lua
+HudState.lua
 HudCore.lua
