@@ -128,6 +128,18 @@ ns.SpecProcGlow = {
   },
 }
 
+-- Stack-count emphasis (M3, §0.5.8.3 #17) --------------------------------------
+--
+-- Which tracked auras get their (unreadable) stack count enlarged, and what
+-- static gate is printed beside it.  The number stays Blizzard's — we cannot
+-- read it — so this surfaces the ONE AoE decision without pretending to make it.
+--
+-- The two constants are DIFFERENT and must never be crossed (notes.md §1):
+-- Wild Imps gate Implosion at >=6; Demonic Core caps at 4.
+ns.SpecStacks = {
+  [S.WILD_IMP] = { suffix = "/6", label = "Wild Imp -> Implosion gate" },
+}
+
 -- Lookup helpers ---------------------------------------------------------------
 
 local NEUTRAL = { group = "neutral", role = "utility" }

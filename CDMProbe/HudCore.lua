@@ -102,6 +102,11 @@ local function bindViewer(name)
       -- stopped working" — with no error, because the pcall eats it.  M3b must
       -- never be able to break M3a.  Failures surface as hooks=0 in `hud status`.
       pcall(ns.HudState.Install, item)
+      -- Buff icons: surface the stack count where the spec asks for it (#17).
+      if not isIconViewer(name) then
+        local rule = baseID and ns.SpecStacks and ns.SpecStacks[baseID]
+        if rule then pcall(ns.HudChrome.EmphasizeStacks, item, rule.suffix) end
+      end
       if isIconViewer(name) then
         if ns.HudChrome.Attach(item, spellID) then
           M.keyStats.hits = M.keyStats.hits + 1

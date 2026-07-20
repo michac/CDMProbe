@@ -85,6 +85,9 @@ local GLOW_MIN     = 0.55   -- pulse trough (higher = less blinky)         (was 
 local GLOW_MAX     = 1.00
 local GLOW_PERIOD  = 0.55
 
+local STACK_SIZE   = 22     -- Wild Imp count: the one AoE readout (§0.5.8.3 #17)
+local STACK_COL    = { 1.00, 0.86, 0.35 }   -- bright gold; must beat the icon art
+
 -- Push a colour toward/away from its own grey, holding luminance constant.
 local function saturate(r, g, b, mul)
   local y = 0.299 * r + 0.587 * g + 0.114 * b
@@ -356,6 +359,67 @@ function H.IsGlowing(item)
 end
 
 --------------------------------------------------------------------------------
+-- Stack-count emphasis — §0.5.8.3 #17, the one AoE readout
+--------------------------------------------------------------------------------
+-- Demo's whole AoE loop hinges on one call: >=6 Wild Imps -> Implosion.  The
+-- count is DISPLAYED by Blizzard but is a Secret Value we cannot read, so we
+-- cannot compute ">=6" or rank Implosion against Hand of Gul'dan (§0.5.5).  What
+-- we CAN do is make Blizzard's own number impossible to miss and print the gate
+-- beside it, leaving the judgement where it belongs — with the player.
+--
+-- THE LAYOUT TRICK.  We can't read the number, so we can't know how wide it is,
+-- so nothing may be positioned relative to its extent.  Instead the count is
+-- right-justified to a fixed junction point and our static "/6" grows rightward
+-- from that SAME point — so the pair stays glued whether it reads 1 or 12.
+local stacked = setmetatable({}, { __mode = "k" })
+
+function H.EmphasizeStacks(item, suffix)
+  local fs = item and item.Applications
+  if not fs or not ns.HasMethod(fs, "SetFont") then return false end
+  local o = ensure(item)
+  if not stacked[item] then
+    -- Remember Blizzard's own styling so `hud off` really is pixel-clean.
+    local font, size, flags = fs:GetFont()
+    local p, rel, relP, x, y = fs:GetPoint()
+    stacked[item] = { font = font, size = size, flags = flags,
+                      p = p, rel = rel, relP = relP, x = x, y = y }
+  end
+  local st = stacked[item]
+  local JX, JY = -14, 2                     -- the junction point, icon-relative
+  pcall(function()
+    fs:SetFont(st.font or "Fonts\\FRIZQT__.TTF", STACK_SIZE, "OUTLINE")
+    fs:ClearAllPoints()
+    fs:SetPoint("BOTTOMRIGHT", item, "BOTTOMRIGHT", JX, JY)
+    fs:SetJustifyH("RIGHT")
+  end)
+  if not o.stackSuffix then
+    o.stackSuffix = o.frame:CreateFontString(nil, "OVERLAY")
+  end
+  o.stackSuffix:SetFont(st.font or "Fonts\\FRIZQT__.TTF", STACK_SIZE, "OUTLINE")
+  o.stackSuffix:ClearAllPoints()
+  o.stackSuffix:SetPoint("BOTTOMLEFT", item, "BOTTOMRIGHT", JX, JY)
+  o.stackSuffix:SetJustifyH("LEFT")
+  o.stackSuffix:SetTextColor(STACK_COL[1], STACK_COL[2], STACK_COL[3])
+  o.stackSuffix:SetText(suffix or "")
+  o.stackSuffix:Show()
+  o.frame:Show()
+  return true
+end
+
+function H.RestoreStacks(item)
+  local st, fs = stacked[item], item and item.Applications
+  if st and fs then
+    pcall(function()
+      fs:SetFont(st.font, st.size, st.flags)
+      fs:ClearAllPoints()
+      if st.p then fs:SetPoint(st.p, st.rel, st.relP, st.x, st.y) end
+    end)
+  end
+  local o = item and item.__hud
+  if o and o.stackSuffix then o.stackSuffix:Hide() end
+end
+
+--------------------------------------------------------------------------------
 -- Attach / detach
 --------------------------------------------------------------------------------
 
@@ -384,6 +448,7 @@ function H.Attach(item, spellID)
 end
 
 function H.Detach(item)
+  H.RestoreStacks(item)
   local o = item and item.__hud
   if not o then return end
   H.SetGlow(item, false)
