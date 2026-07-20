@@ -35,6 +35,14 @@ local ICON_VIEWERS = { "EssentialCooldownViewer", "UtilityCooldownViewer" }
 local BUFF_VIEWERS = { "BuffBarCooldownViewer", "BuffIconCooldownViewer" }
 local ALL_VIEWERS  = { "EssentialCooldownViewer", "UtilityCooldownViewer",
                        "BuffBarCooldownViewer", "BuffIconCooldownViewer" }
+-- `hud status` tags: the first four characters collide ("Buff"/"Buff"), which
+-- made the two buff viewers indistinguishable in the readout.
+local VIEWER_TAG = {
+  EssentialCooldownViewer = "ESS ",
+  UtilityCooldownViewer   = "UTIL",
+  BuffBarCooldownViewer   = "BBAR",
+  BuffIconCooldownViewer  = "BICO",
+}
 
 local function isIconViewer(name)
   return name == ICON_VIEWERS[1] or name == ICON_VIEWERS[2]
@@ -212,9 +220,10 @@ local function printStatus()
   for _, name in ipairs(ALL_VIEWERS) do
     ns.Printf("  |cffffd100%s|r — %d bound", name, M.counts[name] or 0)
   end
-  ns.Printf("  keybinds: %d resolved / %d unbound   (cache: %d slot(s) with a spell, %d scan(s), %d deferred to OOC%s)",
+  ns.Printf("  keybinds: %d resolved / %d unbound   (cache: %d slot(s) with a spell, %d scan(s), %d coalesced, %d deferred to OOC%s)",
     M.keyStats.hits, M.keyStats.misses,
-    ns.HudBinds.stats.slots, ns.HudBinds.stats.scans, ns.HudBinds.stats.deferred,
+    ns.HudBinds.stats.slots, ns.HudBinds.stats.scans, ns.HudBinds.stats.coalesced,
+    ns.HudBinds.stats.deferred,
     ns.HudBinds.dirty and ", |cffffd100dirty|r" or "")
   ns.Heading("  bound items")
   for _, name in ipairs(ALL_VIEWERS) do
@@ -222,7 +231,7 @@ local function printStatus()
       if e.viewer == name then
         local info, known = ns.SpecInfo(e.spellID)
         ns.Printf("   [%s] cd=%s id=%s %s  group=%s role=%s%s  key=%s",
-          name:sub(1, 4), tostring(e.cooldownID), ns.Describe(e.spellID),
+          VIEWER_TAG[name] or name:sub(1, 4), tostring(e.cooldownID), ns.Describe(e.spellID),
           (e.spellID and ns.SpellName(e.spellID)) or "?",
           info.group, info.role, known and "" or " |cffffd100(not in ns.Spec — neutral)|r",
           ns.HudBinds.Get(e.spellID) or "|cff808080none|r")

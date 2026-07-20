@@ -3,11 +3,14 @@
 -- Identity chrome, deliberately OUTSIDE the §0.5.8 indicator contract: a keybind
 -- is not a rotation signal, it's how you know which icon is which button.
 --
--- Cost control (milestones "known risks"): the 180-slot scan is CACHED and only
--- ever runs OUT OF COMBAT.  Anything that could invalidate it (bindings changed,
--- a slot's contents changed, spec swap, bar page flip) marks the cache dirty; the
--- rescan is deferred to PLAYER_REGEN_ENABLED if we're in combat.  Nothing here
--- runs on a hot path.
+-- Cost control (milestones "known risks"): the 180-slot scan is CACHED,
+-- DEBOUNCED, and only ever runs OUT OF COMBAT.  Anything that could invalidate
+-- it (bindings changed, a slot's contents changed, spec swap, bar page flip)
+-- marks the cache dirty and arms a single timer; a rescan landing in combat is
+-- deferred to PLAYER_REGEN_ENABLED.  Nothing here runs on a hot path.
+--
+-- The debounce is not optional — see the comment on `invalidate` below.  v0.6.0
+-- shipped without it and burned ~2000 full scans in a single city session.
 --
 -- Unbound spell -> nil -> blank text.  Never a placeholder (a fake keybind is
 -- worse than no keybind).
@@ -73,11 +76,15 @@ end
 -- Cache ------------------------------------------------------------------------
 B.map = {}        -- spellID -> short key string
 B.dirty = true
-B.stats = { slots = 0, bound = 0, scans = 0, deferred = 0 }
+B.stats = { slots = 0, bound = 0, scans = 0, deferred = 0, coalesced = 0 }
 
+-- Returns true if the resolved map actually CHANGED.  Callers use that to skip
+-- re-attaching chrome across every item when nothing moved, which is the common
+-- case: most invalidating events are noise.
 local function scan()
-  wipe(B.map)
-  B.stats.slots, B.stats.bound = 0, 0
+  local prev = B.map
+  local fresh = {}
+  local slots, bound = 0, 0
   for slot = 1, 180 do
     local actionType, id = GetActionInfo(slot)
     local spellID
@@ -87,41 +94,73 @@ local function scan()
       spellID = GetMacroSpell and GetMacroSpell(id) or nil
     end
     if spellID then
-      B.stats.slots = B.stats.slots + 1
+      slots = slots + 1
       -- First bound slot wins: a spell on several bars keeps the binding of the
       -- lowest-numbered one (bar 1 before the multibars), which is the one the
       -- player thinks of as "the" key.
-      if not B.map[spellID] then
+      if not fresh[spellID] then
         local cmd = bindingCommand(slot)
         local key = cmd and GetBindingKey(cmd)
         local short = key and shorten(key)
         if short then
-          B.map[spellID] = short
-          B.stats.bound = B.stats.bound + 1
+          fresh[spellID] = short
+          bound = bound + 1
         end
       end
     end
   end
+
+  local changed = false
+  for k, v in pairs(fresh) do
+    if prev[k] ~= v then changed = true break end
+  end
+  if not changed then
+    for k in pairs(prev) do
+      if fresh[k] == nil then changed = true break end
+    end
+  end
+
+  B.map = fresh
+  B.stats.slots, B.stats.bound = slots, bound
   B.dirty = false
   B.stats.scans = B.stats.scans + 1
+  return changed
 end
 
--- Rescan now if it's safe, otherwise leave the cache dirty and let
--- PLAYER_REGEN_ENABLED pick it up.  Never scans in combat.
-local function refresh()
+-- COALESCED rescan (v0.6.1).  v0.6.0 rescanned all 180 slots SYNCHRONOUSLY on
+-- every invalidating event and then re-attached chrome to every item — and
+-- ACTIONBAR_SLOT_CHANGED fires per-slot, for far more than real binding changes.
+-- A single city session logged 2085 scans (~375k GetActionInfo calls), which is
+-- exactly the hot-path rescan the design forbids.  Now: an event only marks the
+-- cache dirty and arms ONE timer; everything arriving inside the window is
+-- swallowed.  Still never scans in combat — if the timer lands during a fight it
+-- leaves the cache dirty and PLAYER_REGEN_ENABLED re-arms it.
+local DEBOUNCE = 0.5
+local scheduled = false
+
+local function runScan()
+  scheduled = false
+  if not B.dirty then return end
   if InCombatLockdown() then
-    B.dirty = true
     B.stats.deferred = B.stats.deferred + 1
-    return false
+    return                       -- stays dirty; PLAYER_REGEN_ENABLED re-arms
   end
-  scan()
-  return true
+  if scan() and ns.Hud and ns.Hud.RefreshKeybinds then
+    ns.Hud.RefreshKeybinds()     -- only when the map really moved
+  end
 end
 
-function B.Invalidate()
+local function invalidate()
   B.dirty = true
-  refresh()
+  if scheduled then
+    B.stats.coalesced = B.stats.coalesced + 1
+    return
+  end
+  scheduled = true
+  C_Timer.After(DEBOUNCE, runScan)
 end
+
+B.Invalidate = invalidate
 
 -- The read path: cheap, cache-only.  If the cache is dirty we serve the stale
 -- value rather than scanning — the refresh will land out of combat and the
@@ -135,15 +174,10 @@ end
 
 local ev = CreateFrame("Frame")
 ev:SetScript("OnEvent", function(_, event)
-  if event == "PLAYER_REGEN_ENABLED" then
-    if B.dirty then
-      scan()
-      if ns.Hud and ns.Hud.RefreshKeybinds then ns.Hud.RefreshKeybinds() end
-    end
-    return
-  end
-  B.dirty = true
-  if refresh() and ns.Hud and ns.Hud.RefreshKeybinds then ns.Hud.RefreshKeybinds() end
+  -- PLAYER_REGEN_ENABLED is only interesting if a rescan was owed; every other
+  -- registered event goes through the same debounce.
+  if event == "PLAYER_REGEN_ENABLED" and not B.dirty then return end
+  invalidate()
 end)
 
 function B.Start()
@@ -152,7 +186,10 @@ function B.Start()
   ev:RegisterEvent("ACTIONBAR_PAGE_CHANGED")
   ev:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
   ev:RegisterEvent("PLAYER_REGEN_ENABLED")
-  refresh()
+  -- Scan immediately when we can, so the first chrome attach already has keys;
+  -- otherwise arm the debounce and let it land out of combat.
+  B.dirty = true
+  if InCombatLockdown() then invalidate() else scan() end
 end
 
 function B.Stop()

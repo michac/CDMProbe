@@ -81,6 +81,11 @@ ns.Spec = {
   [104773]  = { group = "def", role = "utility", label = "Unending Resolve" },
   [108416]  = { group = "def", role = "utility", label = "Dark Pact" },
   [30283]   = { group = "cc",  role = "utility", label = "Shadowfury" },
+  -- The live tracked set carries the WRAPPER spell Command Demon (119898), not
+  -- the pet ability Axe Toss (119914) that notes.md §2 recorded — confirmed off
+  -- `/cdmp hud status` on 2026-07-20.  Both are mapped: the wrapper is what
+  -- actually appears, the inner ID is kept in case a different pet/build surfaces it.
+  [119898]  = { group = "cc",  role = "utility", label = "Command Demon" },
   [119914]  = { group = "cc",  role = "utility", label = "Axe Toss" },
   [6789]    = { group = "cc",  role = "utility", label = "Mortal Coil" },
   [1271802] = { group = "cc",  role = "utility", label = "Blight of Tongues" },
