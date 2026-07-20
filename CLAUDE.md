@@ -41,8 +41,17 @@ Design context + status live in the parent workspace at
   untouched**; we draw group-colour accents with a generator/consumer batch tint,
   real keybinds (action-bar scan, cached, OOC-only), a scanline overlay and the
   `DEMO.SYS` terminal frame.
-  - `hud status` — bound items per viewer, resolved spellIDs + group/role,
-    keybind hits/misses, and the per-source rebind fire counts.
+  Since v0.10.0 it also draws the **dot score** (§0.5.8.7): a per-ability dot
+  carrying an actionability LEVEL (NEVER / AVAILABLE / ROTATION / LATE, with SOON
+  as an anticipation treatment on NEVER) plus a text row saying *why* — so the
+  score is auditable, not an oracle.
+  - `hud status` — bound items per viewer, resolved spellIDs + group/pole/cadence,
+    keybind hits/misses, per-source rebind fire counts, the score block (how many
+    dots are lit and why), and **whether the napkin is live at all** — i.e.
+    whether `UNIT_SPELLCAST_SUCCEEDED` spellIDs read non-secret in this context.
+  - `hud debug` — verbose rows (identity, cooldown, raw+normalised cost, presence
+    source, override state).  `hud dump` prints the same to chat.
+  - `hud rows` — turn the text rows off entirely (the dots stay).
   - `hud opener 1a|1b` — *(M3c)* which opener the pre-pull queue ghosts.
 - `skin` — *(reference, retired direction)* hide icons on Essential+Utility, paint
   solid color blocks + labels, keep Blizzard's secure cooldown swipe.
@@ -77,15 +86,31 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
     Resource.lua                  resource-centric skin: group-color blocks +
                                   duration bars + soul-shard rail (`resource`)
     Layout.lua                    `layout` probe: is SetLayoutData addon-writable?
-    SpecDemonology.lua            per-spec data: spellID -> group / role / ghost
-                                  shard yield / base CD.  The seam a 2nd spec
-                                  plugs into (M7); render modules hold no
-                                  spell constants of their own.
+    SpecDemonology.lua            per-spec data: the SIGNAL BUCKET per spellID
+                                  (group / kind / spends / generates / cadence /
+                                  burstAlign / goGate / primary / judgeable).
+                                  Replaced the old `role` enum in v0.10.0.  The
+                                  seam a 2nd spec plugs into (M7); render modules
+                                  hold no spell constants of their own.
     HudCore.lua                   registry bound by cooldownID, RefreshLayout +
                                   event binding, enable/disable, `hud` cmds
-    HudChrome.lua                 everything we DRAW: per-item group accents +
-                                  keybind text, DEMO.SYS terminal frame,
-                                  scanline/vignette overlay
+    HudChrome.lua                 everything we DRAW: the per-item DOT (level),
+                                  the group BRACKET spanning icon+dot+text,
+                                  keybind text, proc glow, DEMO.SYS terminal
+                                  frame, scanline/vignette overlay
+    HudScore.lua                  the DOT SCORE: a pure function of readable
+                                  state -> (level, reasons).  NEVER / AVAILABLE /
+                                  ROTATION / LATE, plus the judgeable=false cap.
+                                  Owns no frames and reads nothing secret.
+    HudNapkin.lua                 anticipation: SUCCEEDED cast -> base-cooldown
+                                  countdown.  The only DRIFTING input in the
+                                  design, fenced so it can only make the HUD
+                                  early: an observed ready edge always wins, and
+                                  an expired estimate says "should be up,
+                                  unconfirmed" rather than promoting a dot.
+    HudRow.lua                    the row beside each icon: dot level + WHY.
+                                  Default-ON (was HudDebug.lua); `hud debug` is
+                                  now a verbose flag on the same row builder.
     HudBinds.lua                  action-bar scan -> keybind per spellID (cached,
                                   out-of-combat only)
     HudTint.lua                   DORMANT leaf-method icon-tint machinery rescued

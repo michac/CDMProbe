@@ -64,6 +64,11 @@ ns.HudState = {
   fires    = { available = 0, oncd = 0, applied = 0, removed = 0,
                charge = 0, pandemic = 0, other = 0, secret = 0, override = 0 },
   lastEdge = {},          -- source spellID -> "aura-event" | "override" | "poll"
+  -- M3c-a — the dot score.
+  score          = {},    -- registry key -> the HudScore result, for the row
+  candidateSince = {},    -- registry key -> GetTime() when it first became a
+                          -- ROTATION candidate; cleared when it stops being one
+  readyAt        = {},    -- base spellID -> when we OBSERVED the ready edge
 }
 local S = ns.HudState
 
@@ -71,6 +76,13 @@ local LOW_SHARDS   = 3      -- "board quiet" only below the SPEND threshold
 local RECEDE_DELAY = 0.5    -- debounce; long enough not to strobe between GCDs
 local RECEDE_MULT  = 0.25   -- LOUD PASS: match HudChrome RECEDE_MIN (was 0.45)
 local POLL_PERIOD  = 0.1    -- ~10 Hz level backstop (a boolean read, no secret)
+
+-- How long an ability may sit as a live candidate before the dot promotes to
+-- LATE.  Uniform across cadences ON PURPOSE, and precise for all of them: the
+-- clock starts at the observed moment the ability BECAME a candidate, so LATE
+-- needs no napkin and carries no estimate.  ~2 GCDs.
+local LATE_AFTER   = 3.0
+local SCORE_PERIOD = 0.25   -- drives the ROTATION -> LATE promotion + countdown
 
 local function hudOn() return ns.Hud and ns.Hud.on end
 
@@ -111,6 +123,9 @@ local function sourcePresent(spellID)
   end
   return false
 end
+-- Exported so HudScore can read the SAME presence the glow reads.  One source
+-- of truth for "is this proc up" means the dot and the glow cannot disagree.
+S.SourcePresent = sourcePresent
 
 --------------------------------------------------------------------------------
 -- Glow resolution
@@ -174,6 +189,11 @@ function S.RefreshGlows()
     end
   end
   S.EvaluateBoard()
+  -- Every input the scorer reads — proc presence, override, shards — has just
+  -- been re-resolved, so this is the one place that has to drive the dots.  It's
+  -- called from every aura edge, every shard change and every override, which is
+  -- exactly the recompute set M3c-a needs; the ticker only adds the clock.
+  if S.Recompute then S.Recompute() end
 end
 
 --------------------------------------------------------------------------------
@@ -230,6 +250,50 @@ function S.Wake()
 end
 
 --------------------------------------------------------------------------------
+-- The dot score — M3c-a
+--------------------------------------------------------------------------------
+-- HudScore is a pure function of readable state; this is where that state gets
+-- CLOCKED.  Two things live here rather than in the scorer because they need a
+-- memory the scorer deliberately doesn't have:
+--
+--   * `candidateSince` — stamped the moment an ability first becomes
+--     ROTATION-eligible, cleared when it stops.  This is what LATE is measured
+--     from, and it is an OBSERVED timestamp, not an estimate — which is exactly
+--     why LATE needs no napkin and can be trusted where the countdown can't.
+--   * the dot itself — one SetDot per icon item, so the scorer never touches a
+--     frame.
+function S.Recompute()
+  if not (hudOn() and ns.HudScore) then return end
+  local now = GetTime()
+  for key, e in pairs(ns.Hud.items) do
+    if ns.Hud.IsIconViewer(e.viewer) and e.item then
+      local ok, sc = pcall(ns.HudScore.For, key, e)
+      if ok and sc then
+        if sc.candidate then
+          S.candidateSince[key] = S.candidateSince[key] or now
+          local since = S.candidateSince[key]
+          if (now - since) >= LATE_AFTER then
+            sc.level = ns.HudScore.LEVELS.LATE
+            sc.reasons[#sc.reasons + 1] = string.format("waiting %.0fs", now - since)
+          end
+        else
+          S.candidateSince[key] = nil
+        end
+        S.score[key] = sc
+        -- SOON is a treatment on NEVER, never a level of its own: it brightens
+        -- and counts down but claims nothing about pressability.
+        pcall(ns.HudChrome.SetDot, e.item, e.viewer,
+          (sc.soon and sc.level == ns.HudScore.LEVELS.NEVER) and "SOON" or sc.level)
+      else
+        S.score[key] = nil
+        S.candidateSince[key] = nil
+        pcall(ns.HudChrome.SetDot, e.item, e.viewer, nil)
+      end
+    end
+  end
+end
+
+--------------------------------------------------------------------------------
 -- The alert hook
 --------------------------------------------------------------------------------
 
@@ -253,10 +317,26 @@ local function onAlert(item, event)
     S.fires.available = S.fires.available + 1
     ns.HudChrome.SetReady(item, true)
     ns.HudChrome.Settle(item)                 -- [V4]: one-shot, the urgent instant
+    -- GROUND TRUTH WINS.  The observed edge retires the napkin estimate outright:
+    -- if CDR or a reset brought this up early, the dot goes ROTATION NOW whatever
+    -- the countdown said.  The estimate is never allowed to outlive an observation.
+    local _, e = keyFor(item)
+    if e and e.baseSpellID then
+      -- Clear under BOTH identities: SUCCEEDED files the napkin under whatever
+      -- spellID actually went off, which is the OVERRIDE while a transform is
+      -- armed.  Clearing only the base would leave a stale estimate behind.
+      ns.HudNapkin.Clear(e.baseSpellID)
+      if e.spellID and e.spellID ~= e.baseSpellID then ns.HudNapkin.Clear(e.spellID) end
+      S.readyAt[e.baseSpellID] = GetTime()
+    end
     S.Wake()
+    S.Recompute()
   elseif event == A.OnCooldown then
     S.fires.oncd = S.fires.oncd + 1
     ns.HudChrome.SetReady(item, false)
+    local _, e = keyFor(item)
+    if e and e.baseSpellID then S.readyAt[e.baseSpellID] = nil end
+    S.Recompute()
   elseif event == A.OnAuraApplied or event == A.OnAuraRemoved then
     local applied = (event == A.OnAuraApplied)
     if applied then S.fires.applied = S.fires.applied + 1
@@ -299,8 +379,15 @@ end
 -- viewer is set to hide inactive items; otherwise ShouldBeShown() short-circuits
 -- to true and the read means nothing (CooldownViewer.lua:311).
 local function levelUsable(item)
-  if item.allowHideWhenInactive == false or item.allowHideWhenInactive == nil then return false end
-  if not item.hideWhenInactive then return false end
+  -- Guarded like every other comparison in this file.  These are config fields
+  -- rather than combat state so they're unlikely to be restricted — but this
+  -- runs from `rebind()`, which is a hooksecurefunc callback in Blizzard's
+  -- RefreshLayout path, so a throw here escapes into THEIR code rather than
+  -- being contained.  Never compare a value you haven't asked about.
+  local a, h = item.allowHideWhenInactive, item.hideWhenInactive
+  if ns.IsSecret(a) or ns.IsSecret(h) then return false end
+  if a == false or a == nil then return false end
+  if not h then return false end
   return true
 end
 
@@ -380,8 +467,11 @@ ev:SetScript("OnEvent", function(_, event, a1, a2)
   end
 end)
 
+local scoreTicker
+
 function S.Start()
   S.shards = readShards()
+  ns.HudNapkin.Start()
   ev:RegisterEvent("COOLDOWN_VIEWER_SPELL_OVERRIDE_UPDATED")
   ev:RegisterEvent("PLAYER_REGEN_DISABLED")
   ev:RegisterEvent("PLAYER_REGEN_ENABLED")
@@ -389,16 +479,27 @@ function S.Start()
   ev:RegisterUnitEvent("UNIT_POWER_FREQUENT", "player")
   S.SyncLevels()
   if not pollTicker then pollTicker = C_Timer.NewTicker(POLL_PERIOD, poll) end
+  -- One ticker, two jobs, both of which are pure CLOCK work the edges can't do:
+  -- the ROTATION -> LATE promotion, and the napkin countdown ticking down in the
+  -- row.  Everything else is still edge-driven.
+  if not scoreTicker then
+    scoreTicker = C_Timer.NewTicker(SCORE_PERIOD, function() pcall(S.Recompute) end)
+  end
   S.RefreshGlows()
 end
 
 function S.Stop()
   ev:UnregisterAllEvents()
   if pollTicker then pollTicker:Cancel(); pollTicker = nil end
+  if scoreTicker then scoreTicker:Cancel(); scoreTicker = nil end
   if recedeTimer then recedeTimer:Cancel(); recedeTimer = nil end
+  ns.HudNapkin.Stop()
   wipe(S.presence)
   wipe(S.override)
   wipe(S.glowing)
+  wipe(S.score)
+  wipe(S.candidateSince)
+  wipe(S.readyAt)
   ns.HudChrome.SetRecede(1.0)
 end
 
@@ -406,7 +507,7 @@ end
 -- Status block (folded into `/cdmp hud status`)
 --------------------------------------------------------------------------------
 function S.PrintStatus()
-  ns.Heading("  state — M3b (readiness + procs)")
+  ns.Heading("  state — M3b (readiness + procs) + M3c-a (the dot score)")
   ns.Printf("   alert hooks: %d item(s)   edges: Available=%d OnCooldown=%d AuraApplied=%d AuraRemoved=%d  (charge=%d pandemic=%d other=%d |cffff4040secret=%d|r)",
     S.hooks, S.fires.available, S.fires.oncd, S.fires.applied, S.fires.removed,
     S.fires.charge, S.fires.pandemic, S.fires.other, S.fires.secret)
@@ -431,4 +532,27 @@ function S.PrintStatus()
       st and string.format("|cff88ff88ON|r (strength %.2f)", st) or "|cff808080off|r",
       S.lastEdge[sourceID] or S.lastEdge[rule.target] or "|cff808080none yet|r")
   end
+
+  -- ── the score block ────────────────────────────────────────────────────────
+  ns.Heading("  score — M3c-a (the dot)")
+  -- Is the whole anticipation feature live?  Reported, never assumed: this is
+  -- the milestones.md §7 standing assumption made visible.  CHECK IT IN A RAID —
+  -- the dummy and the delve already say yes, and a raid is the untested context
+  -- where the biggest win would silently go dark.
+  ns.HudNapkin.PrintStatus()
+  local counts, lit = {}, {}
+  for key, sc in pairs(S.score) do
+    counts[sc.level] = (counts[sc.level] or 0) + 1
+    if sc.level == "ROTATION" or sc.level == "LATE" then
+      local e = ns.Hud.items[key]
+      local id = e and (e.baseSpellID or e.spellID)
+      lit[#lit + 1] = string.format("%s (%s)", (id and ns.SpellName(id)) or "?",
+        ns.HudScore.Why(sc))
+    end
+  end
+  ns.Printf("   levels: NEVER=%d AVAILABLE=%d |cff88ff88ROTATION=%d|r |cffffd100LATE=%d|r",
+    counts.NEVER or 0, counts.AVAILABLE or 0, counts.ROTATION or 0, counts.LATE or 0)
+  -- Strictness is the whole UX.  If this line routinely names 4+, the RULES are
+  -- too loose — tighten HudScore before touching a single visual.
+  ns.Printf("   lit now: %s", #lit > 0 and table.concat(lit, "  |  ") or "|cff808080nothing|r")
 end

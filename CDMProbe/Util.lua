@@ -111,3 +111,22 @@ function ns.PowerCost(spellID)
   end
   return 0, nil
 end
+
+-- The SAME cost, normalised to WHOLE SOUL SHARDS so it can be compared against
+-- UnitPower(player, SoulShards) — which reports 0..5.
+--
+-- This is the load-bearing half of the units caveat above.  M3c-a's gate rule is
+-- `shards >= cost`, so a cost still expressed in FRAGMENTS (10 per shard) would
+-- make every gate unreachable and every dot permanently dark.  The shard cap is
+-- 5, so any reported cost that is a clean multiple of 10 can only be fragments —
+-- there is no ability that costs ten shards.  Anything else is passed through
+-- untouched rather than divided by a guess.
+--
+-- Returns (shardCost, rawCost).  `/cdmp hud debug` prints both, which is how the
+-- in-game pass settles the units question for good.
+function ns.ShardCost(spellID)
+  local raw = ns.PowerCost(spellID)
+  if raw == nil then return nil, nil end
+  if raw >= 10 and raw % 10 == 0 then return raw / 10, raw end
+  return raw, raw
+end

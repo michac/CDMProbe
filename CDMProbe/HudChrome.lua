@@ -44,18 +44,34 @@ local TERM_MID  = { 0.24, 0.82, 0.42 }
 local TERM_DIM  = { 0.17, 0.55, 0.30 }
 local KEY_COL   = { 0.78, 0.92, 0.80 }  -- keybind text: near-white, reads on any icon
 
--- Batch tint per role (guidance-model §0.5.8.4 `batch_tint`).
+-- Batch tint per POLE (guidance-model §0.5.8.4 `batch_tint`).
 --   sat   — saturation multiplier around the colour's own luminance (never a
 --           luminance change; see the header note)
 --   width — edge thickness in px, the redundant non-colour channel
 --   alpha — presence
+--
+-- v0.10.0 keyed this on ns.SpecPole instead of the old `role` enum.  The old
+-- table is the reason the enum had to go: `spender` and `burst` carried
+-- IDENTICAL values, so `burst` never encoded anything here — it only smuggled
+-- burst-lane membership through the tint field.  Two poles is all this channel
+-- ever expressed, so two poles is what it takes now.
 local BATCH = {
-  spender = { sat = 1.35, width = 5, alpha = 1.00 },  -- consumers: warm/bright end
-  burst   = { sat = 1.35, width = 5, alpha = 1.00 },
-  builder = { sat = 0.62, width = 3, alpha = 0.85 },  -- generators: cool/dim end
-  utility = { sat = 0.50, width = 2, alpha = 0.70 },
-  proc    = { sat = 1.00, width = 3, alpha = 0.85 },
+  consumer  = { sat = 1.35, width = 5, alpha = 1.00 },  -- warm/bright end
+  generator = { sat = 0.62, width = 3, alpha = 0.85 },  -- cool/dim end
+  utility   = { sat = 0.50, width = 2, alpha = 0.70 },
+  proc      = { sat = 1.00, width = 3, alpha = 0.85 },
 }
+
+-- Which side of the icon a viewer's dot + row run.  Bracketing the character
+-- with two columns means the left-hand one must read leftward, or the chrome
+-- collides with the icons instead of framing them.
+local SIDE = {
+  EssentialCooldownViewer = "RIGHT",
+  UtilityCooldownViewer   = "LEFT",
+  BuffBarCooldownViewer   = "RIGHT",
+  BuffIconCooldownViewer  = "RIGHT",
+}
+function H.SideFor(viewer) return SIDE[viewer] or "RIGHT" end
 
 --------------------------------------------------------------------------------
 -- ============================ TUNING (one edit site) ========================
@@ -88,6 +104,36 @@ local GLOW_PERIOD  = 0.55
 local STACK_SIZE   = 22     -- Wild Imp count: the one AoE readout (§0.5.8.3 #17)
 local STACK_COL    = { 1.00, 0.86, 0.35 }   -- bright gold; must beat the icon art
 
+-- ── The DOT (M3c-a, §0.5.8.7) ────────────────────────────────────────────────
+-- A NEW OBJECT, which is the whole point: hue is spoken for (group), saturation
+-- is spoken for (pole), luminance is spoken for (readiness), alpha is spoken for
+-- (recede).  There was no free channel left, so actionability gets its own mark.
+--
+-- COLOUR HERE CARRIES **LEVEL**, NOT GROUP.  Group is already on the bracket;
+-- level is the information.  That inversion is deliberate and is the single
+-- biggest departure from M3b.
+local DOT_GAP   = 8         -- icon edge -> dot
+local DOT_BOX   = 16        -- the dot frame's box (the disc sizes inside it)
+local ROW_GAP   = 6         -- dot -> text
+H.ROW_OFFSET    = DOT_GAP + DOT_BOX + ROW_GAP   -- where HudRow anchors its text
+
+-- size   — disc diameter
+-- hollow — draw as a RING (the §0.5.8.7 confidence marker: hollow = estimate or
+--          "you may, we're not calling it"; solid = an observed, asserted state)
+-- pulse  — bounce period in seconds, or nil for no motion at all
+local DOT = {
+  NEVER     = { c = { 0.32, 0.50, 0.38 }, a = 0.45, size = 7,  hollow = false },
+  -- SOON is the anticipation TREATMENT on NEVER.  Hollow on purpose: this is an
+  -- estimate, not an observation, and an estimate must never look confident.
+  SOON      = { c = { 0.40, 0.92, 0.52 }, a = 0.85, size = 12, hollow = true,  pulse = 0.90 },
+  AVAILABLE = { c = { 0.29, 1.00, 0.48 }, a = 0.70, size = 13, hollow = true  },
+  ROTATION  = { c = { 0.62, 1.00, 0.66 }, a = 1.00, size = 15, hollow = false, pulse = 0.55 },
+  LATE      = { c = { 1.00, 0.72, 0.20 }, a = 1.00, size = 16, hollow = false, pulse = 0.32 },
+}
+H.DOT_COLORS = DOT
+local DOT_MASK = "Interface\\CharacterFrame\\TempPortraitAlphaMask"
+local BRACKET_PAD = 4
+
 -- Push a colour toward/away from its own grey, holding luminance constant.
 local function saturate(r, g, b, mul)
   local y = 0.299 * r + 0.587 * g + 0.114 * b
@@ -112,10 +158,20 @@ local function ensure(item)
   f:SetAllPoints(item)
   f:SetFrameLevel(lvl)
 
-  local o = { frame = f, edges = {} }
+  -- THE BRACKET (M3c-a).  The accent used to be four edges on `f`, which is
+  -- SetAllPoints(item) — i.e. a border drawn ON Blizzard's icon art, which was
+  -- the original legibility complaint.  It now spans ICON + DOT + TEXT, so group
+  -- hue still carries identity but FRAMES the row instead of fighting the art.
+  -- Its width comes from the row's GetStringWidth() via H.SetBracketExtent; it
+  -- starts at icon-width and only grows once there is real text to measure.
+  local b = CreateFrame("Frame", nil, item)
+  b:SetFrameLevel(lvl)
+
+  local o = { frame = f, bracket = b, item = item, edges = {},
+              side = "RIGHT", rowExtent = 0 }
   -- Four edge textures forming the group accent border.
   for _, side in ipairs({ "TOP", "BOTTOM", "LEFT", "RIGHT" }) do
-    o.edges[side] = f:CreateTexture(nil, "OVERLAY")
+    o.edges[side] = b:CreateTexture(nil, "OVERLAY")
   end
   o.key = f:CreateFontString(nil, "OVERLAY")
   o.key:SetFont(TERM_FONT, 10, "OUTLINE")
@@ -126,23 +182,41 @@ local function ensure(item)
   return o
 end
 
+-- Position the bracket around icon + dot + text.  `rowExtent` is 0 until the row
+-- has measured itself, so the first frame is just an icon border and it GROWS —
+-- never a wrong width from a FontString that has no text or no font yet, which
+-- is the documented order-of-attach risk.
+local function layoutBracket(o)
+  local b, item = o.bracket, o.item
+  if not (b and item) then return end
+  local extra = (o.rowExtent or 0) + BRACKET_PAD
+  b:ClearAllPoints()
+  if o.side == "LEFT" then
+    b:SetPoint("TOPRIGHT", item, "TOPRIGHT", BRACKET_PAD, BRACKET_PAD)
+    b:SetPoint("BOTTOMLEFT", item, "BOTTOMLEFT", -extra, -BRACKET_PAD)
+  else
+    b:SetPoint("TOPLEFT", item, "TOPLEFT", -BRACKET_PAD, BRACKET_PAD)
+    b:SetPoint("BOTTOMRIGHT", item, "BOTTOMRIGHT", extra, -BRACKET_PAD)
+  end
+end
+
 local function layoutEdges(o, w)
-  local e = o.edges
+  local e, b = o.edges, o.bracket
   e.TOP:ClearAllPoints()
-  e.TOP:SetPoint("TOPLEFT", o.frame, "TOPLEFT", 0, 0)
-  e.TOP:SetPoint("TOPRIGHT", o.frame, "TOPRIGHT", 0, 0)
+  e.TOP:SetPoint("TOPLEFT", b, "TOPLEFT", 0, 0)
+  e.TOP:SetPoint("TOPRIGHT", b, "TOPRIGHT", 0, 0)
   e.TOP:SetHeight(w)
   e.BOTTOM:ClearAllPoints()
-  e.BOTTOM:SetPoint("BOTTOMLEFT", o.frame, "BOTTOMLEFT", 0, 0)
-  e.BOTTOM:SetPoint("BOTTOMRIGHT", o.frame, "BOTTOMRIGHT", 0, 0)
+  e.BOTTOM:SetPoint("BOTTOMLEFT", b, "BOTTOMLEFT", 0, 0)
+  e.BOTTOM:SetPoint("BOTTOMRIGHT", b, "BOTTOMRIGHT", 0, 0)
   e.BOTTOM:SetHeight(w)
   e.LEFT:ClearAllPoints()
-  e.LEFT:SetPoint("TOPLEFT", o.frame, "TOPLEFT", 0, 0)
-  e.LEFT:SetPoint("BOTTOMLEFT", o.frame, "BOTTOMLEFT", 0, 0)
+  e.LEFT:SetPoint("TOPLEFT", b, "TOPLEFT", 0, 0)
+  e.LEFT:SetPoint("BOTTOMLEFT", b, "BOTTOMLEFT", 0, 0)
   e.LEFT:SetWidth(w)
   e.RIGHT:ClearAllPoints()
-  e.RIGHT:SetPoint("TOPRIGHT", o.frame, "TOPRIGHT", 0, 0)
-  e.RIGHT:SetPoint("BOTTOMRIGHT", o.frame, "BOTTOMRIGHT", 0, 0)
+  e.RIGHT:SetPoint("TOPRIGHT", b, "TOPRIGHT", 0, 0)
+  e.RIGHT:SetPoint("BOTTOMRIGHT", b, "BOTTOMRIGHT", 0, 0)
   e.RIGHT:SetWidth(w)
 end
 
@@ -179,18 +253,148 @@ end
 function H.Apply(o)
   local id = o.identity
   if not id then return end
+  -- Apply() Show()s things, and it is reachable from GLOBAL paths (SetRecede
+  -- walks every chrome object ever created; so does the row's collapse).  Item
+  -- frames are POOLED, so that set outlives any one layout — without this gate a
+  -- global repaint would re-show chrome on items the registry has already
+  -- released, and `hud off` only Detach()es what's currently bound.  Detached
+  -- chrome stays detached until something re-Attaches it.
+  if not o.attached then return end
   local r, g, b = readyShift(id.r, id.g, id.b, o.ready)
   -- Readiness is carried on THREE channels, not just luminance: brighter, and
   -- thicker ([X1] — never colour-alone, and thickness survives colourblindness
   -- and a dim monitor where a luminance lift alone might not).
+  layoutBracket(o)
   layoutEdges(o, id.width + (o.ready == true and READY_WIDEN or 0))
   local a = id.alpha * recede
   for _, t in pairs(o.edges) do
     t:SetColorTexture(r, g, b, a)
     t:Show()
   end
+  o.bracket:Show()
   o.key:SetAlpha(recede)
   if o.glow then H.paintGlow(o) end
+  if o.dotLevel then H.paintDot(o) end
+end
+
+--------------------------------------------------------------------------------
+-- The dot — §0.5.8.7, the actionability mark
+--------------------------------------------------------------------------------
+-- Circular via WHITE8X8 + a TempPortraitAlphaMask MaskTexture, falling back to a
+-- plain square if the mask fails — the same defensive idiom as HudRow's
+-- applyFont.  A square dot is a cosmetic loss; a Lua error in a per-item paint
+-- path is the HUD going dark, so this never gets to throw.
+local function ensureDot(o, item)
+  if o.dot then return o.dot end
+  local f = CreateFrame("Frame", nil, item)
+  f:SetSize(DOT_BOX, DOT_BOX)
+  f:SetFrameLevel(o.frame:GetFrameLevel() + 3)
+
+  local outer = f:CreateTexture(nil, "OVERLAY")
+  outer:SetPoint("CENTER")
+  outer:SetTexture("Interface\\Buttons\\WHITE8X8")
+  -- The inner disc is what turns a solid dot into a RING: it punches a dark hole
+  -- rather than being a second colour, so the ring reads at any size.
+  local inner = f:CreateTexture(nil, "OVERLAY", nil, 1)
+  inner:SetPoint("CENTER")
+  inner:SetTexture("Interface\\Buttons\\WHITE8X8")
+
+  f.round = pcall(function()
+    for _, t in ipairs({ outer, inner }) do
+      local m = f:CreateMaskTexture()
+      m:SetTexture(DOT_MASK, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+      m:SetAllPoints(t)
+      t:AddMaskTexture(m)
+    end
+  end)
+
+  local ag = f:CreateAnimationGroup()
+  local a = ag:CreateAnimation("Alpha")
+  a:SetFromAlpha(0.40)
+  a:SetToAlpha(1.00)
+  ag:SetLooping("BOUNCE")
+  f.ag, f.anim = ag, a
+  f.outer, f.inner = outer, inner
+  f:Hide()
+  o.dot = f
+  return f
+end
+
+local function anchorDot(o)
+  local f = o.dot
+  if not f then return end
+  f:ClearAllPoints()
+  if o.side == "LEFT" then
+    f:SetPoint("RIGHT", o.item, "LEFT", -DOT_GAP, 0)
+  else
+    f:SetPoint("LEFT", o.item, "RIGHT", DOT_GAP, 0)
+  end
+  f.anchoredSide = o.side
+end
+
+-- Repaint at the current level x recede.  Recede is baked into the TEXTURE
+-- alpha, never the frame alpha — the frame's alpha belongs to the pulse, and
+-- letting the two share a channel is how a receding board would kill the motion.
+function H.paintDot(o)
+  local f = o.dot
+  local spec = DOT[o.dotLevel]
+  if not (f and spec) then return end
+  if f.anchoredSide ~= o.side then anchorDot(o) end
+  local a = spec.a * recede
+  f.outer:SetSize(spec.size, spec.size)
+  f.outer:SetColorTexture(spec.c[1], spec.c[2], spec.c[3], a)
+  if spec.hollow then
+    local inner = math.max(2, spec.size - 5)
+    f.inner:SetSize(inner, inner)
+    f.inner:SetColorTexture(0.02, 0.05, 0.03, a)
+    f.inner:Show()
+  else
+    f.inner:Hide()
+  end
+end
+
+-- level: one of the DOT keys, or nil to clear the dot entirely.
+function H.SetDot(item, viewer, level)
+  local o = item and item.__hud
+  if not o then return end
+  if viewer then o.side = H.SideFor(viewer) end
+  if not (level and DOT[level]) then
+    o.dotLevel = nil
+    if o.dot then o.dot.ag:Stop(); o.dot:Hide() end
+    return
+  end
+  local f = ensureDot(o, item)
+  local changed = (o.dotLevel ~= level)
+  o.dotLevel = level
+  H.paintDot(o)
+  if changed then
+    local spec = DOT[level]
+    f.ag:Stop()
+    if spec.pulse then
+      f.anim:SetDuration(spec.pulse)
+      f:SetAlpha(1)
+      f.ag:Play()
+    else
+      f:SetAlpha(1)
+    end
+  end
+  f:Show()
+end
+
+function H.GetDot(item)
+  local o = item and item.__hud
+  return o and o.dotLevel or nil
+end
+
+-- The row reports how wide its text came out, and the bracket grows to include
+-- it.  Called AFTER SetText, which is the only point GetStringWidth is valid.
+function H.SetBracketExtent(item, textWidth)
+  local o = item and item.__hud
+  if not o then return end
+  local extent = (textWidth and textWidth > 0) and (H.ROW_OFFSET + textWidth) or 0
+  if o.rowExtent == extent then return end
+  o.rowExtent = extent
+  if o.identity then H.Apply(o) end
 end
 
 -- Readiness.  `ready` is tri-state; passing nil resets to UNKNOWN.
@@ -429,11 +633,13 @@ end
 -- Sets IDENTITY only, then Apply()s — so readiness and glow survive a re-attach
 -- (a relayout, or HudBinds' keybind refresh).  That is the whole point of the
 -- composed accent.
-function H.Attach(item, spellID)
+function H.Attach(item, spellID, viewer)
   local o = ensure(item)
   chromes[o] = true
+  o.attached = true
+  if viewer then o.side = H.SideFor(viewer) end
   local info = ns.SpecInfo(spellID)
-  local batch = BATCH[info.role] or BATCH.utility
+  local batch = BATCH[ns.SpecPole(info)] or BATCH.utility
   local r, g, b = ns.SpecColor(spellID)
   r, g, b = saturate(r, g, b, batch.sat)
   o.identity = { r = r, g = g, b = b, width = batch.width, alpha = batch.alpha }
@@ -451,9 +657,13 @@ function H.Detach(item)
   H.RestoreStacks(item)
   local o = item and item.__hud
   if not o then return end
+  o.attached = false            -- ...so no global repaint can bring it back
   H.SetGlow(item, false)
+  H.SetDot(item, nil, nil)
   if o.settle then o.settle.ag:Stop(); o.settle:Hide() end
   o.ready = nil                       -- next enable starts at UNKNOWN, not stale
+  o.rowExtent = 0                     -- ...and so does the bracket width
+  if o.bracket then o.bracket:Hide() end
   o.frame:Hide()
 end
 

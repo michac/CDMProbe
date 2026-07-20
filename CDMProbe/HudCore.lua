@@ -53,7 +53,10 @@ M.IsIconViewer = isIconViewer
 -- First real user settings land in M3c (the opener variant); M3a only needs the
 -- on/off flag.  Defaults are filled defensively here as well as in Core.lua so a
 -- db written by an older build picks up new keys.
-local HUD_DEFAULTS = { on = false, opener = "1b", debug = false }
+-- `rows` is DEFAULT-ON in v0.10.0: the dot's reason is not diagnostics, it's
+-- half the signal (§0.5.8.7 — a dot with no reason is a design failure).
+-- `verbose` is the old debug mode, now a flag on the same row builder.
+local HUD_DEFAULTS = { on = false, opener = "1b", rows = true, verbose = false }
 
 local function ensureDB()
   ns.db.hud = ns.db.hud or {}
@@ -108,7 +111,9 @@ local function bindViewer(name)
         if rule then pcall(ns.HudChrome.EmphasizeStacks, item, rule.suffix) end
       end
       if isIconViewer(name) then
-        if ns.HudChrome.Attach(item, spellID) then
+        -- The viewer name goes in now: the bracket and the dot both need to know
+        -- which side of the icon this column's chrome runs on.
+        if ns.HudChrome.Attach(item, spellID, name) then
           M.keyStats.hits = M.keyStats.hits + 1
         else
           M.keyStats.misses = M.keyStats.misses + 1
@@ -123,10 +128,21 @@ end
 -- Cheap: a handful of frames, a table wipe, a few texture setters.
 local function rebind()
   if not M.on then return end
+  -- Remember what was bound, so anything that DROPS OUT of the tracked set gets
+  -- detached rather than silently keeping its chrome.  Item frames are POOLED and
+  -- reused, so a frame released by one layout is a live frame we still hold a
+  -- chrome object for — and the global repaint paths (SetRecede, the bracket
+  -- collapse) walk every chrome ever created.  Without this, `attached` never
+  -- goes false for those and the invariant "only bound items are painted" is only
+  -- true because Blizzard happens to hide the frame underneath.
+  local was = {}
+  for _, e in pairs(M.items) do if e.item then was[e.item] = true end end
   wipe(M.items)
   M.keyStats.hits, M.keyStats.misses = 0, 0
   M.fires.binds = M.fires.binds + 1
   for _, name in ipairs(ALL_VIEWERS) do bindViewer(name) end
+  for _, e in pairs(M.items) do was[e.item] = nil end
+  for item in pairs(was) do pcall(ns.HudChrome.Detach, item) end
   for _, name in ipairs(ICON_VIEWERS) do
     local v = ns.GetViewer(name)
     if v then ns.HudChrome.FlowScan(v) end
@@ -135,8 +151,12 @@ local function rebind()
   -- Item frames are pooled and reused across relayouts, so readiness survives;
   -- presence is re-synced from the level read (where it's meaningful) and the
   -- glows re-resolved onto whatever frames the new layout handed us.
-  ns.HudState.SyncLevels()
-  ns.HudState.RefreshGlows()
+  -- pcall'd because rebind() IS the RefreshLayout hooksecurefunc callback: an
+  -- uncaught throw in this tail would surface inside Blizzard's layout path,
+  -- not ours.  bindViewer already pcalls per item; this closes the same gap for
+  -- the whole-registry work that follows it.
+  pcall(ns.HudState.SyncLevels)
+  pcall(ns.HudState.RefreshGlows)  -- ...which also re-drives the dot score
 end
 M.Rebind = rebind
 
@@ -146,7 +166,7 @@ function M.RefreshKeybinds()
   M.keyStats.hits, M.keyStats.misses = 0, 0
   for _, entry in pairs(M.items) do
     if isIconViewer(entry.viewer) then
-      if ns.HudChrome.Attach(entry.item, entry.spellID) then
+      if ns.HudChrome.Attach(entry.item, entry.spellID, entry.viewer) then
         M.keyStats.hits = M.keyStats.hits + 1
       else
         M.keyStats.misses = M.keyStats.misses + 1
@@ -208,13 +228,16 @@ function ns.SetHud(on)
     ev:RegisterEvent("PLAYER_ENTERING_WORLD")
     rebind()
     ns.HudState.Start()
-    if ensureDB().debug then ns.HudDebug.Set(true) end
-    ns.Print("HUD |cff88ff88ON|r — native icons + group accents, keybinds, readiness + proc glows, DEMO.SYS chrome. |cffffffff/cdmp hud status|r for the readout.")
+    ns.HudRow.verbose = db.verbose and true or false
+    ns.HudRow.Set(db.rows ~= false)
+    ns.Print("HUD |cff88ff88ON|r — native icons, group brackets, keybinds, and the |cff88ff88dot score|r "
+      .. "(level + why) beside each icon. |cffffffff/cdmp hud status|r for the readout, "
+      .. "|cffffffff/cdmp hud debug|r for verbose rows.")
   else
     M.on = false
     ev:UnregisterAllEvents()
     ns.HudState.Stop()
-    ns.HudDebug.Hide()
+    ns.HudRow.Hide()
     ns.HudBinds.Stop()
     ns.HudChrome.HideTerminal()
     for _, entry in pairs(M.items) do
@@ -239,8 +262,11 @@ end
 --------------------------------------------------------------------------------
 local function printStatus()
   local db = ensureDB()
-  ns.Heading("HUD status — M3b (identity + chrome + readiness + procs)")
-  ns.Printf("  state: %s   opener setting: |cffffffff%s|r (M3c)", M.on and "|cff88ff88ON|r" or "|cffff8080OFF|r", tostring(db.opener))
+  ns.Heading("HUD status — M3c-a (identity + readiness + procs + the dot score)")
+  ns.Printf("  state: %s   rows: %s (verbose %s)   opener setting: |cffffffff%s|r (M3c)",
+    M.on and "|cff88ff88ON|r" or "|cffff8080OFF|r",
+    ns.HudRow.on and "|cff88ff88on|r" or "|cffff8080off|r",
+    ns.HudRow.verbose and "|cff88ff88on|r" or "off", tostring(db.opener))
   ns.Printf("  bind fires: RefreshLayout=%d  DATA_LOADED=%d  ENTERING_WORLD=%d  -> rebinds=%d  (|cffffd100no ticker running|r)",
     M.fires.layout, M.fires.dataLoaded, M.fires.enterWorld, M.fires.binds)
   ns.Printf("  hooks installed: %s", M.hooked and "|cff88ff88yes|r" or "|cffff4040no (viewers absent at install time)|r")
@@ -255,20 +281,23 @@ local function printStatus()
   ns.HudState.PrintStatus()
   ns.Heading("  bound items")
   for _, name in ipairs(ALL_VIEWERS) do
-    for _, e in pairs(M.items) do
+    for key, e in pairs(M.items) do
       if e.viewer == name then
-        local info, known = ns.SpecInfo(e.spellID)
+        local info, known = ns.SpecInfo(e.baseSpellID or e.spellID)
         -- `base` differs from `id` exactly while a spell override is armed
         -- (Demonic Art) — the one case M3a's keybind lookup used to miss.
         local ready = ns.HudChrome.GetReady(e.item)
-        ns.Printf("   [%s] cd=%s id=%s%s %s  group=%s role=%s%s  key=%s  ready=%s%s",
+        local sc = ns.HudState.score[key]
+        ns.Printf("   [%s] cd=%s id=%s%s %s  group=%s/%s cadence=%s%s  key=%s  ready=%s  dot=%s%s",
           VIEWER_TAG[name] or name:sub(1, 4), tostring(e.cooldownID), ns.Describe(e.spellID),
           (e.baseSpellID and e.baseSpellID ~= e.spellID)
             and (" |cffffd100(base " .. tostring(e.baseSpellID) .. ", overridden)|r") or "",
           (e.spellID and ns.SpellName(e.spellID)) or "?",
-          info.group, info.role, known and "" or " |cffffd100(not in ns.Spec — neutral)|r",
+          info.group, ns.SpecPole(info), tostring(info.cadence or "-"),
+          known and "" or " |cffffd100(not in ns.Spec — neutral)|r",
           ns.HudBinds.GetForItem(e.item, e.spellID) or "|cff808080none|r",
           ready == nil and "|cff808080unknown|r" or (ready and "|cff88ff88yes|r" or "no"),
+          sc and (sc.level .. (sc.soon and "/SOON" or "")) or "|cff808080none|r",
           ns.HudChrome.IsGlowing(e.item) and "  |cff44e0ffGLOW|r" or "")
       end
     end
@@ -279,12 +308,18 @@ end
 -- Commands
 --------------------------------------------------------------------------------
 ns.RegisterCommand("hud",
-  "the real spec HUD. 'hud status' = the readout in chat; 'hud debug' = every tracked fact in words beside each icon.",
+  "the real spec HUD (dot score + why). 'hud status' = the readout in chat; 'hud debug' = verbose rows; 'hud rows' = toggle the rows entirely.",
   function(rest)
     rest = (rest or ""):lower()
     if rest:find("status") then return printStatus() end
-    if rest:find("dump") then return ns.HudDebug.Dump() end
-    if rest:find("debug") then return ns.HudDebug.Set(not ns.HudDebug.on) end
+    if rest:find("dump") then return ns.HudRow.Dump() end
+    if rest:find("debug") or rest:find("verbose") then
+      return ns.HudRow.SetVerbose(not ns.HudRow.verbose)
+    end
+    if rest:find("rows") then
+      ns.HudRow.Set(not ns.HudRow.on)
+      return ns.Printf("HUD rows %s.", ns.HudRow.on and "|cff88ff88ON|r" or "|cffff8080OFF|r")
+    end
     ns.SetHud(not ensureDB().on)
   end)
 

@@ -1,20 +1,47 @@
 -- SpecDemonology.lua — the per-spec data table (v1 target: Demonology Warlock).
 --
--- ONE table, ONE edit site.  Every Hud* render module reads identity/role/yield
--- from here and holds no spell constants of its own, so adding a second spec
--- (M7) means adding a sibling file, not touching the renderers.
+-- ONE table, ONE edit site.  Every Hud* module reads identity + signals from
+-- here and holds no spell constants of its own, so adding a second spec (M7)
+-- means adding a sibling file, not touching the renderers.
 --
--- Fields per spellID:
---   group   — the §3 colour group (hue carries GROUP, never per-ability identity)
---   role    — "builder" | "spender" | "burst" | "utility" | "proc"
---             drives the generator-vs-consumer BATCH TINT (guidance-model §0.5.8.4)
---   ghost   — deterministic Soul Shard yield of an in-flight cast (M3c #7)
---   baseCD  — napkin-timer base cooldown in seconds (M4 #11/#12).  Only filled in
---             where the docs actually assert it; nil elsewhere on purpose — M4
---             reads GetSpellBaseCooldown at runtime and this is the sanity check,
---             not a guess.
---   label   — human name, for /cdmp hud status only (never rendered on the icon:
---             the 4-letter labels were dropped by the 2026-07-19 aesthetic revision)
+-- M3c-a replaced the single `role` enum with a SIGNAL BUCKET.  `role` conflated
+-- three separate concepts, and the tell was HudChrome's batch table: `spender`
+-- and `burst` carried IDENTICAL tint values, so `burst` never encoded anything —
+-- it only smuggled burst-lane membership through the tint field.  The bucket
+-- splits those concepts apart so `HudScore` can read each one on its own:
+--
+--   group      — the §3 colour group (hue carries GROUP, never per-ability
+--                identity, and never actionability — that's the dot's job now)
+--   kind       — "button" (an icon you press) | "aura" (a buff viewer entry)
+--   spends     — what pressing it CONSUMES: "shards" | "core" | "art".  The
+--                numeric cost is NEVER authored here — it is talent-dependent,
+--                so it's read at runtime via ns.ShardCost (Util.lua).
+--   generates  — deterministic Soul Shard yield.  SUBSUMES the old `ghost`
+--                field: one field, one meaning.  Drives both the in-flight
+--                ghost fill and the overcap guard in HudScore.
+--   cadence    — "oncd"     use it whenever it's up (the burst summons)
+--                "gated"    press it when the resource gate opens (HoG)
+--                "reactive" press it when a proc/condition arms it
+--                "filler"   what you press when nothing else is lit
+--                "utility"  outside the damage rotation entirely
+--                (`burst` is deliberately NOT a cadence — it was redundant with
+--                 burstAlign, which is a separate bit below.)
+--   burstAlign — belongs in the burst window; hold it for Tyrant alignment
+--   goGate     — a SEPARATE bit from burstAlign, on purpose.  The go-gate is
+--                Tyrant + Dreadstalkers ONLY.  Collapsing it into burstAlign is
+--                how §0.5.8.6 blocking error #2 got shipped the first time:
+--                someone re-derives the lane from burstAlign and Grimoire (which
+--                is burst-aligned but is NOT a go-gate) sneaks back into it.
+--   primary    — the one spender the shard economy points at (HoG)
+--   judgeable  — DEFAULT TRUE.  False means the ability's TRUE gate is a Secret
+--                Value we cannot read, so we must never claim it's the right
+--                press.  These CAP AT "AVAILABLE" and say why.  Implosion is the
+--                known case: its real gate is Wild Imps >= 6 and the count is
+--                secret.  This is "inform, don't instruct" made mechanical.
+--   secretGate — the sentence a judgeable=false ability prints instead of a call
+--   baseCD     — documented base cooldown, sanity-check only.  ns.BaseCooldown
+--                reads the live value; nil here means "the docs don't assert it".
+--   label      — human name, for `/cdmp hud status` only
 --
 -- Unknown spellIDs fall back to the neutral accent — never crash, never guess.
 local ADDON, ns = ...
@@ -52,58 +79,107 @@ ns.SpecIDs = {
 
 local S = ns.SpecIDs
 
+-- The Soul Shard cap.  Used by the overcap guard: a generator that would push
+-- past this stops being a ROTATION call even when its proc is genuinely up.
+ns.SHARD_CAP = 5
+
 ns.Spec = {
   -- ── Essential: the burst summons (§3 "summon" / fel green) ────────────────
-  [S.TYRANT]        = { group = "summon", role = "burst",   baseCD = 60,  label = "Summon Demonic Tyrant" },
-  [S.DREADSTALKERS] = { group = "summon", role = "burst",   baseCD = 20,  label = "Call Dreadstalkers" },
-  [1276467]         = { group = "summon", role = "burst",   baseCD = 120, label = "Grimoire: Fel Ravager" },
-  [136726]          = { group = "summon", role = "burst",   baseCD = 120, label = "Grimoire: Imp Lord" },
+  -- cadence = "oncd": these are the abilities the user rates the biggest win —
+  -- "firing cooldown abilities as soon as they are up".  So a ready edge on any
+  -- of them is a ROTATION call outright, and the napkin gives them lead time.
+  [S.TYRANT] = {
+    group = "summon", kind = "button", spends = "shards", cadence = "oncd",
+    burstAlign = true, goGate = true, baseCD = 60, label = "Summon Demonic Tyrant",
+  },
+  [S.DREADSTALKERS] = {
+    group = "summon", kind = "button", spends = "shards", cadence = "oncd",
+    burstAlign = true, goGate = true, baseCD = 20, label = "Call Dreadstalkers",
+  },
+  -- Grimoire is burst-ALIGNED but is NOT part of the go-gate (see `goGate` above).
+  [1276467] = {
+    group = "summon", kind = "button", cadence = "oncd", burstAlign = true,
+    baseCD = 120, label = "Grimoire: Fel Ravager",
+  },
+  [136726] = {
+    group = "summon", kind = "button", cadence = "oncd", burstAlign = true,
+    baseCD = 120, label = "Grimoire: Imp Lord",
+  },
 
   -- ── Essential: core shadow damage (§3 "core" / shadow violet) ─────────────
-  -- HoG is the spender the whole shard economy points at; Demonbolt/Shadow Bolt
-  -- are builders and carry a ghost yield (guidance-model §0.5.8.2(b)).
-  [S.HAND_OF_GULDAN] = { group = "core", role = "spender", label = "Hand of Gul'dan" },
-  [S.DEMONBOLT]      = { group = "core", role = "builder", ghost = 2, label = "Demonbolt" },
-  [S.SHADOW_BOLT]    = { group = "core", role = "builder", ghost = 1, label = "Shadow Bolt" },
+  -- HoG is the spender the whole shard economy points at — `primary`.
+  [S.HAND_OF_GULDAN] = {
+    group = "core", kind = "button", spends = "shards", cadence = "gated",
+    primary = true, label = "Hand of Gul'dan",
+  },
+  -- C2, the pole fix.  v0.9.1 classified Demonbolt as a `builder`, which put it
+  -- at the OPPOSITE tint pole from Hand of Gul'dan — its single most common
+  -- partner in the cast log (313 + 313 two-grams).  §0.5.1 calls it a bucket-2
+  -- spender: it CONSUMES a Demonic Core proc (that's the press decision) and
+  -- happens to refund 2 shards.  So `spends = "core"` decides the pole, and
+  -- `generates = 2` is what drives the overcap guard.
+  [S.DEMONBOLT] = {
+    group = "core", kind = "button", spends = "core", generates = 2,
+    cadence = "reactive", label = "Demonbolt",
+  },
+  [S.SHADOW_BOLT] = {
+    group = "core", kind = "button", generates = 1, cadence = "filler",
+    label = "Shadow Bolt",
+  },
 
   -- Demonic Art transforms.  Two IDs are in circulation for each in the maxroll
   -- captures (433891/434506 Infernal Bolt, 434635/434636 Ruination) and we have
   -- not disambiguated them against game data — both are mapped to the same entry
   -- so whichever the client hands us resolves correctly.  Harmless if one is dead.
-  [433891] = { group = "core", role = "builder", ghost = 3, label = "Infernal Bolt" },
-  [434506] = { group = "core", role = "builder", ghost = 3, label = "Infernal Bolt" },
-  [434635] = { group = "core", role = "spender", label = "Ruination" },
-  [434636] = { group = "core", role = "spender", label = "Ruination" },
+  [433891] = { group = "core", kind = "button", spends = "art", generates = 3,
+               cadence = "reactive", label = "Infernal Bolt" },
+  [434506] = { group = "core", kind = "button", spends = "art", generates = 3,
+               cadence = "reactive", label = "Infernal Bolt" },
+  [434635] = { group = "core", kind = "button", spends = "art",
+               cadence = "reactive", label = "Ruination" },
+  [434636] = { group = "core", kind = "button", spends = "art",
+               cadence = "reactive", label = "Ruination" },
 
   -- ── Essential: the fel explosion (§3 "aoe" / lime) ────────────────────────
-  [S.IMPLOSION] = { group = "aoe", role = "spender", baseCD = 15, label = "Implosion" },
+  -- THE judgeable=false case.  Implosion's real gate is Wild Imps >= 6.  The
+  -- count is displayed by Blizzard and is a Secret Value to us (§0.5.5), so we
+  -- cannot compute the gate and must never claim this is the press.  It caps at
+  -- AVAILABLE and hands the call back, with the reason stated.
+  [S.IMPLOSION] = {
+    group = "aoe", kind = "button", cadence = "reactive", baseCD = 15,
+    judgeable = false, secretGate = ">=6 imps — count is secret, your call",
+    label = "Implosion",
+  },
 
   -- ── Utility: defensives / CC / mobility ───────────────────────────────────
-  [104773]  = { group = "def", role = "utility", label = "Unending Resolve" },
-  [108416]  = { group = "def", role = "utility", label = "Dark Pact" },
-  [30283]   = { group = "cc",  role = "utility", label = "Shadowfury" },
+  [104773]  = { group = "def", kind = "button", cadence = "utility", label = "Unending Resolve" },
+  [108416]  = { group = "def", kind = "button", cadence = "utility", label = "Dark Pact" },
+  [30283]   = { group = "cc",  kind = "button", cadence = "utility", label = "Shadowfury" },
   -- The live tracked set carries the WRAPPER spell Command Demon (119898), not
   -- the pet ability Axe Toss (119914) that notes.md §2 recorded — confirmed off
   -- `/cdmp hud status` on 2026-07-20.  Both are mapped: the wrapper is what
   -- actually appears, the inner ID is kept in case a different pet/build surfaces it.
-  [119898]  = { group = "cc",  role = "utility", label = "Command Demon" },
-  [119914]  = { group = "cc",  role = "utility", label = "Axe Toss" },
-  [6789]    = { group = "cc",  role = "utility", label = "Mortal Coil" },
-  [1271802] = { group = "cc",  role = "utility", label = "Blight of Tongues" },
-  [48020]   = { group = "mob", role = "utility", label = "Demonic Circle: Teleport" },
+  [119898]  = { group = "cc",  kind = "button", cadence = "utility", label = "Command Demon" },
+  [119914]  = { group = "cc",  kind = "button", cadence = "utility", label = "Axe Toss" },
+  [6789]    = { group = "cc",  kind = "button", cadence = "utility", label = "Mortal Coil" },
+  [1271802] = { group = "cc",  kind = "button", cadence = "utility", label = "Blight of Tongues" },
+  [48020]   = { group = "mob", kind = "button", cadence = "utility", label = "Demonic Circle: Teleport" },
 
-  -- ── Buff viewers (no chrome in M3a; M3b reads their IsShown presence) ─────
-  [S.DEMONIC_CORE]    = { group = "proc", role = "proc", label = "Demonic Core" },
-  [S.DIABOLIC_RITUAL] = { group = "proc", role = "proc", label = "Diabolic Ritual" },
-  [S.WILD_IMP]        = { group = "summon", role = "proc", label = "Wild Imp" },
-  [S.DOMINION]        = { group = "core", role = "proc", label = "Dominion of Argus" },
+  -- ── Buff viewers.  kind = "aura": these are INPUTS to the score, never
+  --    scored themselves, and they carry no dot. ─────────────────────────────
+  [S.DEMONIC_CORE]    = { group = "proc",   kind = "aura", label = "Demonic Core" },
+  [S.DIABOLIC_RITUAL] = { group = "proc",   kind = "aura", label = "Diabolic Ritual" },
+  [S.WILD_IMP]        = { group = "summon", kind = "aura", label = "Wild Imp" },
+  [S.DOMINION]        = { group = "core",   kind = "aura", label = "Dominion of Argus" },
 }
 
 -- Proc routing (M3b, §0.5.8.3 #2/#3) -------------------------------------------
 --
 -- source buff spellID -> which BUTTON lights up.  The mapping lives here, in the
 -- per-spec table, so HudState stays spec-agnostic: it observes presence edges and
--- asks this table where to put the glow.
+-- asks this table where to put the glow.  M3c-a adds a second consumer —
+-- HudScore reads the same table to decide `procArmed`, so the glow and the dot
+-- can never disagree about what's armed.
 --
 --   target      — base spellID of the icon to glow (nil = "wherever the spell
 --                 override lands", resolved live from
@@ -111,13 +187,14 @@ ns.Spec = {
 --   softenAbove — shard count at or above which the glow SOFTENS instead of
 --                 clearing (§0.5.8.4): Demonbolt refunds +2, so from 4 shards it
 --                 overcaps and the cap cue outranks the Core glow.  The proc is
---                 still real, so we dim it rather than lie about it.
+--                 still real, so we dim it rather than lie about it.  HudScore's
+--                 overcap guard is the same rule expressed as a level.
 --   transform   — this proc arms a spell OVERRIDE; the override event is the
 --                 primary trigger and this presence edge only corroborates.
 ns.SpecProcGlow = {
   [S.DEMONIC_CORE] = {
     target = S.DEMONBOLT, group = "proc", softenAbove = 4,
-    label = "Demonic Core -> Demonbolt",
+    label = "Demonic Core -> Demonbolt", why = "core up",
   },
   [S.DIABOLIC_RITUAL] = {
     -- v1 blind spot: only the HoG -> Ruination half is glowable.  Shadow Bolt is
@@ -125,6 +202,7 @@ ns.SpecProcGlow = {
     -- light — flagged in guidance-model.md §0.5.5, never faked.
     target = S.HAND_OF_GULDAN, group = "summon", transform = true,
     label = "Diabolic Ritual -> transformed button (HoG half only)",
+    why = "art armed",
   },
 }
 
@@ -142,7 +220,7 @@ ns.SpecStacks = {
 
 -- Lookup helpers ---------------------------------------------------------------
 
-local NEUTRAL = { group = "neutral", role = "utility" }
+local NEUTRAL = { group = "neutral", kind = "button", cadence = "utility" }
 
 -- Never nil, never errors: unknown IDs get the neutral accent.
 -- A Secret Value must never be used as a table key (indexing with one taints),
@@ -161,7 +239,21 @@ function ns.SpecColor(spellID)
   return c[1], c[2], c[3]
 end
 
--- Deterministic shard yield of an in-flight cast (M3c anticipation layer).
+-- Which BATCH TINT pole an ability sits at (§0.5.8.4).  One classifier, read by
+-- both HudChrome (the accent) and the row, so the two can never disagree.
+--
+-- Order matters and encodes C2: `spends` is checked BEFORE `generates`, so
+-- Demonbolt (spends a Core, refunds 2 shards) lands at the CONSUMER pole beside
+-- Hand of Gul'dan rather than opposite it.
+function ns.SpecPole(info)
+  if info.kind == "aura" then return "proc" end
+  if info.cadence == "utility" then return "utility" end
+  if info.cadence == "oncd" or info.spends then return "consumer" end
+  if info.generates then return "generator" end
+  return "consumer"
+end
+
+-- Deterministic shard yield of an in-flight cast (anticipation layer / overcap).
 function ns.SpecGhost(spellID)
-  return (ns.SpecInfo(spellID).ghost) or 0
+  return (ns.SpecInfo(spellID).generates) or 0
 end
