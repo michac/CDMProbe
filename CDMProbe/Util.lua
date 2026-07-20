@@ -82,3 +82,32 @@ function ns.BaseCooldown(spellID)
   if ms == nil then return nil end
   return math.floor(ms / 1000 + 0.5)
 end
+
+-- Power cost for a spell, as the CLIENT reports it for THIS character's build.
+-- Returns (cost, powerTypeName) or nil.
+--
+-- Deliberately read at runtime rather than authored into SpecDemonology: costs
+-- are TALENT-DEPENDENT (Demonic Calling makes Dreadstalkers free; the Grimoire
+-- and Tyrant costs move with the build), so any number hardcoded in the spec
+-- table is correct for exactly one loadout and silently wrong for every other.
+-- The client already knows the answer for the character actually logged in.
+--
+-- Units caveat: Soul Shards are reported in FRAGMENTS in some places (10 per
+-- shard) and whole shards in others, so the raw value is surfaced as-is rather
+-- than divided by a guess.  The in-game readout settles it.
+function ns.PowerCost(spellID)
+  if type(spellID) ~= "number" or ns.IsSecret(spellID) then return nil end
+  if not (C_Spell and C_Spell.GetSpellPowerCost) then return nil end
+  local ok, costs = pcall(C_Spell.GetSpellPowerCost, spellID)
+  if not ok or type(costs) ~= "table" then return nil end
+  for _, c in ipairs(costs) do
+    if type(c) == "table" and not ns.IsSecret(c.cost) and type(c.cost) == "number" then
+      if c.cost > 0 then
+        local name = c.name
+        if type(name) ~= "string" then name = "power" .. tostring(c.type) end
+        return c.cost, name
+      end
+    end
+  end
+  return 0, nil
+end

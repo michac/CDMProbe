@@ -140,6 +140,15 @@ local function lineFor(key, e)
     if baseCD and baseCD > 0 then
       parts[#parts + 1] = GREY .. string.format("cd %ds|r", baseCD)
     end
+    -- Cost as the CLIENT reports it for THIS build — the arbiter for the
+    -- talent-dependent numbers no doc can settle (Dreadstalkers free under
+    -- Demonic Calling, Tyrant's cost, Grimoire's cost).
+    local cost, cname = ns.PowerCost(e.baseSpellID or e.spellID)
+    if cost and cost > 0 then
+      parts[#parts + 1] = AMBER .. string.format("cost %d %s|r", cost, cname or "?")
+    elseif cost == 0 then
+      parts[#parts + 1] = GREY .. "cost free|r"
+    end
 
     if ns.HudChrome.IsGlowing(e.item) then
       local st = ns.HudChrome.GlowStrength(e.item)
