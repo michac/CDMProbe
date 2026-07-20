@@ -128,6 +128,12 @@ local RECEDE_MIN = 0.45   -- board-quiet alpha multiplier (§0.5.8.3 #5)
 local recede = 1.0
 -- Weak keys: chrome objects hang off pooled item frames we don't own.
 local chromes = setmetatable({}, { __mode = "k" })
+-- Whole frames that follow the recede as a unit — the terminal frame and the
+-- scanline overlay.  v0.7.0 receded only the per-item accents and keybind text,
+-- which on a 1-2px border is very nearly invisible; the surrounding chrome is
+-- just as much "ours" and dimming it together is what makes the board actually
+-- read as quiet.  Blizzard's icons are still never touched.
+local receders = setmetatable({}, { __mode = "k" })
 
 local function lighten(c, t) return c + (1 - c) * t end
 local function darken(c, t)  return c * (1 - t) end
@@ -180,6 +186,7 @@ function H.SetRecede(mult)
   if mult == recede then return end
   recede = mult
   for o in pairs(chromes) do H.Apply(o) end
+  for f in pairs(receders) do f:SetAlpha(mult) end
 end
 
 function H.GetRecede() return recede end
@@ -376,6 +383,8 @@ local function ensureScan(viewer)
   glow:SetAllPoints(f)
   glow:SetColorTexture(TERM[1], TERM[2], TERM[3], 0.05)
   f.lines = {}
+  receders[f] = true
+  f:SetAlpha(recede)
   viewer.__hudScan = f
   return f
 end
@@ -466,6 +475,8 @@ local function buildTerminal(viewer)
   f.footer = ft
   f.cursorOn = true
 
+  receders[f] = true
+  f:SetAlpha(recede)
   viewer.__hudTerm = f
   return f
 end

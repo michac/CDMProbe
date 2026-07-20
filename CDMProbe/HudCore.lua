@@ -96,8 +96,12 @@ local function bindViewer(name)
       M.items[key] = { item = item, spellID = spellID, baseSpellID = baseID,
                        viewer = name, index = i, cooldownID = cdID }
       -- Every item gets the state hook, buff viewers included: they are where
-      -- the proc aura edges come from.
-      ns.HudState.Install(item)
+      -- the proc aura edges come from.  Deliberately in its OWN pcall: this
+      -- shares a pcall with the chrome attach, so a throw here would silently
+      -- take the M3a identity layer down with it and look like "the HUD just
+      -- stopped working" — with no error, because the pcall eats it.  M3b must
+      -- never be able to break M3a.  Failures surface as hooks=0 in `hud status`.
+      pcall(ns.HudState.Install, item)
       if isIconViewer(name) then
         if ns.HudChrome.Attach(item, spellID) then
           M.keyStats.hits = M.keyStats.hits + 1

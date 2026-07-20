@@ -194,23 +194,39 @@ local function quiet()
   return S.shards < LOW_SHARDS
 end
 
+local function arm()
+  if recedeTimer then return end
+  recedeTimer = C_Timer.NewTimer(RECEDE_DELAY, function()
+    recedeTimer = nil
+    if hudOn() and quiet() then ns.HudChrome.SetRecede(RECEDE_MULT) end
+  end)
+end
+
+local function disarm()
+  if recedeTimer then recedeTimer:Cancel(); recedeTimer = nil end
+end
+
 function S.EvaluateBoard()
   if not hudOn() then return end
   if quiet() then
-    if not recedeTimer then
-      recedeTimer = C_Timer.NewTimer(RECEDE_DELAY, function()
-        recedeTimer = nil
-        if hudOn() and quiet() then ns.HudChrome.SetRecede(RECEDE_MULT) end
-      end)
-    end
+    arm()
   else
-    S.Wake()
+    disarm()
+    ns.HudChrome.SetRecede(1.0)
   end
 end
 
+-- An edge just fired: un-recede NOW (wake is never delayed), then RE-ARM the
+-- quiet check.  v0.7.0 shipped this as cancel-and-brighten with no re-arm, so
+-- the first ready edge or proc killed the recede permanently — the board woke
+-- once and never slept again.  Waking must always leave the sleep timer running
+-- if we're already quiet again; that asymmetry (instant wake, debounced sleep)
+-- is the whole anti-strobe design, and it only works if the sleep re-arms.
 function S.Wake()
-  if recedeTimer then recedeTimer:Cancel(); recedeTimer = nil end
+  disarm()
   ns.HudChrome.SetRecede(1.0)
+  S.EvaluateBoard()          -- re-arms when still quiet; no recursion (the
+                             -- else-branch disarms rather than calling Wake)
 end
 
 --------------------------------------------------------------------------------
