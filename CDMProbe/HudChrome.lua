@@ -346,7 +346,12 @@ function H.paintDot(o)
   local a = spec.a * recede
   f.outer:SetSize(spec.size, spec.size)
   f.outer:SetColorTexture(spec.c[1], spec.c[2], spec.c[3], a)
-  if spec.hollow then
+  -- `o.dotHollow` is the CALLER's override (M3c-b B4): a ROTATION/LATE dot that
+  -- only lit because of an in-flight-cast projection is drawn as a ring, because
+  -- hollow means "estimate" everywhere else in this design and an estimate must
+  -- never look like an observation.  It can only ever ADD hollowness — a level
+  -- that is already hollow stays so.
+  if spec.hollow or o.dotHollow then
     local inner = math.max(2, spec.size - 5)
     f.inner:SetSize(inner, inner)
     f.inner:SetColorTexture(0.02, 0.05, 0.03, a)
@@ -356,19 +361,23 @@ function H.paintDot(o)
   end
 end
 
--- level: one of the DOT keys, or nil to clear the dot entirely.
-function H.SetDot(item, viewer, level)
+-- level:  one of the DOT keys, or nil to clear the dot entirely.
+-- hollow: force the ring treatment regardless of the level's own default — the
+--         confidence marker for a dot derived from an estimate (B4).
+function H.SetDot(item, viewer, level, hollow)
   local o = item and item.__hud
   if not o then return end
   if viewer then o.side = H.SideFor(viewer) end
   if not (level and DOT[level]) then
     o.dotLevel = nil
+    o.dotHollow = false
     if o.dot then o.dot.ag:Stop(); o.dot:Hide() end
     return
   end
   local f = ensureDot(o, item)
   local changed = (o.dotLevel ~= level)
   o.dotLevel = level
+  o.dotHollow = hollow and true or false
   H.paintDot(o)
   if changed then
     local spec = DOT[level]

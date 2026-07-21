@@ -74,14 +74,51 @@ end
 -- `candidate` is the raw ROTATION-eligibility HudState clocks for LATE; `level`
 -- is what to draw right now.
 function Sc.For(key, e)
-  local id = e.baseSpellID or e.spellID
-  local info = ns.SpecInfo(id)
+  local St = ns.HudState
+
+  ------------------------------------------------------------------------------
+  -- LIVE IDENTITY (M3c-b B1) — score the button that is ACTUALLY THERE
+  ------------------------------------------------------------------------------
+  -- M3c-a opened with `local id = e.baseSpellID or e.spellID` unconditionally,
+  -- so a TRANSFORMED button was judged as the ability underneath it.  Observed
+  -- live and it is the worst possible failure: `lit now` read "Grimoire: Fel
+  -- Ravager - up - use on cooldown - waiting 18s" while that button had been
+  -- overridden into Devour Magic, a purge.  The HUD was nagging the player to
+  -- press a cooldown that wasn't on the bar.  §0.5.8.2(c): a confidently-wrong
+  -- dot is worse than no dot.
+  --
+  -- Resolution order — override event, then the item's own reported spell, then
+  -- the base:
+  --   * `St.override` is the FAST PATH (COOLDOWN_VIEWER_SPELL_OVERRIDE_UPDATED).
+  --   * `e.spellID` is the FLOOR, and it is not redundant: the override is set
+  --     when the pet is summoned, which can be BEFORE we start listening (login,
+  --     /reload, HUD enabled mid-session).  A missed event and an absent event
+  --     are indistinguishable, so bind-time polling has to back the event up.
+  --     `rebind()` reads the live spell, which is exactly why B2's secret guard
+  --     is what makes this trustworthy.
+  --
+  -- ⚠ THIS IS THE OPPOSITE CONVENTION FROM KEYBINDS, deliberately.  HudBinds
+  -- resolves off the BASE (HudBinds.lua:175, the v0.7.0 finding-3 fix) precisely
+  -- because the override is on no action bar.  Identity for BINDING is the base;
+  -- identity for JUDGEMENT is what's live.  Do not "unify" them.
+  local base   = e.baseSpellID or e.spellID
+  local liveID = (base and St and St.override and St.override[base]) or e.spellID or base
+
+  local info, known = ns.SpecInfo(liveID)
   -- Auras are INPUTS to the score, never scored themselves.
   if info.kind == "aura" then return nil end
+  -- An override we have never heard of gets NO DOT AT ALL — it must never
+  -- inherit the base's cadence, which is how "use on cooldown" ended up printed
+  -- over a purge.  Silence is the honest answer for an ability we can't classify.
+  if liveID ~= base and not known then return nil end
 
-  local St = ns.HudState
+  local id = liveID
   local R = {}
   local out = { reasons = R, candidate = false }
+  -- Say so on the row when the thing being scored isn't the thing underneath.
+  if liveID ~= base then
+    R[#R + 1] = string.format("now %s", ns.SpellName(liveID) or tostring(liveID))
+  end
 
   ------------------------------------------------------------------------------
   -- gateMet — the resource gate, with the cost READ AT RUNTIME
@@ -101,7 +138,33 @@ function Sc.For(key, e)
   -- reordering the cap) keeps both facts true: no shard reason on a utility row,
   -- and cooldown still gates it.
   local cost = (info.cadence ~= "utility") and ns.ShardCost(id) or nil
-  local shards = St and St.shards or nil
+  -- B4 — the SPEND-side projection.  While a cast is in flight the gate is
+  -- evaluated against the POST-CAST shard state, not the live counter, so the
+  -- board tells you what to press NEXT rather than what was true a GCD ago.
+  -- HudState owns the double-deduction guard; here we only consume the answer
+  -- and record that it IS one, because anything promoted by an estimate has to
+  -- render hollow.
+  local shards, projected
+  if St and St.ProjectedShards then
+    shards, projected = St.ProjectedShards()
+  else
+    shards = St and St.shards or nil
+  end
+  -- `projected` is only RELEVANT to abilities the shard figure actually judges:
+  -- a shard-costed one (the gate) or a generator (the overcap guard, which is the
+  -- other place the projected count can change a level — Demonbolt costs no
+  -- shards but refunds 2, so a projection can be the difference between "core up,
+  -- press it" and "would overcap").  Everything else keeps a solid dot because
+  -- nothing about its score came off an estimate.
+  local shardRelevant = (cost and cost > 0) or (info.generates ~= nil)
+  out.projected = (projected and shardRelevant) and true or false
+  -- Only SAY it on rows where the shard figure is actually part of the judgement.
+  -- A utility ability is not shard-gated, so "cast in flight -> ~3 shards" on a
+  -- defensive row is the same class of noise as the v0.10.0 "Mortal Coil ·
+  -- shards 3<750" defect: a true sentence about the wrong ability.
+  if out.projected then
+    R[#R + 1] = string.format("cast in flight -> ~%d shards", shards)
+  end
   local gateMet, gateUnknown = true, false
   if cost and cost > 0 then
     if shards == nil then
@@ -140,8 +203,8 @@ function Sc.For(key, e)
     -- this is pre-emptive — but it's a one-line miss that would look exactly
     -- like "anticipation just doesn't work on that button".
     local remain = ns.HudNapkin.Remaining(id)
-    if remain == nil and e.spellID and e.spellID ~= id then
-      remain = ns.HudNapkin.Remaining(e.spellID)
+    if remain == nil and base and base ~= id then
+      remain = ns.HudNapkin.Remaining(base)
     end
     out.remain = remain
     if remain == nil then
@@ -191,7 +254,10 @@ function Sc.For(key, e)
   -- If the board is routinely 4+ lit, the RULES are too loose and that is what
   -- gets tightened — not the visuals.
   local rot = false
-  local armed, why = Sc.ProcArmed(id)
+  -- ProcArmed is asked about the BASE, not the live ID: ns.SpecProcGlow keys its
+  -- rules on the base button (`target`) and detects a transform by looking up
+  -- `St.override[base]`.  Passing the transformed ID would silently never match.
+  local armed, why = Sc.ProcArmed(base)
   -- The proc reason is recorded whether or not it ends up justifying a ROTATION.
   -- It has to be: RefreshGlows lights the glow off the SAME table, so a dot that
   -- capped at AVAILABLE without mentioning the proc would leave a lit glow and a

@@ -23,6 +23,8 @@ ns.Hud = {
   on = false,
   hooked = false,
   items = {},        -- key -> { item, spellID, viewer, index }
+  lastIdentity = {}, -- key -> { spellID, baseSpellID } last READABLE identity (B2)
+  missing = {},      -- expected-but-unbound spellIDs (B7); see checkExpected
   counts = {},       -- viewer frame name -> bound item count
   fires = { layout = 0, dataLoaded = 0, enterWorld = 0, binds = 0 },
   keyStats = { hits = 0, misses = 0 },
@@ -73,11 +75,16 @@ end
 -- The binding key.  cooldownID is the stable per-tracked-spell identity across
 -- relayouts and reorders (M2 decision); the frame-index fallback only matters
 -- for a viewer whose items don't expose one, and is never treated as stable.
+-- Secret-guarded like every identity read (B2): `type(secret) == "number"` is
+-- TRUE, and this value gets CONCATENATED into the registry key — a secret would
+-- taint the string, i.e. poison every key in the registry rather than fail loudly.
 function ns.ItemCooldownID(item)
-  if type(item.cooldownID) == "number" then return item.cooldownID end
+  if type(item.cooldownID) == "number" and not ns.IsSecret(item.cooldownID) then
+    return item.cooldownID
+  end
   if ns.HasMethod(item, "GetCooldownID") then
     local ok, id = pcall(item.GetCooldownID, item)
-    if ok and type(id) == "number" then return id end
+    if ok and type(id) == "number" and not ns.IsSecret(id) then return id end
   end
   return nil
 end
@@ -96,6 +103,21 @@ local function bindViewer(name)
       -- and the proc registry both key on this instead (v0.7.0).
       local baseID = ns.ItemBaseSpellID(item)
       local key = cdID and (name .. ":cd" .. cdID) or (name .. ":ix" .. i)
+      -- LAST-KNOWN-GOOD IDENTITY (B2).  An identity read can now come back nil
+      -- for a reason that has nothing to do with the layout: in restricted
+      -- combat the buff viewer's GetSpellID() is a Secret Value, and the guards
+      -- above (correctly) refuse it.  A rebind landing mid-fight — a tracked-set
+      -- change, an Edit Mode nudge, an aura full-update — would otherwise
+      -- OVERWRITE a perfectly good spellID with nil and take every signal keyed
+      -- to that entry down with it.  So: an unreadable ID means KEEP WHAT YOU
+      -- HAD, never "update".  Keyed on the same registry key, which is derived
+      -- from cooldownID and is therefore stable across relayouts (M2).
+      local last = M.lastIdentity[key]
+      if spellID == nil and last then spellID = last.spellID end
+      if baseID  == nil and last then baseID  = last.baseSpellID end
+      if spellID ~= nil or baseID ~= nil then
+        M.lastIdentity[key] = { spellID = spellID, baseSpellID = baseID }
+      end
       M.items[key] = { item = item, spellID = spellID, baseSpellID = baseID,
                        viewer = name, index = i, cooldownID = cdID }
       -- Every item gets the state hook, buff viewers included: they are where
@@ -122,6 +144,75 @@ local function bindViewer(name)
     end)
     if ok then M.counts[name] = M.counts[name] + 1 end
   end
+end
+
+--------------------------------------------------------------------------------
+-- B7 — warn when an expected icon isn't there to bind to
+--------------------------------------------------------------------------------
+-- WHY THIS IS NECESSARY AT ALL is the M2 decision: we bind to whatever layout is
+-- CURRENTLY ACTIVE and ship no layout string, so the tracked set is the USER's,
+-- not ours.  That makes a missing spell completely invisible — ns.Spec describes
+-- an ability, no item ever appears for it, and the HUD simply never mentions it
+-- again.  Every signal keyed to that ability goes quiet WITH NO ERROR, which is
+-- exactly how Shadow Bolt's absence hid the SB -> Infernal Bolt blind spot for
+-- four milestones.  Standing doctrine: capability gaps are REPORTED, never
+-- assumed.
+--
+-- Two filters keep the warning from crying wolf, and both are load-bearing:
+--   * IsPlayerSpell — without it this false-fires on every untalented
+--     alternative in the table (Grimoire: Imp Lord vs Fel Ravager, Axe Toss vs
+--     Command Demon).
+--   * `expect = false` — entries that exist only as a live spell OVERRIDE (the
+--     Demonic Art transforms, Devour Magic).  They are never separately tracked
+--     by the CDM, so "unbound" is their normal state, not a gap.
+local function expectedButtons()
+  local out = {}
+  for id, info in pairs(ns.Spec or {}) do
+    if info.kind == "button" and info.expect ~= false and type(id) == "number" then
+      local ok, has = pcall(IsPlayerSpell, id)
+      if ok and has == true then out[#out + 1] = id end
+    end
+  end
+  table.sort(out)
+  return out
+end
+
+-- Say what is LOST, not just what is missing: "Shadow Bolt — not tracked;
+-- SB -> Infernal Bolt cannot light" is actionable, "missing 686" is not.
+local function lossText(id)
+  local info = ns.SpecInfo(id)
+  if info.lost then return info.lost end
+  return "no dot, no keybind and no anticipation for it"
+end
+
+-- Recompute the missing set.  Warns ONCE PER RESOLVED SET, never per rebind:
+-- rebind() fires on every RefreshLayout, so an unconditional print would spam
+-- the chat frame on every Edit Mode nudge — and a warning that spams is a
+-- warning that gets ignored, which defeats the whole point.
+local function checkExpected()
+  local bound = {}
+  for _, e in pairs(M.items) do
+    if type(e.baseSpellID) == "number" then bound[e.baseSpellID] = true end
+    if type(e.spellID) == "number" then bound[e.spellID] = true end
+  end
+  local missing = {}
+  for _, id in ipairs(expectedButtons()) do
+    if not bound[id] then missing[#missing + 1] = id end
+  end
+  M.missing = missing
+
+  local sig = table.concat(missing, ",")
+  if sig == M.warnedMissing then return end
+  M.warnedMissing = sig
+  -- Nothing missing: stay silent (and the empty signature is now cached, so a
+  -- spell going missing later still warns exactly once).
+  if #missing == 0 then return end
+  ns.Printf("|cffffd100HUD:|r %d expected ability/abilities are |cffffd100not in your Cooldown Manager|r:", #missing)
+  for _, id in ipairs(missing) do
+    ns.Printf("   |cffffffff%s|r (%d) — not tracked; %s",
+      ns.SpellName(id) or "?", id, lossText(id))
+  end
+  ns.Print("   Add them in Edit Mode -> Cooldown Manager, or |cffffffff/cdmp hud status|r to see this again.")
 end
 
 -- Rebuild the whole registry and re-attach chrome to every live item frame.
@@ -157,6 +248,7 @@ local function rebind()
   -- the whole-registry work that follows it.
   pcall(ns.HudState.SyncLevels)
   pcall(ns.HudState.RefreshGlows)  -- ...which also re-drives the dot score
+  pcall(checkExpected)             -- B7 — diff expected against bound, warn once
 end
 M.Rebind = rebind
 
@@ -253,6 +345,9 @@ function ns.SetHud(on)
       if v and ns.HasMethod(v, "RefreshData") then pcall(v.RefreshData, v) end
     end
     wipe(M.items)
+    wipe(M.lastIdentity)
+    wipe(M.missing)
+    M.warnedMissing = nil       -- a fresh enable re-states the capability gap
     ns.Print("HUD |cffff8080OFF|r — Blizzard's Cooldown Manager restored untouched.")
   end
 end
@@ -262,7 +357,7 @@ end
 --------------------------------------------------------------------------------
 local function printStatus()
   local db = ensureDB()
-  ns.Heading("HUD status — M3c-a (identity + readiness + procs + the dot score)")
+  ns.Heading("HUD status — M3c-b (the truth pass: live identity + projection)")
   ns.Printf("  state: %s   rows: %s (verbose %s)   opener setting: |cffffffff%s|r (M3c)",
     M.on and "|cff88ff88ON|r" or "|cffff8080OFF|r",
     ns.HudRow.on and "|cff88ff88on|r" or "|cffff8080off|r",
@@ -278,6 +373,17 @@ local function printStatus()
     ns.HudBinds.stats.slots, ns.HudBinds.stats.scans, ns.HudBinds.stats.coalesced,
     ns.HudBinds.stats.deferred,
     ns.HudBinds.dirty and ", |cffffd100dirty|r" or "")
+  -- B7's PERSISTENT home.  Chat scrolls away; this readout doesn't, and it is
+  -- what `/cdmp probe` captures to disk for off-line reading.  So the gap is
+  -- listed here EVERY time, not just on the edge that first found it.
+  if M.missing and #M.missing > 0 then
+    ns.Printf("  |cffffd100expected but NOT tracked by the CDM: %d|r", #M.missing)
+    for _, id in ipairs(M.missing) do
+      ns.Printf("   |cffff4040missing|r %s (%d) — %s", ns.SpellName(id) or "?", id, lossText(id))
+    end
+  else
+    ns.Print("  expected vs bound: |cff88ff88complete|r — every ns.Spec button you know is tracked")
+  end
   ns.HudState.PrintStatus()
   ns.Heading("  bound items")
   for _, name in ipairs(ALL_VIEWERS) do
@@ -297,7 +403,7 @@ local function printStatus()
           known and "" or " |cffffd100(not in ns.Spec — neutral)|r",
           ns.HudBinds.GetForItem(e.item, e.spellID) or "|cff808080none|r",
           ready == nil and "|cff808080unknown|r" or (ready and "|cff88ff88yes|r" or "no"),
-          sc and (sc.level .. (sc.soon and "/SOON" or "")) or "|cff808080none|r",
+          sc and (sc.level .. (sc.soon and "/SOON" or "") .. (sc.projected and "~est" or "")) or "|cff808080none|r",
           ns.HudChrome.IsGlowing(e.item) and "  |cff44e0ffGLOW|r" or "")
       end
     end

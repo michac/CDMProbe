@@ -61,8 +61,15 @@ ns.HudState = {
   shards   = nil,         -- last readable soul-shard count (nil = unreadable)
   levelOK  = nil,         -- nil = not yet probed; true/false = IsShown usable
   hooks    = 0,
+  -- `other` and `errors` are SPLIT (M3c-b B3).  Both were incremented into
+  -- `other`: the unknown-alert-type else-branch AND the pcall failure sink in
+  -- S.Install's hook.  A probe read other=47 in one session and there was no way
+  -- to tell whether that was 47 unhandled event types (fine, informational) or
+  -- 47 SWALLOWED HANDLER ERRORS (a bug we'd never see).  After this milestone
+  -- `errors` should be 0; a non-zero count is a defect, not a curiosity.
   fires    = { available = 0, oncd = 0, applied = 0, removed = 0,
-               charge = 0, pandemic = 0, other = 0, secret = 0, override = 0 },
+               charge = 0, pandemic = 0, other = 0, errors = 0,
+               secret = 0, override = 0 },
   lastEdge = {},          -- source spellID -> "aura-event" | "override" | "poll"
   -- M3c-a — the dot score.
   score          = {},    -- registry key -> the HudScore result, for the row
@@ -97,6 +104,71 @@ local function readShards()
   local ok, n = pcall(UnitPower, "player", Enum.PowerType.SoulShards)
   if not ok or ns.IsSecret(n) or type(n) ~= "number" then return nil end
   return n
+end
+
+--------------------------------------------------------------------------------
+-- SPEND-SIDE ANTICIPATION — M3c-b B4
+--------------------------------------------------------------------------------
+-- "As soon as I start casting HoG it should assume those shards are consumed and
+-- give me recommendations based on that state."  The shipped napkin only ghosts
+-- INCOMING shards; this is the other half.  Unblocked by the probe:
+-- UNIT_SPELLCAST_START read 52/52 readable, 0 secret.
+--
+-- ⚠ THE DOUBLE-DEDUCTION GUARD is required, not optional.  It is UNKNOWN whether
+-- the client deducts the cost at cast START or at completion.  A naive
+-- `live - cost` would subtract twice under the start-deduct behaviour and tell
+-- the player they're broke.  So we never subtract the cost outright — we compute
+-- from OBSERVED MOVEMENT:
+--
+--     spent     = max(0, atStart - live)      how much has ALREADY come off
+--     remaining = max(0, cost - spent)        what is still owed
+--     projected = live - remaining + generates
+--
+-- Correct under either behaviour: if the client already took it, `spent` covers
+-- the cost and `remaining` is 0; if it hasn't, `spent` is 0 and we take it here.
+--
+-- ⚠ THE RESIDUAL ASSUMPTION the guard cannot cover: `atStart` must be sampled
+-- BEFORE the deduction lands.  If the client deducts at cast start AND fires
+-- UNIT_POWER_UPDATE ahead of UNIT_SPELLCAST_START, we baseline off the
+-- already-reduced count, `spent` reads 0, and we subtract a second time.  The
+-- symptom is a board that goes CONSERVATIVE mid-cast (a gate that should be open
+-- reads shut) — never one that over-promises.  That is the safe direction, and
+-- the summary line prints the projected figure beside the live one precisely so
+-- the in-game pass can see the two disagree.
+--
+-- Everything derived from this is an ESTIMATE, and estimates render HOLLOW —
+-- same rule as the napkin's SOON, same class of claim.
+S.cast = nil            -- { spellID, cost, generates, atStart } while in flight
+
+local function beginCast(spellID)
+  if not (type(spellID) == "number" and not ns.IsSecret(spellID)) then return end
+  local cost = ns.ShardCost(spellID) or 0
+  local gen  = ns.SpecGhost(spellID) or 0
+  if cost <= 0 and gen <= 0 then S.cast = nil return end
+  S.cast = { spellID = spellID, cost = cost, generates = gen, atStart = S.shards }
+  if S.Recompute then S.Recompute() end
+end
+
+local function endCast()
+  if S.cast == nil then return end
+  S.cast = nil
+  if S.Recompute then S.Recompute() end
+end
+
+-- The shard figure the SCORER should read.  Returns (shards, projected) where
+-- `projected` is true only when the estimate actually DIFFERS from the live
+-- reading — i.e. only when a dot could have been moved by it, which is exactly
+-- when the hollow confidence marker is owed.
+function S.ProjectedShards()
+  local live = S.shards
+  if live == nil then return nil, false end       -- unreadable stays unreadable
+  local c = S.cast
+  if not (c and type(c.atStart) == "number") then return live, false end
+  local spent     = math.max(0, c.atStart - live)
+  local remaining = math.max(0, (c.cost or 0) - spent)
+  local proj      = live - remaining + (c.generates or 0)
+  proj = math.max(0, math.min(ns.SHARD_CAP or 5, proj))
+  return proj, proj ~= live
 end
 
 --------------------------------------------------------------------------------
@@ -272,7 +344,13 @@ function S.Recompute()
         if sc.candidate then
           S.candidateSince[key] = S.candidateSince[key] or now
           local since = S.candidateSince[key]
-          if (now - since) >= LATE_AFTER then
+          -- B6 — LATE MUST NOT ACCRUE OUT OF COMBAT.  The OOC probe caught Hand
+          -- of Gul'dan at "LATE - waiting 7s" while standing in a city: LATE is a
+          -- NAG, and a nag with nothing to nag about trains the player to ignore
+          -- the channel entirely.  (InCombatLockdown is readable and branchable —
+          -- it's the secure-API lockdown flag, not combat state; the same
+          -- precedent quiet() already relies on above.)
+          if InCombatLockdown() and (now - since) >= LATE_AFTER then
             sc.level = ns.HudScore.LEVELS.LATE
             sc.reasons[#sc.reasons + 1] = string.format("waiting %.0fs", now - since)
           end
@@ -280,10 +358,17 @@ function S.Recompute()
           S.candidateSince[key] = nil
         end
         S.score[key] = sc
+        -- B4 — a dot promoted BECAUSE OF a projection renders HOLLOW.  Same
+        -- confidence marker the napkin's SOON already uses, same rule: an
+        -- ESTIMATE MUST NEVER LOOK LIKE AN OBSERVATION.  Only the promoted
+        -- levels are marked — NEVER/AVAILABLE claim nothing to soften.
+        local hollow = sc.projected and
+          (sc.level == ns.HudScore.LEVELS.ROTATION or sc.level == ns.HudScore.LEVELS.LATE)
         -- SOON is a treatment on NEVER, never a level of its own: it brightens
         -- and counts down but claims nothing about pressability.
         pcall(ns.HudChrome.SetDot, e.item, e.viewer,
-          (sc.soon and sc.level == ns.HudScore.LEVELS.NEVER) and "SOON" or sc.level)
+          (sc.soon and sc.level == ns.HudScore.LEVELS.NEVER) and "SOON" or sc.level,
+          hollow)
       else
         S.score[key] = nil
         S.candidateSince[key] = nil
@@ -367,7 +452,7 @@ function S.Install(item)
   S.hooks = S.hooks + 1
   hooksecurefunc(item, "TriggerAlertEvent", function(self, event)
     local ok = pcall(onAlert, self, event)
-    if not ok then S.fires.other = S.fires.other + 1 end
+    if not ok then S.fires.errors = S.fires.errors + 1 end
   end)
 end
 
@@ -438,7 +523,7 @@ end
 -- Events
 --------------------------------------------------------------------------------
 local ev = CreateFrame("Frame")
-ev:SetScript("OnEvent", function(_, event, a1, a2)
+ev:SetScript("OnEvent", function(_, event, a1, a2, a3)
   if not hudOn() then return end
   if event == "COOLDOWN_VIEWER_SPELL_OVERRIDE_UPDATED" then
     -- (baseSpellID, overrideSpellID).  THIS is Demonic Art, observed precisely:
@@ -456,6 +541,14 @@ ev:SetScript("OnEvent", function(_, event, a1, a2)
     end
   elseif event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_REGEN_ENABLED" then
     S.shards = readShards()
+    if event == "PLAYER_REGEN_ENABLED" then
+      -- B6's other half.  Leaving combat clears the candidate clocks so the next
+      -- pull starts them FRESH — otherwise an ability that became a candidate as
+      -- the last mob died carries a stale timestamp into the opener and promotes
+      -- straight to LATE on the first frame of the fight.
+      wipe(S.candidateSince)
+      S.cast = nil
+    end
     S.EvaluateBoard()          -- combat state is half of "is the board quiet?"
   elseif event == "UNIT_POWER_UPDATE" or event == "UNIT_POWER_FREQUENT" then
     if a1 ~= "player" then return end
@@ -464,6 +557,16 @@ ev:SetScript("OnEvent", function(_, event, a1, a2)
       S.shards = n
       S.RefreshGlows()          -- re-evaluates softening + the board
     end
+  elseif event == "UNIT_SPELLCAST_START" then
+    -- (unit, castGUID, spellID) — RegisterUnitEvent already filters to player.
+    pcall(beginCast, a3)
+  elseif event == "UNIT_SPELLCAST_SUCCEEDED" or event == "UNIT_SPELLCAST_STOP"
+      or event == "UNIT_SPELLCAST_INTERRUPTED" then
+    -- The projection is retired by ANY end-of-cast, however it ended.  A cast
+    -- that was interrupted spent nothing and a cast that landed has already
+    -- moved the live counter, so in both cases the ground truth is now the
+    -- readable one and the estimate has no business outliving it.
+    pcall(endCast)
   end
 end)
 
@@ -477,6 +580,11 @@ function S.Start()
   ev:RegisterEvent("PLAYER_REGEN_ENABLED")
   ev:RegisterUnitEvent("UNIT_POWER_UPDATE", "player")
   ev:RegisterUnitEvent("UNIT_POWER_FREQUENT", "player")
+  -- B4 — the spend side of anticipation.
+  ev:RegisterUnitEvent("UNIT_SPELLCAST_START", "player")
+  ev:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
+  ev:RegisterUnitEvent("UNIT_SPELLCAST_STOP", "player")
+  ev:RegisterUnitEvent("UNIT_SPELLCAST_INTERRUPTED", "player")
   S.SyncLevels()
   if not pollTicker then pollTicker = C_Timer.NewTicker(POLL_PERIOD, poll) end
   -- One ticker, two jobs, both of which are pure CLOCK work the edges can't do:
@@ -494,6 +602,7 @@ function S.Stop()
   if scoreTicker then scoreTicker:Cancel(); scoreTicker = nil end
   if recedeTimer then recedeTimer:Cancel(); recedeTimer = nil end
   ns.HudNapkin.Stop()
+  S.cast = nil
   wipe(S.presence)
   wipe(S.override)
   wipe(S.glowing)
@@ -511,6 +620,11 @@ function S.PrintStatus()
   ns.Printf("   alert hooks: %d item(s)   edges: Available=%d OnCooldown=%d AuraApplied=%d AuraRemoved=%d  (charge=%d pandemic=%d other=%d |cffff4040secret=%d|r)",
     S.hooks, S.fires.available, S.fires.oncd, S.fires.applied, S.fires.removed,
     S.fires.charge, S.fires.pandemic, S.fires.other, S.fires.secret)
+  -- Split out of `other` (B3): `other` = an alert type we don't handle (benign),
+  -- `errors` = the handler THREW and the pcall ate it (never benign).
+  ns.Printf("   handler errors (swallowed by the hook's pcall): %s",
+    S.fires.errors > 0 and string.format("|cffff4040%d|r — this is a BUG, not a curiosity", S.fires.errors)
+      or "|cff88ff880|r")
   ns.Printf("   spell-override events: %d   shards: %s   recede: %.2f",
     S.fires.override, S.shards and tostring(S.shards) or "|cffff4040unreadable|r",
     ns.HudChrome.GetRecede())
@@ -545,7 +659,12 @@ function S.PrintStatus()
     counts[sc.level] = (counts[sc.level] or 0) + 1
     if sc.level == "ROTATION" or sc.level == "LATE" then
       local e = ns.Hud.items[key]
-      local id = e and (e.baseSpellID or e.spellID)
+      local base = e and (e.baseSpellID or e.spellID)
+      -- Name the LIVE identity (B1).  Naming the base here is what printed
+      -- "Grimoire: Fel Ravager - up - use on cooldown" over a Devour Magic
+      -- button; this line is the milestone's own exit measurement, so it has to
+      -- report what is actually on screen.
+      local id = (base and S.override[base]) or (e and e.spellID) or base
       lit[#lit + 1] = string.format("%s (%s)", (id and ns.SpellName(id)) or "?",
         ns.HudScore.Why(sc))
     end

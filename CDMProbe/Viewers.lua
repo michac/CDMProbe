@@ -37,26 +37,50 @@ function ns.GetItemFrames(viewer)
   return out, "GetChildren() filtered"
 end
 
+-- ⚠ THE SECRET-ID TRAP (M3c-b B2).  `type(secretValue) == "number"` is **TRUE**,
+-- so the obvious guard — `if ok and type(id) == "number"` — HAPPILY RETURNS A
+-- SECRET VALUE.  The buff viewer's GetSpellID() reads secret in combat
+-- (probe-confirmed), so a rebind landing mid-fight used to write a secret into
+-- `e.baseSpellID`, and every downstream `e.baseSpellID == spellID` then compared
+-- one — including `entriesForSpell` in HudState, which is the entire proc-glow
+-- routing path.  A secret never escapes these two functions again: every
+-- strategy is ns.IsSecret-checked, an unreadable one FALLS THROUGH to the next,
+-- and the last word is `nil` — "we don't know" — never a poisoned number.
+local function readable(id)
+  return type(id) == "number" and not ns.IsSecret(id)
+end
+
 -- Returns (spellID, sourceLabel).  Tries several strategies since the exact
 -- item->spell accessor is not fully documented for 12.0.
 function ns.ItemSpellID(item)
+  local sawSecret = false
   if ns.HasMethod(item, "GetSpellID") then
     local ok, id = pcall(item.GetSpellID, item)
-    if ok and type(id) == "number" then return id, "item:GetSpellID()" end
+    if ok then
+      if readable(id) then return id, "item:GetSpellID()" end
+      if ns.IsSecret(id) then sawSecret = true end
+    end
   end
   local cdID = item.cooldownID
+  if not readable(cdID) then cdID = nil end
   if not cdID and ns.HasMethod(item, "GetCooldownID") then
     local ok, id = pcall(item.GetCooldownID, item)
-    if ok and type(id) == "number" then cdID = id end
+    if ok and readable(id) then cdID = id end
   end
   if cdID and C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo then
     local ok, info = pcall(C_CooldownViewer.GetCooldownViewerCooldownInfo, cdID)
-    if ok and type(info) == "table" and info.spellID then
-      return info.spellID, "C_CooldownViewer(" .. tostring(cdID) .. ").spellID"
+    if ok and type(info) == "table" then
+      if readable(info.spellID) then
+        return info.spellID, "C_CooldownViewer(" .. tostring(cdID) .. ").spellID"
+      end
+      if ns.IsSecret(info.spellID) then sawSecret = true end
     end
   end
-  if type(item.spellID) == "number" then return item.spellID, "item.spellID" end
-  return nil, "unresolved"
+  if readable(item.spellID) then return item.spellID, "item.spellID" end
+  if ns.IsSecret(item.spellID) then sawSecret = true end
+  -- The two are reported apart on purpose: "unresolved" is a layout/API question,
+  -- "secret" is the restricted-combat one, and the callers' recovery differs.
+  return nil, sawSecret and "secret" or "unresolved"
 end
 
 -- The BASE spell — `cooldownInfo.spellID`, before any override.  Distinct from
@@ -68,13 +92,14 @@ end
 function ns.ItemBaseSpellID(item)
   if ns.HasMethod(item, "GetBaseSpellID") then
     local ok, id = pcall(item.GetBaseSpellID, item)
-    if ok and type(id) == "number" then return id end
+    if ok and readable(id) then return id end
   end
   -- Fallback: the C_CooldownViewer info table carries the un-overridden spellID.
   local cdID = ns.ItemCooldownID and ns.ItemCooldownID(item) or item.cooldownID
+  if not readable(cdID) then cdID = nil end
   if cdID and C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo then
     local ok, info = pcall(C_CooldownViewer.GetCooldownViewerCooldownInfo, cdID)
-    if ok and type(info) == "table" and type(info.spellID) == "number" then
+    if ok and type(info) == "table" and readable(info.spellID) then
       return info.spellID
     end
   end

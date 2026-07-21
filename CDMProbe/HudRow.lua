@@ -135,6 +135,12 @@ local function lineFor(key, e)
       -- claim that you can press it.
       local shown = (sc.soon and sc.level == "NEVER") and "SOON" or sc.level
       parts[#parts + 1] = levelTag(shown)
+      -- Mirror the hollow dot in WORDS (B4): this level came off an in-flight-cast
+      -- projection, so the row says so rather than letting the level stand alone
+      -- as if it were observed.
+      if sc.projected and (sc.level == "ROTATION" or sc.level == "LATE") then
+        parts[#parts + 1] = AMBER .. "~est|r"
+      end
       local why = ns.HudScore.Why(sc)
       if why ~= "" then parts[#parts + 1] = why end
     else
@@ -227,6 +233,13 @@ local function summaryLine()
   local S = ns.HudState
   local shards = S.shards and (WHITE .. tostring(S.shards) .. "/" .. ns.SHARD_CAP .. "|r")
     or (RED .. "unreadable|r")
+  -- The spend-side projection, on the summary line: while a cast is in flight the
+  -- dots are scored against this figure, so it has to be visible or the board
+  -- looks like it's disagreeing with the shard count sitting right next to it.
+  if S.ProjectedShards then
+    local proj, isProj = S.ProjectedShards()
+    if isProj then shards = shards .. AMBER .. " ->~" .. tostring(proj) .. "|r" end
+  end
   local lit = 0
   for _, sc in pairs(S.score) do
     if sc.level == "ROTATION" or sc.level == "LATE" then lit = lit + 1 end

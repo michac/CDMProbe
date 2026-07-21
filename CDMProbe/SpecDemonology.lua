@@ -39,6 +39,12 @@
 --                known case: its real gate is Wild Imps >= 6 and the count is
 --                secret.  This is "inform, don't instruct" made mechanical.
 --   secretGate — the sentence a judgeable=false ability prints instead of a call
+--   expect     — DEFAULT TRUE.  False means "never expect this to be bound to a
+--                CDM icon" — it exists only as a live spell OVERRIDE.  Read by
+--                the M3c-b B7 expected-vs-bound warning, which would otherwise
+--                report every Demonic Art transform as a missing ability.
+--   lost       — the sentence B7 prints for what a MISSING ability costs you.
+--                Says what is lost, not just what is absent.
 --   baseCD     — documented base cooldown, sanity-check only.  ns.BaseCooldown
 --                reads the live value; nil here means "the docs don't assert it".
 --   label      — human name, for `/cdmp hud status` only
@@ -124,21 +130,31 @@ ns.Spec = {
   },
   [S.SHADOW_BOLT] = {
     group = "core", kind = "button", generates = 1, cadence = "filler",
+    -- B7: what the player LOSES if this isn't in the tracked set.  Named
+    -- specifically because this exact gap hid the SB -> Infernal Bolt blind spot
+    -- for four milestones, and because Shadow Bolt is added by hand — the
+    -- knowingly-accepted risk is silent degradation if the setting is ever lost.
+    lost = "SB -> Infernal Bolt cannot light, and the filler has no dot",
     label = "Shadow Bolt",
   },
 
-  -- Demonic Art transforms.  Two IDs are in circulation for each in the maxroll
-  -- captures (433891/434506 Infernal Bolt, 434635/434636 Ruination) and we have
-  -- not disambiguated them against game data — both are mapped to the same entry
-  -- so whichever the client hands us resolves correctly.  Harmless if one is dead.
+  -- Demonic Art transforms.  These are OVERRIDES, never separately tracked by
+  -- the CDM — they replace Hand of Gul'dan / Shadow Bolt on the live button — so
+  -- `expect = false` keeps B7's expected-vs-bound diff from reporting them as a
+  -- gap (unbound is their normal state).
+  --
+  -- Two IDs were in circulation for each in the maxroll captures.  The probe
+  -- CONFIRMED the live ones on 2026-07-21: **Ruination = 434635**, **Infernal
+  -- Bolt = 434506**.  The other two stay mapped — they cost nothing and cover a
+  -- build that surfaces the alternate ID.
   [433891] = { group = "core", kind = "button", spends = "art", generates = 3,
-               cadence = "reactive", label = "Infernal Bolt" },
+               cadence = "reactive", expect = false, label = "Infernal Bolt (alt ID, unconfirmed)" },
   [434506] = { group = "core", kind = "button", spends = "art", generates = 3,
-               cadence = "reactive", label = "Infernal Bolt" },
+               cadence = "reactive", expect = false, label = "Infernal Bolt" },  -- CONFIRMED live
   [434635] = { group = "core", kind = "button", spends = "art",
-               cadence = "reactive", label = "Ruination" },
+               cadence = "reactive", expect = false, label = "Ruination" },      -- CONFIRMED live
   [434636] = { group = "core", kind = "button", spends = "art",
-               cadence = "reactive", label = "Ruination" },
+               cadence = "reactive", expect = false, label = "Ruination (alt ID, unconfirmed)" },
 
   -- ── Essential: the fel explosion (§3 "aoe" / lime) ────────────────────────
   -- THE judgeable=false case.  Implosion's real gate is Wild Imps >= 6.  The
@@ -162,6 +178,14 @@ ns.Spec = {
   [119898]  = { group = "cc",  kind = "button", cadence = "utility", label = "Command Demon" },
   [119914]  = { group = "cc",  kind = "button", cadence = "utility", label = "Axe Toss" },
   [6789]    = { group = "cc",  kind = "button", cadence = "utility", label = "Mortal Coil" },
+  -- THE DEFECT THAT MOTIVATED M3c-b.  Devour Magic is a pet purge that OVERRIDES
+  -- the Grimoire button, and because M3c-a scored the base spell unconditionally
+  -- the HUD advertised "Grimoire: Fel Ravager - up - use on cooldown - waiting
+  -- 18s" on a button that was a purge.  Mapped so the live identity resolves to
+  -- something real: a utility, i.e. "your call", i.e. never a lit dot.
+  -- `expect = false` — it only ever appears as an override.
+  [388215]  = { group = "cc",  kind = "button", cadence = "utility", expect = false,
+                label = "Devour Magic" },
   [1271802] = { group = "cc",  kind = "button", cadence = "utility", label = "Blight of Tongues" },
   [48020]   = { group = "mob", kind = "button", cadence = "utility", label = "Demonic Circle: Teleport" },
 

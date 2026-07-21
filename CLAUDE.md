@@ -60,9 +60,20 @@ Design context + status live in the parent workspace at
   carrying an actionability LEVEL (NEVER / AVAILABLE / ROTATION / LATE, with SOON
   as an anticipation treatment on NEVER) plus a text row saying *why* — so the
   score is auditable, not an oracle.
+  v0.13.0 (**M3c-b, the truth pass**) added no new signal — it made that one
+  true: the dot scores the **live** identity (a transformed button is judged as
+  what it has become, and an unrecognised override gets **no dot**), identity
+  reads are Secret-Value-guarded at the source with a last-known-good fallback
+  across rebinds, LATE no longer accrues out of combat, an in-flight cast
+  projects its shard spend (rendered **hollow** — it's an estimate), and the HUD
+  **warns when an ability it expects isn't in your tracked set**, saying what
+  that costs you.
   - `hud status` — bound items per viewer, resolved spellIDs + group/pole/cadence,
     keybind hits/misses, per-source rebind fire counts, the score block (how many
-    dots are lit and why), and **whether the napkin is live at all** — i.e.
+    dots are lit and why), the **expected-vs-bound diff** (abilities `ns.Spec`
+    knows about, that you have, that your CDM isn't tracking — the persistent home
+    for that warning, since chat scrolls away and this gets captured by `probe`),
+    and **whether the napkin is live at all** — i.e.
     whether `UNIT_SPELLCAST_SUCCEEDED` spellIDs read non-secret in this context.
   - `hud binds` — **every** action slot each tracked spell sits in, with binding
     command, raw key and which one the chrome actually uses. Diagnoses "I remapped
