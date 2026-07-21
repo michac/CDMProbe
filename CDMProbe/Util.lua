@@ -38,6 +38,25 @@ function ns.HasMethod(obj, name)
   return type(obj) == "table" and type(obj[name]) == "function"
 end
 
+-- The bundled monospace, and the ONE place a font is applied.
+--
+-- `SetFont` returns FALSE when the .ttf can't load, and a FontString whose font
+-- failed to set draws NOTHING.  So an unguarded call is not "falls back to
+-- something ugly", it is "the text silently disappears" — which for the imp
+-- count (§7.2 item 3) would hide the readout rather than degrade it.  HudRow had
+-- this guard; HudChrome's stack path did not.  Hence one helper, two callers.
+--
+-- Returns true if the bundled font took, false if we fell back — callers that
+-- care about metrics (anything relying on monospaced digit advance) can check.
+ns.FONT_MONO = "Interface\\AddOns\\CDMProbe\\Media\\JetBrainsMono.ttf"
+
+function ns.SetFont(obj, size, flags)
+  if not (obj and obj.SetFont) then return false end
+  if obj:SetFont(ns.FONT_MONO, size, flags) then return true end
+  obj:SetFont("Fonts\\ARIALN.TTF", size, flags)
+  return false
+end
+
 -- Is the 12.0 Secret Values API present?
 function ns.SecretAPI()
   return type(issecretvalue) == "function"
@@ -86,29 +105,53 @@ end
 -- Power cost for a spell, as the CLIENT reports it for THIS character's build.
 -- Returns (cost, powerTypeName) or nil.
 --
+-- `powerType` (an Enum.PowerType value) FILTERS to one resource.  Passing it is
+-- not optional politeness — see the defect note below.  Omit it only when you
+-- genuinely want "whatever this costs", which nothing in the HUD does.
+--
 -- Deliberately read at runtime rather than authored into SpecDemonology: costs
 -- are TALENT-DEPENDENT (Demonic Calling makes Dreadstalkers free; the Grimoire
 -- and Tyrant costs move with the build), so any number hardcoded in the spec
 -- table is correct for exactly one loadout and silently wrong for every other.
 -- The client already knows the answer for the character actually logged in.
 --
+-- ⚠ THE v0.10.0 DEFECT (fixed here, §7.2 item 1).  This returned the first
+-- non-zero cost of ANY power type, and most of the tracked set costs MANA.  So
+-- Demonbolt's 5000-mana cost became "shards 3<500" (via the fragment heuristic
+-- below) and was compared against a shard count that maxes at 5 — a gate that can
+-- never open, which is why Demonbolt could never be recommended and why Mortal
+-- Coil talked about shards at all.  Hand of Gul'dan "worked" only because the
+-- client happened to list its shard cost first.  Read that again before removing
+-- the filter: an UNFILTERED cost is not a slightly-worse answer, it is a
+-- different resource silently wearing the right units.
+--
 -- Units caveat: Soul Shards are reported in FRAGMENTS in some places (10 per
 -- shard) and whole shards in others, so the raw value is surfaced as-is rather
 -- than divided by a guess.  The in-game readout settles it.
-function ns.PowerCost(spellID)
+function ns.PowerCost(spellID, powerType)
   if type(spellID) ~= "number" or ns.IsSecret(spellID) then return nil end
   if not (C_Spell and C_Spell.GetSpellPowerCost) then return nil end
   local ok, costs = pcall(C_Spell.GetSpellPowerCost, spellID)
   if not ok or type(costs) ~= "table" then return nil end
   for _, c in ipairs(costs) do
     if type(c) == "table" and not ns.IsSecret(c.cost) and type(c.cost) == "number" then
-      if c.cost > 0 then
+      -- `c.type` is guarded like every other read: an unreadable type can't be
+      -- matched against the filter, so it's skipped rather than assumed to be
+      -- the resource we asked for.
+      local typeOK = true
+      if powerType ~= nil then
+        typeOK = (not ns.IsSecret(c.type)) and c.type == powerType
+      end
+      if typeOK and c.cost > 0 then
         local name = c.name
         if type(name) ~= "string" then name = "power" .. tostring(c.type) end
         return c.cost, name
       end
     end
   end
+  -- 0 = "no cost in the resource we asked about".  NOTE this still reports
+  -- "genuinely free" and "unreadable" identically — HudScore's gated branch
+  -- guards that ambiguity explicitly and must keep doing so.
   return 0, nil
 end
 
@@ -124,8 +167,19 @@ end
 --
 -- Returns (shardCost, rawCost).  `/cdmp hud debug` prints both, which is how the
 -- in-game pass settles the units question for good.
+--
+-- ⚠ The fragment heuristic below is STILL UNPROVEN against a real shard cost
+-- (§7.2 item 12).  Until v0.10.0 it only ever saw MANA figures, where it
+-- "worked" — 5000 -> 500 — and manufactured the defect's signature numbers.  Now
+-- that the type filter means it only sees shards, the raw column in
+-- `/cdmp hud debug` is what confirms or falsifies it.
 function ns.ShardCost(spellID)
-  local raw = ns.PowerCost(spellID)
+  -- No Enum -> no way to ask about the right resource, and an UNFILTERED read is
+  -- exactly the defect.  Report "unreadable" instead, which the scorer already
+  -- handles honestly (it caps at AVAILABLE and says "shards unreadable").
+  local pt = Enum and Enum.PowerType and Enum.PowerType.SoulShards
+  if pt == nil then return nil, nil end
+  local raw = ns.PowerCost(spellID, pt)
   if raw == nil then return nil, nil end
   if raw >= 10 and raw % 10 == 0 then return raw / 10, raw end
   return raw, raw

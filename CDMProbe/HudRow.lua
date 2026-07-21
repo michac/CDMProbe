@@ -35,16 +35,13 @@ local D = ns.HudRow
 -- Bundled JetBrains Mono, same as the BucketBinds console.  A genuine monospace
 -- is the whole point of a terminal readout: columns line up, and glyphs stay
 -- distinguishable at small sizes in a way ARIALN's condensed forms do not.
--- SetFont returns false if the .ttf can't load, so every call falls back.
-local FONT = "Interface\\AddOns\\CDMProbe\\Media\\JetBrainsMono.ttf"
+-- The font + its load-failure fallback now live in Util (ns.SetFont) because
+-- HudChrome's imp-count path needs the identical guard (§7.2 item 3).
 local SIZE = 14                 -- was 11 — unreadable at 1440p+
 local REFRESH = 0.15
 
 local function applyFont(obj, size)
-  if not (obj and obj.SetFont) then return end
-  if not obj:SetFont(FONT, size, "OUTLINE") then
-    obj:SetFont("Fonts\\ARIALN.TTF", size, "OUTLINE")
-  end
+  ns.SetFont(obj, size, "OUTLINE")
 end
 
 -- Weak keys: rows hang off pooled item frames we don't own.

@@ -101,7 +101,10 @@ local GLOW_MIN     = 0.55   -- pulse trough (higher = less blinky)         (was 
 local GLOW_MAX     = 1.00
 local GLOW_PERIOD  = 0.55
 
-local STACK_SIZE   = 22     -- Wild Imp count: the one AoE readout (§0.5.8.3 #17)
+local STACK_SIZE   = 30     -- Wild Imp count: the one AoE readout (§0.5.8.3 #17)
+                            -- 22 -> 30 (§7.2 item 3): it is the sole v1 assist
+                            -- for Demo's central AoE decision and has to beat the
+                            -- icon art it sits on.
 local STACK_COL    = { 1.00, 0.86, 0.35 }   -- bright gold; must beat the icon art
 
 -- ── The DOT (M3c-a, §0.5.8.7) ────────────────────────────────────────────────
@@ -590,8 +593,15 @@ function H.EmphasizeStacks(item, suffix)
   end
   local st = stacked[item]
   local JX, JY = -14, 2                     -- the junction point, icon-relative
+  -- BOTH fontstrings take the SAME font, and they change together or not at all
+  -- (§7.2 item 3).  Until now both read Blizzard's saved `st.font`, so they
+  -- matched by accident rather than by rule — swap one and you get a mismatched
+  -- "4/6".  ns.SetFont carries the load-failure fallback the old unguarded call
+  -- lacked; `st` still holds Blizzard's original triple so RestoreStacks keeps
+  -- `hud off` pixel-clean.  Monospace is a real win here beyond consistency: a
+  -- fixed-width digit stops the count jittering horizontally as imps come and go.
   pcall(function()
-    fs:SetFont(st.font or "Fonts\\FRIZQT__.TTF", STACK_SIZE, "OUTLINE")
+    ns.SetFont(fs, STACK_SIZE, "OUTLINE")
     fs:ClearAllPoints()
     fs:SetPoint("BOTTOMRIGHT", item, "BOTTOMRIGHT", JX, JY)
     fs:SetJustifyH("RIGHT")
@@ -599,7 +609,7 @@ function H.EmphasizeStacks(item, suffix)
   if not o.stackSuffix then
     o.stackSuffix = o.frame:CreateFontString(nil, "OVERLAY")
   end
-  o.stackSuffix:SetFont(st.font or "Fonts\\FRIZQT__.TTF", STACK_SIZE, "OUTLINE")
+  ns.SetFont(o.stackSuffix, STACK_SIZE, "OUTLINE")
   o.stackSuffix:ClearAllPoints()
   o.stackSuffix:SetPoint("BOTTOMLEFT", item, "BOTTOMRIGHT", JX, JY)
   o.stackSuffix:SetJustifyH("LEFT")

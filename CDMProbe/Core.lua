@@ -9,15 +9,15 @@ ns.name = ADDON
 ns.version = (C_AddOns and C_AddOns.GetAddOnMetadata and C_AddOns.GetAddOnMetadata(ADDON, "Version")) or "?"
 
 -- Saved-variable defaults -----------------------------------------------------
+-- `logMode` / `shardShown` / `shardFrame` were dropped in v0.12.0 with the
+-- commands that owned them (see Probe.lua's header).  Stale keys in an existing
+-- CDMProbeDB are harmless — nothing reads them — so there is no migration.
 local DEFAULTS = {
   skinOn = false,
-  logMode = "off",       -- "off" | "quiet" | "verbose"
-  shardShown = false,
-  shardFrame = { point = "CENTER", x = 0, y = -140 },
   -- The real HUD's settings (HudCore fills missing sub-keys defensively too, so
   -- a db written by an older build picks up keys added later).
   hud = { on = false, opener = "1b" },
-  reports = {},          -- persisted /cdmp dump + /cdmp secret output (read off disk)
+  reports = {},          -- persisted `/cdmp probe` output, read off disk
 }
 
 -- Chat helpers ----------------------------------------------------------------
@@ -70,7 +70,7 @@ local function printHelp()
   for _, name in ipairs(ns.commandOrder) do
     ns.Printf("  |cff88ff88%s|r — %s", name, ns.commands[name].help)
   end
-  ns.Print("suggested run at a target dummy: |cffffffffdump|r (out of combat) -> |cffffffffskin|r -> |cffffffffshards|r -> pull, then |cffffffffsecret|r again in combat.")
+  ns.Print("suggested run: |cffffffffprobe|r (out of combat) -> pull a dummy -> |cffffffffprobe|r again in combat -> |cffffffff/reload|r, then the reports are on disk.")
 end
 
 local function dispatch(msg)

@@ -32,9 +32,24 @@ Design context + status live in the parent workspace at
 
 ## Commands (`/cdmp <cmd>`, alias `/cdmprobe`)
 
-- `dump` — introspect the live API: viewer frames, item frames, resolved
-  spellIDs, item anatomy, and which APIs (`C_CooldownViewer`, Secret Values)
-  exist. Run **out of combat and again in combat** to see what turns `<secret>`.
+- `probe` — **THE probe (v0.12.0).** One command, one report, **written to disk**.
+  Replaced `dump` / `secret` / `casts` / `log` / `layout` / `shards`, which each
+  answered one question and each had to be toggled *before* the interesting thing
+  happened — the wrong shape, since procs/transforms/secret reads can't be
+  scheduled. Everything passive now records **from load** (cast-phase readability
+  counters, spell-override pairs, glow + data-loaded counts) at counter cost, and
+  `probe` renders the lot: environment + viewer/item anatomy, the secret map,
+  **A** cooldown readability per tracked spell (the M3d gate), **B** overrides and
+  live base-vs-live divergence, **C** per-phase cast readability, **D** the
+  imp-count side-channel probe, plus the HUD's own state/score/napkin block.
+  `probe clear` resets the passive counters.
+  **The loop:** `/cdmp probe` out of combat → pull → `/cdmp probe` in combat →
+  **`/reload`** → reports are at
+  `…/_retail_/WTF/Account/<ACCT>/SavedVariables/CDMProbe.lua` under
+  `CDMProbeDB.reports["probe_ooc"]` / `["probe_combat"]`.
+  ⚠ The `/reload` is **not optional** — SavedVariables only flush on
+  reload/logout, so skipping it leaves last session's text on disk, which looks
+  exactly like a probe that silently did nothing.
 - `hud` — **the real HUD (M3+).** Binds per item to the **live** CDM layout by
   `cooldownID` off the `RefreshLayout` hook (+ `COOLDOWN_VIEWER_DATA_LOADED` /
   `PLAYER_ENTERING_WORLD`) — no ticker. Blizzard's icons stay **native and
@@ -49,6 +64,10 @@ Design context + status live in the parent workspace at
     keybind hits/misses, per-source rebind fire counts, the score block (how many
     dots are lit and why), and **whether the napkin is live at all** — i.e.
     whether `UNIT_SPELLCAST_SUCCEEDED` spellIDs read non-secret in this context.
+  - `hud binds` — **every** action slot each tracked spell sits in, with binding
+    command, raw key and which one the chrome actually uses. Diagnoses "I remapped
+    a key and it didn't pick it up": first-bound-slot-wins, unbindable slot ranges
+    (13–24 / 109–180), and macros `GetMacroSpell` can't resolve.
   - `hud debug` — verbose rows (identity, cooldown, raw+normalised cost, presence
     source, override state).  `hud dump` prints the same to chat.
   - `hud rows` — turn the text rows off entirely (the dots stay).
@@ -58,14 +77,6 @@ Design context + status live in the parent workspace at
 - `resource` — *(reference, retired direction)* resource-centric skin: group-color
   blocks + 4-letter labels, recolored BuffBar duration bars, and a Soul Shard rail
   we own (fill, generate→spend→cap recolor, cap flash + spark + earcon).
-- `shards` — draggable Soul Shard bar; Secret-Values-aware (flips to `<secret>`
-  if the value is unreadable in restricted combat).
-- `layout` — probe whether `C_CooldownViewer.SetLayoutData()` is addon-writable
-  (auto-apply viability); `layout write` attempts the safe round-trip OOC.
-- `casts` — log player casts to test whether the spellID is readable in combat
-  (decides roll-your-own cooldown timers).
-- `secret` — on-demand probe of which values are secret right now.
-- `log` — event logger (CDM data-loaded, glow show/hide = proc detection test).
 - `reset` — turn every experiment off.
 
 ## File layout
@@ -80,12 +91,13 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
     CDMProbe.toc
     Core.lua                      namespace, saved vars, slash cmds, registry
     Util.lua                      color, spell-name, Secret-Values-aware describe
-    Viewers.lua                   locate viewers, enumerate items, `dump`
+    Viewers.lua                   locate viewers, enumerate items,
+                                  ns.DumpViewers() (a `probe` section)
     Skin.lua                      color-block skin experiment (retired direction)
-    Probes.lua                    shard bar, `secret`, `log`, `casts`, `reset`
+    Probe.lua                     THE probe: passive recorders + `/cdmp probe`
+                                  (one report, saved to SavedVariables), `reset`
     Resource.lua                  resource-centric skin: group-color blocks +
                                   duration bars + soul-shard rail (`resource`)
-    Layout.lua                    `layout` probe: is SetLayoutData addon-writable?
     SpecDemonology.lua            per-spec data: the SIGNAL BUCKET per spellID
                                   (group / kind / spends / generates / cadence /
                                   burstAlign / goGate / primary / judgeable).
@@ -168,13 +180,14 @@ clean). Updating the in-game addon:
 - **Tag = `.toc` version**, prefixed `v` (`## Version: 0.1.0` → tag `v0.1.0`).
 - SavedVariables: `CDMProbeDB`.
 
-## In-game smoke test (v0.1 — probe)
+## In-game smoke test
 
 Deploy a build (`ghaddons update michac/CDMProbe` → `/reload`), then:
 
-1. `/cdmp dump` **out of combat** → the four viewers are found, items list with
-   real spellIDs + names, item anatomy fields print. Note the `C_CooldownViewer`
-   function list and whether the Secret Values API is present.
+1. **`/cdmp probe` out of combat.** The four viewers are found, items list with
+   real spellIDs + names. **Section A is the one to read first** — if cooldown
+   duration/startTime print real numbers here, M3d (out-of-combat seeding) is
+   viable and the "no edge seen yet" cold start is removable.
 2. `/cdmp hud` → Essential + Utility icons keep their **native art, swipe and
    countdown**; group-colour accents appear around them (Tyrant/Dreadstalkers/
    Grimoire green, HoG/Demonbolt violet, Implosion lime, defensives blue, CC
@@ -182,15 +195,12 @@ Deploy a build (`ghaddons update michac/CDMProbe` → `/reload`), then:
    Drag the CDM in Edit Mode → chrome rides along. Change Orientation/# Rows →
    `/cdmp hud status` fire counts increment and nothing detaches. Toggle off →
    Blizzard's UI is pixel-clean.
-3. `/cdmp shards` → shard bar appears; spend/generate shards out of combat and
-   watch it track. Drag to reposition (persists).
-4. Pull a **target dummy**. `/cdmp secret` **in combat** and `/cdmp dump` in
-   combat → record which values read `<secret>` (esp. Soul Shards, cooldown
-   duration, aura expirationTime). This answers the open "are shards secret in
-   instanced combat" question — note dummies are open-world, so also test inside
-   a M+/raid to be sure.
-5. `/cdmp log` → cast to proc **Demonic Core**; check whether
-   `GLOW SHOW … (id=…)` prints the proc's spellID (proc-detection viability).
+3. **Pull a target dummy** and play a real rotation for a minute — the passive
+   recorders are collecting the whole time, so just play. Proc a Demonic Core,
+   let a Grimoire go on cooldown, cast a few cast-time spells.
+4. **`/cdmp probe` again, in combat.** Diff section A against the OOC run (that
+   is the M3d answer), and check section C for any phase reading `ALL SECRET`.
+5. **`/reload`**, then the two reports are on disk under `CDMProbeDB.reports`.
 6. `/cdmp reset` → everything clears cleanly.
 
 Report findings back to the parent workspace to shape the real HUD.

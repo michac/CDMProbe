@@ -305,13 +305,62 @@ local function printStatus()
 end
 
 --------------------------------------------------------------------------------
+-- Keybind diagnostic (§7.2 items 4/5)
+--------------------------------------------------------------------------------
+-- "I remapped a key and the HUD didn't pick it up."  The resolved map only keeps
+-- the winning slot, so this prints EVERY slot each tracked spell sits in, with
+-- the binding command and raw key, and marks which one the chrome is using.
+-- Reading the three failure modes off this is faster than reasoning about the
+-- cache — see the header comment on ns.HudBinds.Explain.
+local function printBinds()
+  ns.Heading("HUD keybinds — every action slot per tracked spell")
+  if InCombatLockdown() then
+    ns.Print("  |cffffd100in combat|r — the bar scan is out-of-combat only; this is a live read and may be stale.")
+  end
+  if not next(M.items) then
+    -- The registry is only populated while the HUD is on, and an empty readout
+    -- would look like "no keybinds found" rather than "nothing is bound yet".
+    return ns.Print("  |cffffd100nothing bound|r — the registry fills when the HUD is on. |cffffffff/cdmp hud|r first.")
+  end
+  local bySpell = ns.HudBinds.Explain()
+  local seen = {}
+  for _, e in pairs(M.items) do
+    local id = e.baseSpellID or e.spellID
+    -- The tracked set holds duplicates by design (one spell, two cooldownIDs),
+    -- so dedupe on the spell rather than printing it twice.
+    if type(id) == "number" and not ns.IsSecret(id) and not seen[id] then
+      seen[id] = true
+      local used = ns.HudBinds.Get(id)
+      local rows = bySpell[id]
+      ns.Printf(" |cffffd100%s|r (%d) -> chrome shows %s",
+        ns.SpellName(id) or "?", id, used and ("|cff88ff88" .. used .. "|r") or "|cff808080nothing|r")
+      if not rows then
+        -- No slot maps to this spell at all: either it's genuinely off your bars,
+        -- or it's behind a conditional macro GetMacroSpell can't resolve (3).
+        ns.Print("    |cff808080no action slot holds this spell (off-bars, or a macro that doesn't resolve)|r")
+      else
+        for _, r in ipairs(rows) do
+          ns.Printf("    slot %3d (%s)  cmd=%s  key=%s  -> %s%s",
+            r.slot, r.via,
+            r.cmd or "|cffff4040none — unbindable slot range|r",
+            r.key or "|cff808080unbound|r",
+            r.short or "|cff808080-|r",
+            (r.short and r.short == used) and "  |cff88ff88<-- used|r" or "")
+        end
+      end
+    end
+  end
+end
+
+--------------------------------------------------------------------------------
 -- Commands
 --------------------------------------------------------------------------------
 ns.RegisterCommand("hud",
-  "the real spec HUD (dot score + why). 'hud status' = the readout in chat; 'hud debug' = verbose rows; 'hud rows' = toggle the rows entirely.",
+  "the real spec HUD (dot score + why). 'hud status' = the readout in chat; 'hud binds' = every slot/key per spell; 'hud debug' = verbose rows; 'hud rows' = toggle the rows entirely.",
   function(rest)
     rest = (rest or ""):lower()
     if rest:find("status") then return printStatus() end
+    if rest:find("bind") then return printBinds() end
     if rest:find("dump") then return ns.HudRow.Dump() end
     if rest:find("debug") or rest:find("verbose") then
       return ns.HudRow.SetVerbose(not ns.HudRow.verbose)

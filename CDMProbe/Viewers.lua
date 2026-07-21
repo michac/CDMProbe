@@ -81,8 +81,9 @@ function ns.ItemBaseSpellID(item)
   return nil
 end
 
-ns.RegisterCommand("dump", "introspect viewers, items, spellIDs, item anatomy + which APIs exist", function()
-  ns.BeginCapture()
+-- Was the `/cdmp dump` command; now a SECTION of `/cdmp probe` (2026-07-21).
+-- Owns no capture of its own — the caller decides what report this lands in.
+function ns.DumpViewers()
   ns.Heading("Environment")
   ns.Printf("  in combat: %s   |   Secret Values API (issecretvalue): %s",
     tostring(InCombatLockdown()), tostring(ns.SecretAPI()))
@@ -127,6 +128,4 @@ ns.RegisterCommand("dump", "introspect viewers, items, spellIDs, item anatomy + 
       end
     end
   end
-  ns.Print("tip: run |cffffffff/cdmp dump|r again while in combat on a dummy — compare what turns |cffff4040<secret>|r.")
-  ns.EndCapture("dump_" .. (InCombatLockdown() and "combat" or "ooc"))
-end)
+end

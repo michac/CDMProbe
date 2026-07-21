@@ -184,6 +184,47 @@ function B.GetForItem(item, reportedSpellID)
   return B.Get(reportedSpellID ~= nil and reportedSpellID or ns.ItemSpellID(item))
 end
 
+--------------------------------------------------------------------------------
+-- Diagnostic: why does this spell show the key it shows?  (§7.2 items 4/5)
+--------------------------------------------------------------------------------
+-- A remap that "didn't get picked up" is not diagnosable from the resolved map
+-- alone, because the map only records the WINNER.  There are three known ways to
+-- lose, and all three are invisible in `B.map`:
+--
+--   1. FIRST BOUND SLOT WINS.  A spell on two bars keeps the LOWEST slot's key.
+--      Remap the copy on your right bar and nothing changes, because bar 1 still
+--      answers first.  Shows up here as two rows, one marked <-- used.
+--   2. NO BINDABLE COMMAND.  Slots 13-24 and 109-180 are action-bar PAGES with no
+--      bindings of their own, so they're absent from SLOT_BARS and resolve to
+--      nil.  Shows up as a row with cmd=none.
+--   3. MACRO SLOTS.  GetMacroSpell returns nil for conditional/modifier macros,
+--      so the slot never maps to a spellID at all and the spell appears here with
+--      NO rows whatsoever.
+--
+-- ONE 180-slot pass builds the whole reverse index (per-spell scans would be
+-- 20x that).  Manual command only — this never runs on an event path.
+function B.Explain()
+  local bySpell = {}
+  for slot = 1, 180 do
+    local actionType, id = GetActionInfo(slot)
+    local spellID, via
+    if actionType == "spell" then
+      spellID, via = tonumber(id), "spell"
+    elseif actionType == "macro" then
+      spellID, via = (GetMacroSpell and GetMacroSpell(id) or nil), "macro"
+    end
+    if spellID then
+      local cmd = bindingCommand(slot)
+      local key = cmd and GetBindingKey(cmd) or nil
+      local list = bySpell[spellID]
+      if not list then list = {}; bySpell[spellID] = list end
+      list[#list + 1] = { slot = slot, via = via, cmd = cmd,
+                          key = key, short = key and shorten(key) or nil }
+    end
+  end
+  return bySpell
+end
+
 local ev = CreateFrame("Frame")
 ev:SetScript("OnEvent", function(_, event)
   -- PLAYER_REGEN_ENABLED is only interesting if a rescan was owed; every other

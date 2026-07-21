@@ -25,12 +25,7 @@ or manually: drop the `CDMProbe/` folder into
 | Command | What it does |
 | --- | --- |
 | `/cdmp hud` | **The real HUD (v1).** Binds per item to the *live* Cooldown Manager layout by `cooldownID` and draws terminal chrome around Blizzard's untouched icons: group-colour accents with a generator/consumer batch tint, real keybinds, a scanline overlay and a `DEMO.SYS` terminal frame. Since v0.7.0 it also carries **state**: a ready accent off the observed ready edge, proc glows for Demonic Core (on Demonbolt) and Demonic Art (on the transformed button), and an empty-board recede. `/cdmp hud status` prints the bind + state readout. |
-| `/cdmp dump` | Introspects the live viewer frames, item spellIDs, item anatomy, and which APIs (incl. Secret Values) exist. Run in and out of combat. |
-| `/cdmp shards` | A draggable Soul Shard bar that flips to `<secret>` if the value can't be read in restricted combat. |
-| `/cdmp layout` | Probes whether `C_CooldownViewer.SetLayoutData()` is addon-writable (auto-apply viability). |
-| `/cdmp casts` | Logs player casts to test whether the spellID is readable in combat (for roll-your-own cooldown timers). |
-| `/cdmp secret` | On-demand test of which values (shards, cooldowns, auras) are Secret Values right now. |
-| `/cdmp log` | Logs Cooldown-Manager + proc-glow events (tests whether we can detect procs like Demonic Core). |
+| `/cdmp probe` | **Every probe, one report, written to disk.** Environment + viewer/item anatomy, the secret map, cooldown readability per tracked spell, spell-override/transform capture, per-phase cast-spellID readability, and the imp-count side channel — plus the HUD's own state block. Passive recorders run from load, so nothing has to be armed in advance. Run once out of combat, once in combat, then `/reload` and read `CDMProbeDB.reports` from SavedVariables. `probe clear` resets the counters. |
 | `/cdmp skin` · `/cdmp resource` | Earlier "solid color block" skin experiments, kept as reference (superseded by `hud`). |
 | `/cdmp reset` | Turns every experiment back off. |
 

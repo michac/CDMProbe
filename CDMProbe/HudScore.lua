@@ -90,7 +90,17 @@ function Sc.For(key, e)
   -- Grimoire and Tyrant costs move with the build), so any number authored into
   -- the spec table is right for exactly one loadout and silently wrong for every
   -- other.  ns.ShardCost asks the client about the character actually logged in.
-  local cost = ns.ShardCost(id)
+  --
+  -- UTILITY IS NOT SHARD-GATED, so it is not asked about (§7.2 item 2).  The
+  -- utility cap lives below the cooldown check — deliberately, because a
+  -- defensive on cooldown really is NEVER and must not print "your call" — but
+  -- that left the RESOURCE gate running first, so a costed utility ability
+  -- exited at NEVER on a gate it should never have been offered.  With the
+  -- v0.10.0 unfiltered-cost defect underneath it, that read as
+  -- "Mortal Coil · NEVER · shards 3<750".  Skipping the block (rather than
+  -- reordering the cap) keeps both facts true: no shard reason on a utility row,
+  -- and cooldown still gates it.
+  local cost = (info.cadence ~= "utility") and ns.ShardCost(id) or nil
   local shards = St and St.shards or nil
   local gateMet, gateUnknown = true, false
   if cost and cost > 0 then
