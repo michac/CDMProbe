@@ -507,20 +507,32 @@ function S.Recompute()
     if ns.Hud.IsIconViewer(e.viewer) and e.item then
       local ok, sc = pcall(ns.HudScore.For, key, e)
       if ok and sc then
-        if sc.candidate then
+        -- B6 — LATE MUST NOT ACCRUE OUT OF COMBAT, and the CLOCK must not run
+        -- there either.  LATE is a NAG ("been a candidate 3s+, press it") — a nag
+        -- with nothing to nag about trains the player to ignore the channel.
+        --
+        -- ⚠ M3e caught this GATE IN THE WRONG PLACE.  The promotion below was
+        -- combat-gated, but the STAMP (`= … or now`) was not — so the clock ran
+        -- out of combat, and B6's combat-exit `wipe(candidateSince)` was undone
+        -- 0.25s later by the always-on scoreTicker.  Standing 43s at a dummy then
+        -- pulling opened the fight with every "use on cooldown" button already at
+        -- "waiting 43s" on frame 1 — observed in BOTH recorded pulls (peak set at
+        -- +0.08s, "waiting 43s" / "waiting 19s" matching the idle time exactly).
+        -- The stamp and the promotion are ONE decision and share ONE gate now;
+        -- entering combat starts the clock fresh from the first in-combat frame.
+        -- (InCombatLockdown is readable and branchable — the secure-API lockdown
+        -- flag, not combat state; same precedent quiet() relies on above.)
+        if sc.candidate and InCombatLockdown() then
           S.candidateSince[key] = S.candidateSince[key] or now
           local since = S.candidateSince[key]
-          -- B6 — LATE MUST NOT ACCRUE OUT OF COMBAT.  The OOC probe caught Hand
-          -- of Gul'dan at "LATE - waiting 7s" while standing in a city: LATE is a
-          -- NAG, and a nag with nothing to nag about trains the player to ignore
-          -- the channel entirely.  (InCombatLockdown is readable and branchable —
-          -- it's the secure-API lockdown flag, not combat state; the same
-          -- precedent quiet() already relies on above.)
-          if InCombatLockdown() and (now - since) >= LATE_AFTER then
+          if (now - since) >= LATE_AFTER then
             sc.level = ns.HudScore.LEVELS.LATE
             sc.reasons[#sc.reasons + 1] = string.format("waiting %.0fs", now - since)
           end
         else
+          -- Not a candidate, OR out of combat: no clock.  Out of combat this also
+          -- means a candidate carries NO stale timestamp into the pull — which is
+          -- the whole point.  (The combat-exit wipe is now redundant but harmless.)
           S.candidateSince[key] = nil
         end
         -- M3e — the TRANSITION.  `S.score[key]` still holds the PREVIOUS score at
