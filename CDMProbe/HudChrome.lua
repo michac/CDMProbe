@@ -121,19 +121,37 @@ local ROW_GAP   = 6         -- dot -> text
 H.ROW_OFFSET    = DOT_GAP + DOT_BOX + ROW_GAP   -- where HudRow anchors its text
 
 -- size   — disc diameter
--- hollow — draw as a RING (the §0.5.8.7 confidence marker: hollow = estimate or
---          "you may, we're not calling it"; solid = an observed, asserted state)
--- pulse  — bounce period in seconds, or nil for no motion at all
+-- draw   — false: no dot at all (the level is still scored, just not marked)
+-- sizePulse — bounce the DIAMETER (grow/shrink), period in seconds; nil = static
+-- pulse  — alpha bounce period; nil = no alpha motion
+--
+-- ⚠ v0.16.2 FLAT-COLOUR TEST (user call, 2026-07-21).  The graded
+-- hollow/alpha/luminance scheme read backwards in game — AVAILABLE looked
+-- brighter and more urgent than ROTATION/LATE, SOON was hard to spot.  So this
+-- is a deliberately BLUNT palette: every drawn dot is SOLID and full-alpha, and
+-- the only channels carrying meaning are HUE and, for LATE, SIZE MOTION.
+--   NEVER     black    — can't press it (tiny, nearly invisible on the terminal)
+--   AVAILABLE none      — could, but we're not calling it: no dot
+--   ROTATION  green     — press this now (steady, bright)
+--   SOON      yellow    — anticipation: coming up (gentle pulse to catch the eye)
+--   LATE      green + SIZE PULSE — overdue; same colour as ROTATION but it
+--             grows and shrinks so "you're ignoring it" reads without a new hue
+-- Hollow is retired here; the B4 estimate marker rides on the row text (`~est`)
+-- for the duration of this test.
 local DOT = {
-  NEVER     = { c = { 0.32, 0.50, 0.38 }, a = 0.45, size = 7,  hollow = false },
-  -- SOON is the anticipation TREATMENT on NEVER.  Hollow on purpose: this is an
-  -- estimate, not an observation, and an estimate must never look confident.
-  SOON      = { c = { 0.40, 0.92, 0.52 }, a = 0.85, size = 12, hollow = true,  pulse = 0.90 },
-  AVAILABLE = { c = { 0.29, 1.00, 0.48 }, a = 0.70, size = 13, hollow = true  },
-  ROTATION  = { c = { 0.62, 1.00, 0.66 }, a = 1.00, size = 15, hollow = false, pulse = 0.55 },
-  LATE      = { c = { 1.00, 0.72, 0.20 }, a = 1.00, size = 16, hollow = false, pulse = 0.32 },
+  NEVER     = { c = { 0.05, 0.05, 0.06 }, a = 1.00, size = 7,  draw = true },
+  AVAILABLE = { c = { 0.29, 1.00, 0.48 }, a = 1.00, size = 12, draw = false },
+  SOON      = { c = { 1.00, 0.86, 0.15 }, a = 1.00, size = 13, draw = true, pulse = 0.75 },
+  ROTATION  = { c = { 0.24, 1.00, 0.42 }, a = 1.00, size = 15, draw = true },
+  LATE      = { c = { 0.24, 1.00, 0.42 }, a = 1.00, size = 15, draw = true, sizePulse = 0.55, pulseMin = 0.62, pulseMax = 1.30 },
 }
 H.DOT_COLORS = DOT
+
+-- The group-hue BRACKET around each icon.  Turned OFF for the v0.16.2 test: it
+-- grew and shrank with the row text width (which is loudest on the LONGEST,
+-- i.e. least-actionable, rows) and read as inconsistent chrome.  Flip back to
+-- true to restore it.
+local SHOW_BRACKET = false
 local DOT_MASK = "Interface\\CharacterFrame\\TempPortraitAlphaMask"
 local BRACKET_PAD = 4
 
@@ -267,14 +285,18 @@ function H.Apply(o)
   -- Readiness is carried on THREE channels, not just luminance: brighter, and
   -- thicker ([X1] — never colour-alone, and thickness survives colourblindness
   -- and a dim monitor where a luminance lift alone might not).
-  layoutBracket(o)
-  layoutEdges(o, id.width + (o.ready == true and READY_WIDEN or 0))
-  local a = id.alpha * recede
-  for _, t in pairs(o.edges) do
-    t:SetColorTexture(r, g, b, a)
-    t:Show()
+  if SHOW_BRACKET then
+    layoutBracket(o)
+    layoutEdges(o, id.width + (o.ready == true and READY_WIDEN or 0))
+    local a = id.alpha * recede
+    for _, t in pairs(o.edges) do
+      t:SetColorTexture(r, g, b, a)
+      t:Show()
+    end
+    o.bracket:Show()
+  else
+    for _, t in pairs(o.edges) do t:Hide() end
   end
-  o.bracket:Show()
   o.key:SetAlpha(recede)
   if o.glow then H.paintGlow(o) end
   if o.dotLevel then H.paintDot(o) end
@@ -311,12 +333,24 @@ local function ensureDot(o, item)
     end
   end)
 
+  -- Two independent pulse groups: an ALPHA bounce (SOON) and a SCALE bounce
+  -- (LATE's grow/shrink).  Kept separate so a level picks exactly one and the
+  -- other never fights it.  Scale animates the whole dot frame about its centre.
   local ag = f:CreateAnimationGroup()
   local a = ag:CreateAnimation("Alpha")
-  a:SetFromAlpha(0.40)
+  a:SetFromAlpha(0.55)
   a:SetToAlpha(1.00)
   ag:SetLooping("BOUNCE")
+
+  local sg = f:CreateAnimationGroup()
+  local sc = sg:CreateAnimation("Scale")
+  -- Method names differ across API generations; set from/to defensively so a
+  -- rename degrades to "no pulse" rather than a thrown error in a paint path.
+  pcall(function() sc:SetOrigin("CENTER", 0, 0) end)
+  sg:SetLooping("BOUNCE")
+
   f.ag, f.anim = ag, a
+  f.sg, f.scaleAnim = sg, sc
   f.outer, f.inner = outer, inner
   f:Hide()
   o.dot = f
@@ -346,19 +380,9 @@ function H.paintDot(o)
   local a = spec.a * recede
   f.outer:SetSize(spec.size, spec.size)
   f.outer:SetColorTexture(spec.c[1], spec.c[2], spec.c[3], a)
-  -- `o.dotHollow` is the CALLER's override (M3c-b B4): a ROTATION/LATE dot that
-  -- only lit because of an in-flight-cast projection is drawn as a ring, because
-  -- hollow means "estimate" everywhere else in this design and an estimate must
-  -- never look like an observation.  It can only ever ADD hollowness — a level
-  -- that is already hollow stays so.
-  if spec.hollow or o.dotHollow then
-    local inner = math.max(2, spec.size - 5)
-    f.inner:SetSize(inner, inner)
-    f.inner:SetColorTexture(0.02, 0.05, 0.03, a)
-    f.inner:Show()
-  else
-    f.inner:Hide()
-  end
+  -- v0.16.2 test: all dots solid.  The ring/hollow estimate marker is retired
+  -- for now (it rides on the row's `~est` text); nothing draws the inner disc.
+  f.inner:Hide()
 end
 
 -- level:  one of the DOT keys, or nil to clear the dot entirely.
@@ -368,10 +392,13 @@ function H.SetDot(item, viewer, level, hollow)
   local o = item and item.__hud
   if not o then return end
   if viewer then o.side = H.SideFor(viewer) end
-  if not (level and DOT[level]) then
+  -- `draw = false` (AVAILABLE) is scored but UNMARKED — treated exactly like no
+  -- dot, so the board only ever shows the levels that carry a call.
+  local spec = level and DOT[level]
+  if not spec or spec.draw == false then
     o.dotLevel = nil
     o.dotHollow = false
-    if o.dot then o.dot.ag:Stop(); o.dot:Hide() end
+    if o.dot then o.dot.ag:Stop(); o.dot.sg:Stop(); o.dot:SetScale(1); o.dot:Hide() end
     return
   end
   local f = ensureDot(o, item)
@@ -380,14 +407,25 @@ function H.SetDot(item, viewer, level, hollow)
   o.dotHollow = hollow and true or false
   H.paintDot(o)
   if changed then
-    local spec = DOT[level]
-    f.ag:Stop()
-    if spec.pulse then
+    f.ag:Stop(); f.sg:Stop()
+    f:SetAlpha(1); f:SetScale(1)
+    if spec.sizePulse then
+      -- Grow/shrink about the centre — LATE's "you're ignoring this" motion.
+      -- The Scale-animation from/to setters were renamed across API generations
+      -- (SetScaleFrom/To ← SetFromScale/To ← plain SetScale), so try them in
+      -- order and fall back to a bare SetScale bounce (1.0 -> max -> 1.0).
+      local lo, hi = spec.pulseMin or 0.7, spec.pulseMax or 1.3
+      local sc = f.scaleAnim
+      local ok = pcall(function()
+        if sc.SetScaleFrom then sc:SetScaleFrom(lo, lo); sc:SetScaleTo(hi, hi)
+        elseif sc.SetFromScale then sc:SetFromScale(lo, lo); sc:SetToScale(hi, hi)
+        else sc:SetScale(hi, hi) end
+        sc:SetDuration(spec.sizePulse)
+      end)
+      if ok then f.sg:Play() end
+    elseif spec.pulse then
       f.anim:SetDuration(spec.pulse)
-      f:SetAlpha(1)
       f.ag:Play()
-    else
-      f:SetAlpha(1)
     end
   end
   f:Show()

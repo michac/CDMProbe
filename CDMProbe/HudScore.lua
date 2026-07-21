@@ -114,11 +114,18 @@ function Sc.For(key, e)
 
   local id = liveID
   local R = {}
-  local out = { reasons = R, candidate = false }
+  local out = { reasons = R, candidate = false, cadence = info.cadence }
   -- Say so on the row when the thing being scored isn't the thing underneath.
   if liveID ~= base then
     R[#R + 1] = string.format("now %s", ns.SpellName(liveID) or tostring(liveID))
   end
+
+  -- The rotation MODE (PREP/GENERATE/SPEND), read from the same spine the rail
+  -- draws — v0.16.2 pruning keys off it (a builder is wrong to press mid-SPEND).
+  -- nil when shards are unreadable; the prune rules below treat nil as "no
+  -- opinion" and simply don't fire, so an unknown mode never forces a NEVER.
+  local mode = (St and St.Mode) and (select(1, St.Mode())) or nil
+  local inCombat = InCombatLockdown()
 
   ------------------------------------------------------------------------------
   -- gateMet — the resource gate, with the cost READ AT RUNTIME
@@ -261,6 +268,39 @@ function Sc.For(key, e)
     return out
   end
 
+  -- ProcArmed is asked about the BASE, not the live ID: ns.SpecProcGlow keys its
+  -- rules on the base button (`target`) and detects a transform by looking up
+  -- `St.override[base]`.  Passing the transformed ID would silently never match.
+  -- Computed HERE (moved up in v0.16.2) so the pruning below can read it.
+  local armed, why = Sc.ProcArmed(base)
+
+  ------------------------------------------------------------------------------
+  -- CONTEXT PRUNING (v0.16.2) — fewer, better dots
+  ------------------------------------------------------------------------------
+  -- The board was sitting at 3-4 lit because every castable damage button showed
+  -- SOMETHING.  These rules force NEVER on presses that are technically available
+  -- but wrong right now.  All are conservative in the safe direction (they only
+  -- ever HIDE a call, never invent one) and all are stated on the row.
+  --
+  -- 1. A reactive proc-button with NO proc up is NEVER in combat.  Demonbolt
+  --    without a Demonic Core is the case: castable, but not a rotational press.
+  --    OUT of combat it stays available — you may be about to pull, and a
+  --    pre-pull Demonbolt/Shadow Bolt is legitimate.
+  if info.cadence == "reactive" and not armed and inCombat then
+    out.level = Sc.LEVELS.NEVER
+    R[#R + 1] = "no proc — hold"
+    return out
+  end
+  -- 2. In SPEND mode a shard GENERATOR is counterproductive — you are meant to be
+  --    dumping shards, not making more.  Catches Demonbolt (+2) and Shadow Bolt
+  --    (+1); the primary spender (HoG) is exempt, and the burst/opener "bank it"
+  --    exception is M4, not built.
+  if mode == "SPEND" and info.generates and not info.primary then
+    out.level = Sc.LEVELS.NEVER
+    R[#R + 1] = "spend mode — dump shards first"
+    return out
+  end
+
   ------------------------------------------------------------------------------
   -- ROTATION — the opinion, kept small and stated
   ------------------------------------------------------------------------------
@@ -268,10 +308,6 @@ function Sc.For(key, e)
   -- If the board is routinely 4+ lit, the RULES are too loose and that is what
   -- gets tightened — not the visuals.
   local rot = false
-  -- ProcArmed is asked about the BASE, not the live ID: ns.SpecProcGlow keys its
-  -- rules on the base button (`target`) and detects a transform by looking up
-  -- `St.override[base]`.  Passing the transformed ID would silently never match.
-  local armed, why = Sc.ProcArmed(base)
   -- The proc reason is recorded whether or not it ends up justifying a ROTATION.
   -- It has to be: RefreshGlows lights the glow off the SAME table, so a dot that
   -- capped at AVAILABLE without mentioning the proc would leave a lit glow and a

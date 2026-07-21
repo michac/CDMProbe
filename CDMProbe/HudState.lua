@@ -497,16 +497,55 @@ S.LiveName = liveName
 -- string work (HudLog's header), and the reason strings are built ONLY when
 -- HudLog.Sample reports a new peak.
 local litKeys = {}
+-- Scratch for the board-aware pass (v0.16.2): key -> score, computed in phase A
+-- so the FILLER resolution can see whether anything better is lit before phase B
+-- paints.  Reused (wiped) each Recompute; never allocates.
+local scores = {}
 
 function S.Recompute()
   if not (hudOn() and ns.HudScore) then return end
   local now = GetTime()
   local lit = 0
   wipe(litKeys)
+
+  -- ── Phase A — score every item, and note if anything better than filler is up.
+  -- FILLER (Shadow Bolt) is "what you press when nothing else is lit", so it can
+  -- only be resolved against the whole board — which the per-item scorer cannot
+  -- see.  So HudScore leaves it AVAILABLE and we decide here (v0.16.2).
+  wipe(scores)
+  local anyRotation = false
   for key, e in pairs(ns.Hud.items) do
     if ns.Hud.IsIconViewer(e.viewer) and e.item then
       local ok, sc = pcall(ns.HudScore.For, key, e)
-      if ok and sc then
+      scores[key] = ok and sc or false
+      if ok and sc and (sc.level == ns.HudScore.LEVELS.ROTATION) then
+        anyRotation = true
+      end
+    end
+  end
+  -- The filler resolves against the board: NEVER when a real call is up, else it
+  -- IS your press (ROTATION, but never a LATE candidate — a filler shouldn't
+  -- nag).  Only touches a filler the scorer left at AVAILABLE, so SPEND-mode
+  -- fillers (already pruned to NEVER) stay pruned.
+  local inCombat = InCombatLockdown()
+  for key, sc in pairs(scores) do
+    if sc and sc.cadence == "filler" and sc.level == ns.HudScore.LEVELS.AVAILABLE then
+      if anyRotation then
+        sc.level = ns.HudScore.LEVELS.NEVER
+        sc.reasons[#sc.reasons + 1] = "better options up"
+      elseif inCombat then
+        sc.level = ns.HudScore.LEVELS.ROTATION
+        sc.candidate = false
+        sc.reasons[#sc.reasons + 1] = "filler — nothing better up"
+      end
+    end
+  end
+
+  -- ── Phase B — clock, log transitions, paint.  Uses the phase-A scores.
+  for key, e in pairs(ns.Hud.items) do
+    if ns.Hud.IsIconViewer(e.viewer) and e.item then
+      local sc = scores[key]
+      if sc then
         -- B6 — LATE MUST NOT ACCRUE OUT OF COMBAT, and the CLOCK must not run
         -- there either.  LATE is a NAG ("been a candidate 3s+, press it") — a nag
         -- with nothing to nag about trains the player to ignore the channel.
