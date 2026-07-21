@@ -58,7 +58,11 @@ M.IsIconViewer = isIconViewer
 -- `rows` is DEFAULT-ON in v0.10.0: the dot's reason is not diagnostics, it's
 -- half the signal (§0.5.8.7 — a dot with no reason is a design failure).
 -- `verbose` is the old debug mode, now a flag on the same row builder.
-local HUD_DEFAULTS = { on = false, opener = "1b", rows = true, verbose = false }
+-- `rail` is DEFAULT-ON (M3c-c1): §0.5.2 makes shard-cap the one cue that
+-- survives every accessibility/mute ceiling, so the surface that carries it is
+-- not an opt-in.  ensureDB() back-fills it, so no migration is needed.
+local HUD_DEFAULTS = { on = false, opener = "1b", rows = true, verbose = false,
+                       rail = true }
 
 local function ensureDB()
   ns.db.hud = ns.db.hud or {}
@@ -239,6 +243,16 @@ local function rebind()
     if v then ns.HudChrome.FlowScan(v) end
   end
   ns.HudChrome.ShowTerminal(ns.GetViewer(ICON_VIEWERS[1]))
+  -- M3c-c1 — the shard rail is a VIEWER-ANCHORED child, so it rides Edit Mode
+  -- drags and orientation changes for free and needs no saved position.  That
+  -- also means it must be re-shown from here: rebind() IS the RefreshLayout
+  -- callback, and a relayout is exactly when the viewer moved.  pcall'd like its
+  -- neighbours, because a throw in this tail escapes into Blizzard's code.
+  if ensureDB().rail ~= false then
+    pcall(ns.HudChrome.ShowRail, ns.GetViewer(ICON_VIEWERS[1]))
+  else
+    pcall(ns.HudChrome.HideRail)
+  end
   -- Item frames are pooled and reused across relayouts, so readiness survives;
   -- presence is re-synced from the level read (where it's meaningful) and the
   -- glows re-resolved onto whatever frames the new layout handed us.
@@ -339,6 +353,7 @@ function ns.SetHud(on)
     ns.HudRow.Hide()
     ns.HudBinds.Stop()
     ns.HudChrome.HideTerminal()
+    ns.HudChrome.HideRail()
     for _, entry in pairs(M.items) do
       pcall(ns.HudChrome.Detach, entry.item)
     end
@@ -364,11 +379,12 @@ end
 --------------------------------------------------------------------------------
 local function printStatus()
   local db = ensureDB()
-  ns.Heading("HUD status — M3c-b (live identity + projection) + M3d (out-of-combat seeding)")
-  ns.Printf("  state: %s   rows: %s (verbose %s)   opener setting: |cffffffff%s|r (M3c)",
+  ns.Heading("HUD status — M3c-c1 (shard rail + mode spine) on M3c-b + M3d")
+  ns.Printf("  state: %s   rows: %s (verbose %s)   rail: %s   opener setting: |cffffffff%s|r (M3c-c2)",
     M.on and "|cff88ff88ON|r" or "|cffff8080OFF|r",
     ns.HudRow.on and "|cff88ff88on|r" or "|cffff8080off|r",
-    ns.HudRow.verbose and "|cff88ff88on|r" or "off", tostring(db.opener))
+    ns.HudRow.verbose and "|cff88ff88on|r" or "off",
+    db.rail ~= false and "|cff88ff88on|r" or "|cffff8080off|r", tostring(db.opener))
   ns.Printf("  bind fires: RefreshLayout=%d  DATA_LOADED=%d  ENTERING_WORLD=%d  -> rebinds=%d  (|cffffd100no ticker running|r)",
     M.fires.layout, M.fires.dataLoaded, M.fires.enterWorld, M.fires.binds)
   ns.Printf("  hooks installed: %s", M.hooked and "|cff88ff88yes|r" or "|cffff4040no (viewers absent at install time)|r")
@@ -460,10 +476,14 @@ local function printBinds()
         ns.Print("    |cff808080no action slot holds this spell (off-bars, or a macro that doesn't resolve)|r")
       else
         for _, r in ipairs(rows) do
-          ns.Printf("    slot %3d (%s)  cmd=%s  key=%s  -> %s%s",
+          ns.Printf("    slot %3d (%s)  cmd=%s  key=%s%s  -> %s%s",
             r.slot, r.via,
             r.cmd or "|cffff4040none — unbindable slot range|r",
             r.key or "|cff808080unbound|r",
+            -- The FOURTH failure mode (M3e R5): GetBindingKey returns TWO keys
+            -- and the resolver only ever reads the first, so a player who
+            -- remapped the SECONDARY binding saw no change and no row saying why.
+            r.key2 and ("  |cffffd1002nd=" .. r.key2 .. " (not used)|r") or "",
             r.short or "|cff808080-|r",
             (r.short and r.short == used) and "  |cff88ff88<-- used|r" or "")
         end
@@ -475,15 +495,36 @@ end
 --------------------------------------------------------------------------------
 -- Commands
 --------------------------------------------------------------------------------
+-- ⚠ ORDER-SENSITIVE substring matching, and anything unmatched falls through to
+-- toggling the whole HUD.  Every new subcommand goes ABOVE the bare-toggle tail,
+-- and the help string above is the only place a user learns it exists.
 ns.RegisterCommand("hud",
-  "the real spec HUD (dot score + why). 'hud status' = the readout in chat; 'hud binds' = every slot/key per spell; 'hud debug' = verbose rows; 'hud rows' = toggle the rows entirely.",
+  "the real spec HUD (dot score + why). 'hud log' = the last recorded pull (histogram + peak set + events; 'hud log all' for the ring); 'hud status' = the readout in chat; 'hud binds' = every slot/key per spell; 'hud debug' = verbose rows; 'hud rows' = toggle the rows entirely; 'hud rail' = toggle the shard rail + mode chrome.",
   function(rest)
     rest = (rest or ""):lower()
     if rest:find("status") then return printStatus() end
+    -- M3e.  Above the bare-toggle tail like every other subcommand — this
+    -- dispatch is order-sensitive substring matching and ANYTHING UNMATCHED
+    -- TOGGLES THE HUD, which is a very confusing way to learn you typo'd.
+    if rest:find("log") then return ns.HudLog.Print(rest:find("all") ~= nil) end
     if rest:find("bind") then return printBinds() end
     if rest:find("dump") then return ns.HudRow.Dump() end
     if rest:find("debug") or rest:find("verbose") then
       return ns.HudRow.SetVerbose(not ns.HudRow.verbose)
+    end
+    if rest:find("rail") then
+      local db = ensureDB()
+      db.rail = (db.rail == false)          -- flip; the default is ON
+      if M.on then
+        if db.rail then
+          pcall(ns.HudChrome.ShowRail, ns.GetViewer(ICON_VIEWERS[1]))
+          pcall(ns.HudState.PaintRail)
+        else
+          pcall(ns.HudChrome.HideRail)
+        end
+      end
+      return ns.Printf("HUD shard rail %s.",
+        db.rail and "|cff88ff88ON|r" or "|cffff8080OFF|r")
     end
     if rest:find("rows") then
       ns.HudRow.Set(not ns.HudRow.on)

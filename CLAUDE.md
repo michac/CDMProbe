@@ -75,6 +75,14 @@ Design context + status live in the parent workspace at
     for that warning, since chat scrolls away and this gets captured by `probe`),
     and **whether the napkin is live at all** — i.e.
     whether `UNIT_SPELLCAST_SUCCEEDED` spellIDs read non-secret in this context.
+  - `hud log` — **(v0.16.0, M3e)** the last recorded pull: duration, the
+    **histogram of the lit-dot count** (`lit 0:41% 1:33% 2:19% 3:6%`), the **peak
+    set with its reasons**, and the timestamped transition tail (dot / ready /
+    mode / cap / cast / seed / combat). `hud log all` walks the ring. **Recording
+    is automatic** — every pull closes into `CDMProbeDB.pulls` (last 5) on leaving
+    combat, with nothing typed and nothing printed, because strictness is a
+    property of the moments you were too busy to type. The last pull is also
+    folded into `/cdmp probe`. ⚠ Same `/reload` flush rule as the reports.
   - `hud binds` — **every** action slot each tracked spell sits in, with binding
     command, raw key and which one the chrome actually uses. Diagnoses "I remapped
     a key and it didn't pick it up": first-bound-slot-wins, unbindable slot ranges
@@ -121,6 +129,10 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   the group BRACKET spanning icon+dot+text,
                                   keybind text, proc glow, DEMO.SYS terminal
                                   frame, scanline/vignette overlay
+    HudLog.lua                    the PULL RECORDER (M3e): a ring of dot/ready/
+                                  mode/cap/cast/seed TRANSITIONS + a HISTOGRAM of
+                                  the lit count, auto-captured to ns.db.pulls at
+                                  every combat exit.  Rendered by `hud log`.
     HudScore.lua                  the DOT SCORE: a pure function of readable
                                   state -> (level, reasons).  NEVER / AVAILABLE /
                                   ROTATION / LATE, plus the judgeable=false cap.

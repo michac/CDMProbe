@@ -778,7 +778,14 @@ local function buildTerminal(viewer)
   sub:SetText("v" .. tostring(ns.version))
   f.sub = sub
 
-  rule(f, viewer, "TOPLEFT", "TOPRIGHT", 4)
+  -- Every frame texture is recorded with the alpha it was built at, because the
+  -- mode tint (M3c-c1 R4) repaints them and SetColorTexture takes the alpha in
+  -- the same call — a repaint that forgot it would silently flatten the
+  -- header/rule/vrule hierarchy to one weight.
+  f.rules = {}
+  local function keep(t, a) t.__a = a; f.rules[#f.rules + 1] = t; return t end
+
+  keep(rule(f, viewer, "TOPLEFT", "TOPRIGHT", 4), 0.8)
 
   local function vrule(pt)
     local t = f:CreateTexture(nil, "OVERLAY")
@@ -786,10 +793,11 @@ local function buildTerminal(viewer)
     t:SetWidth(1)
     t:SetPoint("TOP", viewer, pt == "L" and "TOPLEFT" or "TOPRIGHT", pt == "L" and -2 or 2, 4)
     t:SetPoint("BOTTOM", viewer, pt == "L" and "BOTTOMLEFT" or "BOTTOMRIGHT", pt == "L" and -2 or 2, -4)
+    return keep(t, 0.55)
   end
   vrule("L"); vrule("R")
 
-  rule(f, viewer, "BOTTOMLEFT", "BOTTOMRIGHT", -4)
+  keep(rule(f, viewer, "BOTTOMLEFT", "BOTTOMRIGHT", -4), 0.8)
   local ft = f:CreateFontString(nil, "OVERLAY")
   ft:SetFont(TERM_FONT, 10, "OUTLINE")
   ft:SetPoint("TOP", viewer, "BOTTOM", 0, -6)
@@ -828,4 +836,322 @@ end
 function H.HideTerminal()
   setBlink(false)
   if terminal then terminal:Hide() end
+end
+
+--------------------------------------------------------------------------------
+-- The shard rail + the mode chrome — §0.5.8.3 #1, M3c-c1
+--------------------------------------------------------------------------------
+-- §0.5.2 makes shard-cap the anchor: "if exactly one cue survives every
+-- accessibility/mute ceiling, it is shard-cap."  Moment #1, P0 — inaction there
+-- is strictly wrong — and it rides our single strongest capability, because Soul
+-- Shards are readable AND branchable even in restricted combat.  Until now
+-- nothing on the HUD said it: the board judges BUTTONS, and overcap is a
+-- statement about the RESOURCE.  This is the first surface for a sentence that
+-- isn't about a button.
+--
+-- ⚠ WHERE MODE IS ALLOWED TO LAND (the §0.5.8.7 §1 budget).  hue = group,
+-- saturation = pole, luminance = readiness, alpha = recede — the icon channel
+-- budget is FULL, and [V2] forbids conjunction encodings.  The dot exists
+-- because that budget ran out.  So §0.5.4 row #6 (the mode indicator) is not
+-- demoted, but it may not compete for a channel the dot already won: it lands on
+-- the rail's own fill and on the DEMO.SYS terminal frame, both genuinely free
+-- surfaces, and NEVER on an icon.  It also carries a redundant glyph + label,
+-- because [X1] forbids colour-alone and §0.5.4 asks for the label by name.
+--
+-- Geometry and the cap animation are PORTED from the M1 prototype
+-- (Resource.lua:132-243), which is proven but UIParent-anchored, self-eventing
+-- and exports nothing — a reference to port, never to call.  Resource.lua is
+-- left alone; it is parked and SetHud already turns it off.
+--
+-- ⚠ THE CAP EARCON IS NOT HERE.  The M3c-c bullet says "+ earcon", but
+-- §0.5.8.3 row #15 (Stretch), §0.5.8.5-D and §0.5.6 ("cap earcon lands in M6")
+-- all say otherwise — three committed statements against one.  The flip and the
+-- glitter ship silently; audio arrives in M6 WITH its mute + per-event toggles,
+-- which is what [A3] actually asks for.  Do not add a PlaySound here.
+local RAIL_SEG_H, RAIL_GAP, RAIL_PAD = 10, 4, 6
+local RAIL_SEG_W  = 28
+local RAIL_DROP   = 22      -- below the C:\>_ footer, which sits at viewer -6
+local RAIL_SPARKS = 10
+-- [X2] — WCAG's three-flashes-in-one-second guidance.  The prototype's
+-- `fireGlitter` fired on EVERY prevCapped transition, so at cap a Hand of
+-- Gul'dan (-3) followed by a refill re-fires within a couple of GCDs.  That is a
+-- real defect being ported out, not a new restriction.
+local GLITTER_REARM = 2.0
+
+-- Triples from Resource.lua:23-28, tuned once already, plus the two states the
+-- prototype never had: PREP (§0.5.8.2(a)'s "fourth resting state, NOT
+-- GENERATE") and UNKNOWN.
+local RAIL_COL = {
+  PREP     = { 0.36, 0.66, 0.82 },   -- calm slate-cyan: visibly not GENERATE
+  GENERATE = { 0.690, 0.420, 1.000 },-- soul purple
+  SPEND    = { 1.000, 0.541, 0.239 },-- orange
+  CAP      = { 0.961, 0.773, 0.259 },-- gold
+  UNKNOWN  = { 0.50, 0.50, 0.56 },   -- grey: a state, never a guess
+}
+local RAIL_EMPTY = { 0.10, 0.09, 0.13 }
+-- [X1]: the mode must be legible with hue ignored entirely.
+local RAIL_GLYPH = { PREP = "[.]", GENERATE = "[+]", SPEND = "[-]",
+                     CAP = "[!]", UNKNOWN = "[?]" }
+
+local rail
+local railStats = { edges = 0, glitters = 0, suppressed = 0, lastGlitter = 0 }
+function H.RailStats()
+  return { edges = railStats.edges, glitters = railStats.glitters,
+           suppressed = railStats.suppressed, rearm = GLITTER_REARM }
+end
+
+local function buildSpark(parent)
+  local t = parent:CreateTexture(nil, "OVERLAY")
+  t:SetSize(4, 4); t:SetColorTexture(1, 1, 1, 1); t:SetAlpha(0)
+  local ag = t:CreateAnimationGroup()
+  local tr = ag:CreateAnimation("Translation"); tr:SetDuration(0.85); tr:SetSmoothing("OUT")
+  local fa = ag:CreateAnimation("Alpha"); fa:SetFromAlpha(1); fa:SetToAlpha(0); fa:SetDuration(0.85)
+  ag:SetScript("OnPlay", function() t:SetAlpha(1) end)
+  ag:SetScript("OnFinished", function() t:SetAlpha(0) end)
+  t.ag, t.tr = ag, tr
+  return t
+end
+
+local function buildRail(viewer)
+  if viewer.__hudRail then return viewer.__hudRail end
+  local cap = ns.SHARD_CAP or 5      -- never a literal 5; the spec table owns it
+  local w = cap * RAIL_SEG_W + (cap - 1) * RAIL_GAP + RAIL_PAD * 2
+
+  local f = CreateFrame("Frame", nil, viewer)
+  f:SetFrameLevel((ns.HasMethod(viewer, "GetFrameLevel") and viewer:GetFrameLevel() or 1) + 12)
+  -- ⚠ THE CLIPPING HAZARD (see the buildTerminal header, notes.md §9): a wide
+  -- element anchored with TWO horizontal points fixes its width to the ~28px
+  -- icon column and clips.  ONE centre point + an explicit width, always.
+  f:SetSize(w, RAIL_SEG_H + RAIL_PAD * 2)
+  f:SetPoint("TOP", viewer, "BOTTOM", 0, -RAIL_DROP)
+  -- Never EnableMouse: clicks pass through to the secure item beneath.
+
+  local bg = f:CreateTexture(nil, "BACKGROUND")
+  bg:SetAllPoints(f); bg:SetColorTexture(0, 0, 0, 0.35)
+
+  f.segs = {}
+  for i = 1, cap do
+    local seg = CreateFrame("Frame", nil, f)
+    seg:SetSize(RAIL_SEG_W, RAIL_SEG_H)
+    seg:SetPoint("LEFT", f, "LEFT", RAIL_PAD + (i - 1) * (RAIL_SEG_W + RAIL_GAP), 0)
+    local segbg = seg:CreateTexture(nil, "ARTWORK")
+    segbg:SetAllPoints(seg)
+    local fill = seg:CreateTexture(nil, "ARTWORK", nil, 1)
+    fill:SetPoint("LEFT", seg, "LEFT", 0, 0)
+    fill:SetSize(RAIL_SEG_W, RAIL_SEG_H)
+    -- THE GHOST HEAD renders HOLLOW — outline, no fill — which is the same
+    -- confidence marker the dots use (H.paintDot: hollow = estimate).  Four
+    -- edges rather than a fill, so "incoming" can never be mistaken for "held".
+    seg.ghost = {}
+    for _, side in ipairs({ "TOP", "BOTTOM", "LEFT", "RIGHT" }) do
+      seg.ghost[side] = seg:CreateTexture(nil, "ARTWORK", nil, 2)
+    end
+    local g = seg.ghost
+    g.TOP:SetPoint("TOPLEFT", seg, "TOPLEFT"); g.TOP:SetPoint("TOPRIGHT", seg, "TOPRIGHT"); g.TOP:SetHeight(2)
+    g.BOTTOM:SetPoint("BOTTOMLEFT", seg, "BOTTOMLEFT"); g.BOTTOM:SetPoint("BOTTOMRIGHT", seg, "BOTTOMRIGHT"); g.BOTTOM:SetHeight(2)
+    g.LEFT:SetPoint("TOPLEFT", seg, "TOPLEFT"); g.LEFT:SetPoint("BOTTOMLEFT", seg, "BOTTOMLEFT"); g.LEFT:SetWidth(2)
+    g.RIGHT:SetPoint("TOPRIGHT", seg, "TOPRIGHT"); g.RIGHT:SetPoint("BOTTOMRIGHT", seg, "BOTTOMRIGHT"); g.RIGHT:SetWidth(2)
+    seg.fill = fill
+    seg.bg = segbg
+    f.segs[i] = seg
+  end
+
+  f.label = f:CreateFontString(nil, "OVERLAY")
+  f.label:SetFont(TERM_FONT, 11, "OUTLINE")
+  f.label:SetPoint("TOP", f, "BOTTOM", 0, -2)
+  f.label:SetJustifyH("CENTER")
+
+  -- ⚠ RECEDE vs. ANIMATION (H.paintDot's header states the rule): recede is
+  -- baked into TEXTURE alpha, never frame alpha, because frame alpha belongs to
+  -- the animation.  The rail as a whole DOES take frame alpha — it joins the
+  -- board's common fate — so the cap flash and sparks live on a SIBLING frame,
+  -- not a child: a child would inherit the receded alpha and the P0 cue would
+  -- be dimmest exactly when the board was quietest.
+  receders[f] = true
+  f:SetAlpha(recede)
+
+  local fx = CreateFrame("Frame", nil, viewer)
+  fx:SetAllPoints(f)
+  fx:SetFrameLevel(f:GetFrameLevel() + 1)
+  local flash = fx:CreateTexture(nil, "OVERLAY")
+  flash:SetAllPoints(fx)
+  flash:SetColorTexture(RAIL_COL.CAP[1], RAIL_COL.CAP[2], RAIL_COL.CAP[3], 0.5)
+  flash:SetAlpha(0)
+  local fag = flash:CreateAnimationGroup()
+  local fa = fag:CreateAnimation("Alpha")
+  fa:SetFromAlpha(0.55); fa:SetToAlpha(0); fa:SetDuration(0.7)
+  fag:SetScript("OnPlay", function() flash:SetAlpha(0.55) end)
+  fag:SetScript("OnFinished", function() flash:SetAlpha(0) end)
+  fx.flash, fx.flashAG = flash, fag
+  fx.sparks = {}
+  for i = 1, RAIL_SPARKS do fx.sparks[i] = buildSpark(fx) end
+
+  f.fx = fx
+  f.cap = cap
+  f.prevCapped = false
+  viewer.__hudRail = f
+  return f
+end
+
+-- One-shot, throttled.  Stop() before Play() so a re-fire RESTARTS rather than
+-- stacking — the same discipline H.Settle uses.
+-- Returns whether the glitter actually PLAYED, so the caller can log the
+-- difference between an edge, a glitter and a suppression (§7.5 item 5) — the
+-- three are distinguishable in the counters but not in time, and the whole
+-- question is whether a fast cap -> HoG -> cap re-fires within a couple of GCDs.
+local function fireGlitter()
+  local f = rail
+  if not (f and f.fx) then return false end
+  local now = GetTime()
+  if (now - (railStats.lastGlitter or 0)) < GLITTER_REARM then
+    railStats.suppressed = railStats.suppressed + 1
+    return false
+  end
+  railStats.lastGlitter = now
+  railStats.glitters = railStats.glitters + 1
+  local fx = f.fx
+  fx.flashAG:Stop(); fx.flashAG:Play()
+  local w = f:GetWidth()
+  for _, s in ipairs(fx.sparks) do
+    s:ClearAllPoints()
+    s:SetPoint("CENTER", fx, "CENTER", math.random(-w / 2 + 6, w / 2 - 6), math.random(-4, 4))
+    s.tr:SetOffset(math.random(-8, 8), math.random(10, 22))
+    s.ag:Stop(); s.ag:Play()
+  end
+  return true
+end
+
+--------------------------------------------------------------------------------
+-- Mode chrome, surface 2: the DEMO.SYS terminal frame
+--------------------------------------------------------------------------------
+-- Header, sub, rules, vrules, footer.  It never touches an icon, and the shift
+-- is a BLEND toward the mode hue rather than a replacement, so the terminal
+-- still reads as the terminal.
+local termMode = nil
+
+local function modeTint(base, mode)
+  local m = mode and RAIL_COL[mode]
+  if not m then return base[1], base[2], base[3] end
+  local t = (mode == "CAP") and 0.45 or 0.28
+  return base[1] + (m[1] - base[1]) * t,
+         base[2] + (m[2] - base[2]) * t,
+         base[3] + (m[3] - base[3]) * t
+end
+
+local function paintTerminal()
+  local f = terminal
+  if not f then return end
+  if f.header then f.header:SetTextColor(modeTint(TERM, termMode)) end
+  if f.sub    then f.sub:SetTextColor(modeTint(TERM_DIM, termMode)) end
+  if f.footer then f.footer:SetTextColor(modeTint(TERM_MID, termMode)) end
+  for _, t in ipairs(f.rules or {}) do
+    local r, g, b = modeTint(TERM_MID, termMode)
+    t:SetColorTexture(r, g, b, t.__a or 0.8)
+  end
+end
+
+-- nil restores the plain terminal (rail off, or shards unreadable).
+function H.SetTerminalMode(mode)
+  if mode == termMode then return end
+  termMode = mode
+  paintTerminal()
+end
+
+--------------------------------------------------------------------------------
+-- The painter
+--------------------------------------------------------------------------------
+-- `info` comes from ns.HudState.RailInfo() — one computation, so the rail's fill
+-- and the terminal's tint can never disagree about the mode.
+function H.PaintRail(info)
+  local f = rail
+  if not (f and info) then return end
+  local cap    = f.cap
+  local mode   = info.mode
+  local capped = info.capped and true or false
+  -- CAP is a treatment on SPEND, not a fourth mode: [B1] frames it as "act or
+  -- waste" — a WARNING, not a trophy.  Overcap is an opportunity-cost loss, and
+  -- §3's celebratory framing is explicitly nuanced by that.
+  local key = mode and (capped and "CAP" or mode) or "UNKNOWN"
+  local col = RAIL_COL[key] or RAIL_COL.UNKNOWN
+
+  local live = info.shards
+  local fill = info.fill or 0
+  for i = 1, cap do
+    local seg = f.segs[i]
+    if mode == nil then
+      -- UNREADABLE draws an explicit UNKNOWN, never an empty bar.  An empty bar
+      -- is a CLAIM — "you have no shards" — and we do not know that.
+      seg.bg:SetColorTexture(RAIL_COL.UNKNOWN[1], RAIL_COL.UNKNOWN[2], RAIL_COL.UNKNOWN[3], 0.30)
+      seg.fill:Hide()
+      for _, t in pairs(seg.ghost) do t:Hide() end
+    else
+      seg.bg:SetColorTexture(RAIL_EMPTY[1], RAIL_EMPTY[2], RAIL_EMPTY[3], 0.85)
+      local frac = math.max(0, math.min(1, fill - (i - 1)))
+      seg.fill:SetColorTexture(col[1], col[2], col[3], 1)
+      seg.fill:SetWidth(math.max(0.001, RAIL_SEG_W * frac))
+      seg.fill:SetShown(frac > 0)
+      -- The incoming (ghost) segment: strictly ABOVE what we actually hold, and
+      -- only while a cast is in flight that ADDS shards.  A spend-side
+      -- projection moves the mode, not the head.
+      local ghostOn = info.isProjected and live and info.projected
+        and info.projected > live and i > live and i <= info.projected
+      for _, t in pairs(seg.ghost) do
+        if ghostOn then
+          t:SetColorTexture(col[1], col[2], col[3], 0.85)
+          t:Show()
+        else
+          t:Hide()
+        end
+      end
+    end
+  end
+
+  -- The redundant label ([X1], §0.5.4:429) — required, not decorative.  Read it
+  -- with hue ignored and the mode is still unambiguous.
+  local glyph = RAIL_GLYPH[key] or "[?]"
+  local text
+  if mode == nil then
+    text = glyph .. " SHARDS UNKNOWN — unreadable here"
+  elseif capped then
+    text = string.format("%s SPEND — CAP (%d/%d)  act or waste", glyph, live, cap)
+  else
+    text = string.format("%s %s  %d/%d", glyph, mode, live, cap)
+    if info.isProjected then
+      -- floor'd, not passed raw: ProjectedShards can carry a fractional figure
+      -- through the clamp, and "%d" on a float is version-dependent.
+      text = text .. string.format("  ->%d", math.floor(info.projected))
+    end
+  end
+  f.label:SetText(text)
+  f.label:SetTextColor(col[1], col[2], col[3])
+
+  -- The cap EDGE, once.  Counted whether or not the glitter was allowed to play,
+  -- so `hud status` can show the throttle doing its job rather than implying the
+  -- edge never happened.
+  if capped and not f.prevCapped then
+    railStats.edges = railStats.edges + 1
+    local played = fireGlitter()
+    -- M3e — §7.5 item 5 wants the edge, the glitter and the SUPPRESSION told
+    -- apart in time, not just counted.  A fast cap -> HoG -> cap must read as two
+    -- edges and one suppression.
+    if ns.HudLog then
+      ns.HudLog.Note("cap", string.format("cap edge (%d/%d) — %s",
+        live or -1, cap, played and "glitter" or "SUPPRESSED by the re-arm"))
+    end
+  end
+  f.prevCapped = capped
+
+  H.SetTerminalMode(mode and key or nil)
+end
+
+function H.ShowRail(viewer)
+  if not viewer then return end
+  rail = buildRail(viewer)
+  rail:Show()
+  rail.fx:Show()
+end
+
+function H.HideRail()
+  if rail then rail:Hide(); rail.fx:Hide() end
+  H.SetTerminalMode(nil)
 end

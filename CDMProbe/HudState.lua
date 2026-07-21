@@ -89,10 +89,19 @@ ns.HudState = {
   -- inferred later from a shrug.  Same standing risk the napkin carries.
   seed           = { passes = 0, blocked = 0, seeded = 0, ready = 0,
                      unreadable = 0, readable = nil, at = nil },
+  -- M3c-c1 — the shard rail's smoothing input.  Whole shards stay the GATE
+  -- everywhere a decision is made; fragments only move the partial segment.
+  fragments    = nil,     -- 0..(fragmentsMax), nil = unreadable in this context
+  fragmentsMax = nil,
 }
 local S = ns.HudState
 
-local LOW_SHARDS   = 3      -- "board quiet" only below the SPEND threshold
+-- The SPEND threshold, in one place.  §0.5.8.4:715 keys the mode off it and
+-- board-quiet keys off the same number under the old `LOW_SHARDS` name — its
+-- comment already called it "the SPEND threshold".  Derived rather than
+-- repeated, so the rail's mode and the board's quiet can never drift apart.
+local SPEND_AT     = 3
+local LOW_SHARDS   = SPEND_AT   -- "board quiet" only below the SPEND threshold
 local RECEDE_DELAY = 0.5    -- debounce; long enough not to strobe between GCDs
 local RECEDE_MULT  = 0.25   -- LOUD PASS: match HudChrome RECEDE_MIN (was 0.45)
 local POLL_PERIOD  = 0.1    -- ~10 Hz level backstop (a boolean read, no secret)
@@ -117,6 +126,24 @@ local function readShards()
   local ok, n = pcall(UnitPower, "player", Enum.PowerType.SoulShards)
   if not ok or ns.IsSecret(n) or type(n) ~= "number" then return nil end
   return n
+end
+
+-- The SAME power, read at fragment resolution — `UnitPower(..., true)` reports
+-- 0..50 where the whole-shard read reports 0..5.  Documented client behaviour on
+-- a power we already know is readable and branchable, and it is used for exactly
+-- ONE thing: smoothing the rail's partial segment.  Nothing scores off it.
+--
+-- ⚠ UNRELATED to the unproven fragment heuristic in `ns.ShardCost`.  That one is
+-- about a SPELL's reported *cost* coming back in fragments; this reads the
+-- player's power directly.  They share a word and nothing else — do not later
+-- "unify" them.
+local function readFragments()
+  if not (Enum and Enum.PowerType) then return nil end
+  local ok, n = pcall(UnitPower, "player", Enum.PowerType.SoulShards, true)
+  if not ok or ns.IsSecret(n) or type(n) ~= "number" then return nil end
+  local ok2, m = pcall(UnitPowerMax, "player", Enum.PowerType.SoulShards, true)
+  if not ok2 or ns.IsSecret(m) or type(m) ~= "number" or m <= 0 then return nil end
+  return n, m
 end
 
 --------------------------------------------------------------------------------
@@ -159,11 +186,25 @@ local function beginCast(spellID)
   local gen  = ns.SpecGhost(spellID) or 0
   if cost <= 0 and gen <= 0 then S.cast = nil return end
   S.cast = { spellID = spellID, cost = cost, generates = gen, atStart = S.shards }
+  -- M3e — §7.3 item 5 wants `shards N ->~M` with a REAL TIMESTAMP, so the
+  -- predictive SPEND flip can be shown to land inside the cast rather than a
+  -- beat after it.  Noted after S.cast is set, so the projection quoted here is
+  -- the one the board is about to score against.
+  if ns.HudLog then
+    local proj = S.ProjectedShards()
+    ns.HudLog.Note("cast", string.format("START %s  cost=%d gen=%d  shards %s ->~%s",
+      ns.SpellName(spellID) or tostring(spellID), cost, gen,
+      tostring(S.shards), tostring(proj)))
+  end
   if S.Recompute then S.Recompute() end
 end
 
 local function endCast()
   if S.cast == nil then return end
+  if ns.HudLog then
+    ns.HudLog.Note("cast", string.format("END   %s  shards %s",
+      ns.SpellName(S.cast.spellID) or tostring(S.cast.spellID), tostring(S.shards)))
+  end
   S.cast = nil
   if S.Recompute then S.Recompute() end
 end
@@ -182,6 +223,92 @@ function S.ProjectedShards()
   local proj      = live - remaining + (c.generates or 0)
   proj = math.max(0, math.min(ns.SHARD_CAP or 5, proj))
   return proj, proj ~= live
+end
+
+--------------------------------------------------------------------------------
+-- THE MODE SPINE — M3c-c1
+--------------------------------------------------------------------------------
+-- §0.5.8.4:713-716's ladder, minus BURST.  One computation, so the rail and the
+-- terminal chrome can never disagree about what mode we are in.
+--
+-- Returns (mode, projected, isProjected); mode is "PREP"|"SPEND"|"GENERATE"|nil.
+--
+--   * nil  — shards are UNREADABLE.  Unknown is a first-class state everywhere
+--            in this module and is never guessed; the rail renders an explicit
+--            unknown rather than an empty bar, because an empty bar is a CLAIM.
+--   * PREP — out of combat.  §0.5.8.2(a)'s "fourth resting state, NOT GENERATE".
+--            §0.5.1's three-mode table never mentions it (see §0.5.8.8).  M3c-c2
+--            hangs the opener queue off this, so it ships a milestone early and
+--            gets exercised before anything depends on it.
+--   * SPEND — keyed on PROJECTED, not live (§0.5.8.4:715).  The predictive
+--            pre-flip is the point: by the time the cast lands you are already
+--            reading "now dump".  Being early is never WRONG ABOUT WHAT YOU CAN
+--            PRESS, which is the §0.5.8.2(c) test the instructional cues fail.
+--
+-- ⚠ BURST is a NAMED VACANCY, not an omission.  M4 inserts its branch between
+-- PREP and SPEND:  `if tyrant_napkin <= HOLD_LEAD and board_staged -> "BURST"`,
+-- with HOLD_LEAD ~= 5s (§0.5.8.6 correction 1 — NOT §0.5.1's stale ~15s, which
+-- force-overcaps).  Leaving the slot here means M4 adds a branch instead of
+-- rewriting the ladder.
+function S.Mode()
+  local projected, isProjected = S.ProjectedShards()
+  if projected == nil then return nil, nil, false end
+  if not InCombatLockdown() then return "PREP", projected, isProjected end
+  -- [M4] BURST goes here.
+  if projected >= SPEND_AT then return "SPEND", projected, isProjected end
+  return "GENERATE", projected, isProjected
+end
+S.SPEND_AT = SPEND_AT
+
+-- Everything the rail draws, computed in ONE place so HudChrome stays a painter.
+-- `fill` is the smoothed figure: WHOLE shards from the gate every score already
+-- trusts, and only the FRACTIONAL part from the fragment read.  If fragments are
+-- unreadable here, fill == shards and the rail simply draws whole segments —
+-- nothing else in the widget changes.
+function S.RailInfo()
+  local mode, projected, isProjected = S.Mode()
+  local cap  = ns.SHARD_CAP or 5
+  local live = S.shards
+  local fill, smoothed = live, false
+  if live ~= nil then
+    if live >= cap then
+      fill = cap
+    elseif S.fragments and S.fragmentsMax and S.fragmentsMax > 0 then
+      local f = (S.fragments / S.fragmentsMax) * cap
+      local part = f - math.floor(f)
+      if part > 0 then smoothed = true end
+      fill = live + math.max(0, math.min(0.99, part))
+    end
+  end
+  return {
+    mode = mode, cap = cap, shards = live, fill = fill, smoothed = smoothed,
+    projected = projected, isProjected = isProjected,
+    capped = (live ~= nil and live >= cap),
+    fragmentsReadable = (S.fragments ~= nil),
+  }
+end
+
+-- The one redraw door.  Honours the setting here rather than in the painter, so
+-- `rail = false` costs a table compare and nothing else.
+function S.PaintRail()
+  if not hudOn() then return end
+  local info = S.RailInfo()
+  -- M3e — §7.5 item 4: the PREDICTIVE SPEND flip, timestamped.  Logged HERE
+  -- rather than in the painter and ABOVE the `rail = false` early-out, because
+  -- the mode is STATE, not chrome: turning the widget off must not turn the
+  -- measurement off.  CAP is recorded as a treatment on SPEND (HudChrome's
+  -- reading), so a flip into and out of cap is visible as a mode move.
+  if ns.HudLog then
+    local key = info.mode and (info.capped and (info.mode .. "/CAP") or info.mode) or "UNKNOWN"
+    if key ~= S.lastMode then
+      ns.HudLog.Note("mode", string.format("%s -> %s  (shards %s%s)",
+        S.lastMode or "-", key, tostring(info.shards),
+        info.isProjected and string.format(", projected ~%s", tostring(info.projected)) or ""))
+      S.lastMode = key
+    end
+  end
+  if ns.db and ns.db.hud and ns.db.hud.rail == false then return end
+  pcall(ns.HudChrome.PaintRail, info)
 end
 
 --------------------------------------------------------------------------------
@@ -347,9 +474,35 @@ end
 --     why LATE needs no napkin and can be trusted where the countdown can't.
 --   * the dot itself — one SetDot per icon item, so the scorer never touches a
 --     frame.
+-- The LIVE identity of a registry entry, as a name.  ONE definition, because
+-- naming the BASE here is precisely what printed "Grimoire: Fel Ravager — use on
+-- cooldown" over a Devour Magic button (M3c-b B1).  PrintStatus, the pull
+-- recorder and the seeding log all resolve it the same way — override event ->
+-- the item's own reported spell -> the base — so a log written to MEASURE that
+-- bug can never re-introduce it.
+function S.LiveID(e)
+  if not e then return nil end
+  local base = e.baseSpellID or e.spellID
+  return (base and S.override[base]) or e.spellID or base
+end
+
+local function liveName(e)
+  local id = S.LiveID(e)
+  return (id and ns.SpellName(id)) or (id and tostring(id)) or "?"
+end
+S.LiveName = liveName
+
+-- Scratch, reused across passes: the keys lit at ROTATION/LATE this pass.  A
+-- reused table and integer appends only — the SAMPLE path must stay free of
+-- string work (HudLog's header), and the reason strings are built ONLY when
+-- HudLog.Sample reports a new peak.
+local litKeys = {}
+
 function S.Recompute()
   if not (hudOn() and ns.HudScore) then return end
   local now = GetTime()
+  local lit = 0
+  wipe(litKeys)
   for key, e in pairs(ns.Hud.items) do
     if ns.Hud.IsIconViewer(e.viewer) and e.item then
       local ok, sc = pcall(ns.HudScore.For, key, e)
@@ -370,6 +523,24 @@ function S.Recompute()
         else
           S.candidateSince[key] = nil
         end
+        -- M3e — the TRANSITION.  `S.score[key]` still holds the PREVIOUS score at
+        -- this point, so the compare has to happen before the assignment below.
+        -- Recorded on a move of the level or of soon/projected, because those two
+        -- change what the dot CLAIMS even when the level is unmoved.  This is the
+        -- path that is allowed to cost strings; the sample path below is not.
+        local prev = S.score[key]
+        if ns.HudLog and (not prev or prev.level ~= sc.level
+            or (prev.soon or false) ~= (sc.soon or false)
+            or (prev.projected or false) ~= (sc.projected or false)) then
+          ns.HudLog.Note("dot", string.format("%s  %s -> %s%s%s : %s",
+            liveName(e), prev and prev.level or "-", sc.level,
+            sc.soon and "/SOON" or "", sc.projected and " ~est" or "",
+            ns.HudScore.Why(sc)))
+        end
+        if sc.level == ns.HudScore.LEVELS.ROTATION or sc.level == ns.HudScore.LEVELS.LATE then
+          lit = lit + 1
+          litKeys[lit] = key
+        end
         S.score[key] = sc
         -- B4 — a dot promoted BECAUSE OF a projection renders HOLLOW.  Same
         -- confidence marker the napkin's SOON already uses, same rule: an
@@ -383,11 +554,37 @@ function S.Recompute()
           (sc.soon and sc.level == ns.HudScore.LEVELS.NEVER) and "SOON" or sc.level,
           hollow)
       else
+        -- Losing a dot is a transition too, and a LOUD one: it is what an
+        -- unrecognised override looks like (HudScore returns nil rather than
+        -- inheriting the base's cadence).  Silence here would hide the very case
+        -- B1 exists to make safe.
+        if ns.HudLog and S.score[key] then
+          ns.HudLog.Note("dot", string.format("%s  %s -> (no dot)",
+            liveName(e), S.score[key].level))
+        end
         S.score[key] = nil
         S.candidateSince[key] = nil
         pcall(ns.HudChrome.SetDot, e.item, e.viewer, nil)
       end
     end
+  end
+  -- M3c-c1 — the rail rides the same recompute set as the dots.  This is the
+  -- ONE tail that sees every input the mode reads: RefreshGlows ends here (aura
+  -- edges, shard changes, overrides), and so do beginCast/endCast — which is
+  -- what makes the predictive SPEND flip land DURING the cast rather than a beat
+  -- after it.  No new ticker: HudCore.lua's header rule stands.
+  S.PaintRail()
+  -- M3e — the SAMPLE, on the same tail and for the same reason: this is the one
+  -- place that sees every input.  Sample() is one increment; the reason strings
+  -- are built ONLY when it reports a new peak, which is rare by construction.
+  if ns.HudLog and ns.HudLog.Sample(lit) then
+    local set = {}
+    for i = 1, lit do
+      local k = litKeys[i]
+      set[i] = string.format("%s (%s)", liveName(ns.Hud.items[k]),
+        ns.HudScore.Why(S.score[k]))
+    end
+    ns.HudLog.Peak(set)
   end
 end
 
@@ -422,6 +619,10 @@ local function onAlert(item, event)
     -- unconditional rather than checking where the record came from.
     local key, e = keyFor(item)
     if key then S.readySource[key] = "edge" end
+    -- M3e — §7.4 item 2, THE GCD TRAP, is a TIMING defect: nothing genuinely
+    -- ready may flip to on-cooldown inside the 1.5s global.  That is unreadable
+    -- from a snapshot and obvious from two timestamps.
+    if ns.HudLog then ns.HudLog.Note("ready", liveName(e) .. "  READY (edge)") end
     if e and e.baseSpellID then
       -- Clear under BOTH identities: SUCCEEDED files the napkin under whatever
       -- spellID actually went off, which is the OVERRIDE while a transform is
@@ -437,6 +638,7 @@ local function onAlert(item, event)
     ns.HudChrome.SetReady(item, false)
     local key, e = keyFor(item)
     if key then S.readySource[key] = "edge" end
+    if ns.HudLog then ns.HudLog.Note("ready", liveName(e) .. "  ON COOLDOWN (edge)") end
     if e and e.baseSpellID then S.readyAt[e.baseSpellID] = nil end
     S.Recompute()
   elseif event == A.OnAuraApplied or event == A.OnAuraRemoved then
@@ -562,6 +764,7 @@ function S.SeedFromReads()
   if not hudOn() then return end
   if InCombatLockdown() then
     S.seed.blocked = S.seed.blocked + 1
+    if ns.HudLog then ns.HudLog.Note("seed", "skipped — in combat (by design)") end
     return
   end
   local seeded, ready, unreadable = 0, 0, 0
@@ -603,6 +806,15 @@ function S.SeedFromReads()
   -- proves nothing about whether reads work here.
   if seeded + ready > 0 then S.seed.readable = true
   elseif unreadable > 0 then S.seed.readable = false end
+  -- M3e — §7.4 items 1/3: what a /reload or a combat exit ACTUALLY seeded.  The
+  -- status block reports the last pass; this one is timestamped and survives to
+  -- disk, which is the difference between "seeding works" and "seeding worked at
+  -- 12.4s into that pull, on 6 of 9 buttons".
+  if ns.HudLog then
+    ns.HudLog.Note("seed", string.format("%d on cd / %d ready / %d unreadable  (reads %s)",
+      seeded, ready, unreadable,
+      S.seed.readable == true and "live" or (S.seed.readable == false and "SECRET here" or "?")))
+  end
   S.Recompute()
 end
 
@@ -628,6 +840,11 @@ ev:SetScript("OnEvent", function(_, event, a1, a2, a3)
     end
   elseif event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_REGEN_ENABLED" then
     S.shards = readShards()
+    -- M3e — the pull boundary.  BeginPull KEEPS whatever prologue was recorded
+    -- since the last pull closed (a /reload's seeding pass, a keybind rescan) and
+    -- only bases the clock + clears the distribution, so the run-up to the pull
+    -- is readable beside it.
+    if event == "PLAYER_REGEN_DISABLED" and ns.HudLog then ns.HudLog.BeginPull() end
     if event == "PLAYER_REGEN_ENABLED" then
       -- B6's other half.  Leaving combat clears the candidate clocks so the next
       -- pull starts them FRESH — otherwise an ability that became a candidate as
@@ -642,13 +859,32 @@ ev:SetScript("OnEvent", function(_, event, a1, a2, a3)
       -- drifted estimate is replaced by a real number the instant combat ends.
       pcall(S.SeedFromReads)
     end
+    S.fragments, S.fragmentsMax = readFragments()
     S.EvaluateBoard()          -- combat state is half of "is the board quiet?"
+    S.PaintRail()              -- ...and ALL of PREP vs GENERATE
+    -- Closed LAST, after seeding and the PREP repaint, so the combat-exit seed
+    -- and the mode flip out of SPEND land INSIDE the pull they belong to.
+    -- Nothing is printed: the summary goes to ns.db.pulls (HudLog's header).
+    if event == "PLAYER_REGEN_ENABLED" and ns.HudLog then pcall(ns.HudLog.EndPull) end
   elseif event == "UNIT_POWER_UPDATE" or event == "UNIT_POWER_FREQUENT" then
     if a1 ~= "player" then return end
     local n = readShards()
-    if n ~= S.shards then
+    local fr, fm = readFragments()
+    -- ⚠ The old early-out compared WHOLE shards only, which swallows every
+    -- fragment-only change — the partial segment would freeze between whole
+    -- steps and the smoothing would silently do nothing.  Both values are
+    -- compared, but they take DIFFERENT paths: a whole-shard step moves gates
+    -- (softening, board-quiet, every score), a fragment tick moves one texture's
+    -- width and must not drag a full board re-evaluation behind it.
+    local wholeChanged = (n ~= S.shards)
+    if wholeChanged or fr ~= S.fragments then
       S.shards = n
-      S.RefreshGlows()          -- re-evaluates softening + the board
+      S.fragments, S.fragmentsMax = fr, fm
+      if wholeChanged then
+        S.RefreshGlows()        -- re-evaluates softening + the board (+ the rail)
+      else
+        S.PaintRail()
+      end
     end
   elseif event == "UNIT_SPELLCAST_START" then
     -- (unit, castGUID, spellID) — RegisterUnitEvent already filters to player.
@@ -667,6 +903,7 @@ local scoreTicker
 
 function S.Start()
   S.shards = readShards()
+  S.fragments, S.fragmentsMax = readFragments()
   ns.HudNapkin.Start()
   ev:RegisterEvent("COOLDOWN_VIEWER_SPELL_OVERRIDE_UPDATED")
   ev:RegisterEvent("PLAYER_REGEN_DISABLED")
@@ -703,7 +940,10 @@ function S.Stop()
   wipe(S.candidateSince)
   wipe(S.readyAt)
   wipe(S.readySource)
+  S.fragments, S.fragmentsMax = nil, nil
+  S.lastMode = nil           -- so a re-enable logs its first mode as a transition
   ns.HudChrome.SetRecede(1.0)
+  pcall(ns.HudChrome.HideRail)
 end
 
 --------------------------------------------------------------------------------
@@ -760,6 +1000,37 @@ function S.PrintStatus()
       S.lastEdge[sourceID] or S.lastEdge[rule.target] or "|cff808080none yet|r")
   end
 
+  -- ── M3c-c1: the rail + the mode spine ──────────────────────────────────────
+  -- Same "capability is reported, never assumed" standing as the napkin's line
+  -- and M3d's seeding verdict.  The load-bearing report is whether FRAGMENTS are
+  -- readable IN THIS CONTEXT: whole shards are confirmed readable+branchable,
+  -- the fragment resolution is not, and if it goes secret somewhere the only
+  -- symptom is a partial segment that never moves — which looks like a bug in
+  -- the widget rather than an answer about the client.
+  ns.Heading("  rail — M3c-c1 (the shard rail + mode spine)")
+  local info = S.RailInfo()
+  local rs = ns.HudChrome.RailStats and ns.HudChrome.RailStats() or {}
+  ns.Printf("   mode: %s   whole shards: %s / %d%s",
+    info.mode and ("|cffffd100" .. info.mode .. "|r")
+      or "|cffff4040unknown|r — shards unreadable; the rail draws UNKNOWN, never an empty bar",
+    info.shards and tostring(info.shards) or "|cffff4040?|r", info.cap,
+    info.capped and "   |cffffd100AT CAP — act or waste|r" or "")
+  ns.Printf("   fragments (partial-segment smoothing only): %s",
+    info.fragmentsReadable
+      and string.format("|cff88ff88readable here|r — %s/%s (%s)",
+            tostring(S.fragments), tostring(S.fragmentsMax),
+            info.smoothed and "partial segment live" or "sitting on a whole shard")
+      or "|cffffd100unreadable here|r — whole segments only; that is an ANSWER, not a failure")
+  ns.Printf("   projected: %s   (live %s -> %s%s)   SPEND_AT=%d",
+    info.isProjected and "|cffffd100yes — the rail's head is HOLLOW|r" or "|cff808080no in-flight cast|r",
+    info.shards and tostring(info.shards) or "?",
+    info.projected and tostring(info.projected) or "?",
+    info.isProjected and ", pre-flip active" or "", SPEND_AT)
+  -- [X2] — WCAG's three-flashes-in-one-second guidance.  The M1 prototype fired
+  -- on EVERY capped edge, so cap -> HoG -> cap re-fired within a couple of GCDs.
+  ns.Printf("   cap edges: %d   glitter fired: %d   |cffffd100suppressed by the %.1fs re-arm: %d|r",
+    rs.edges or 0, rs.glitters or 0, rs.rearm or 0, rs.suppressed or 0)
+
   -- ── the score block ────────────────────────────────────────────────────────
   ns.Heading("  score — M3c-a (the dot)")
   -- Is the whole anticipation feature live?  Reported, never assumed: this is
@@ -771,14 +1042,12 @@ function S.PrintStatus()
   for key, sc in pairs(S.score) do
     counts[sc.level] = (counts[sc.level] or 0) + 1
     if sc.level == "ROTATION" or sc.level == "LATE" then
-      local e = ns.Hud.items[key]
-      local base = e and (e.baseSpellID or e.spellID)
-      -- Name the LIVE identity (B1).  Naming the base here is what printed
-      -- "Grimoire: Fel Ravager - up - use on cooldown" over a Devour Magic
-      -- button; this line is the milestone's own exit measurement, so it has to
-      -- report what is actually on screen.
-      local id = (base and S.override[base]) or (e and e.spellID) or base
-      lit[#lit + 1] = string.format("%s (%s)", (id and ns.SpellName(id)) or "?",
+      -- Name the LIVE identity (B1) — via the ONE resolver (S.LiveName), which
+      -- the pull recorder's peak set also uses.  Naming the base here is what
+      -- printed "Grimoire: Fel Ravager - up - use on cooldown" over a Devour
+      -- Magic button; this line is the milestone's own exit measurement, so it
+      -- has to report what is actually on screen.
+      lit[#lit + 1] = string.format("%s (%s)", liveName(ns.Hud.items[key]),
         ns.HudScore.Why(sc))
     end
   end

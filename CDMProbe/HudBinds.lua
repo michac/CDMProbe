@@ -200,6 +200,13 @@ end
 --   3. MACRO SLOTS.  GetMacroSpell returns nil for conditional/modifier macros,
 --      so the slot never maps to a spellID at all and the spell appears here with
 --      NO rows whatsoever.
+--   4. THE SECONDARY BINDING (found in source, M3e).  GetBindingKey(cmd) returns
+--      TWO keys — primary AND secondary — and both scan() and this function only
+--      ever took the first.  A player who remapped the SECONDARY binding sees no
+--      change and, until now, there was NO ROW THAT SHOWED WHY.  Recorded here as
+--      `key2`.  ⚠ This deliberately does NOT change which binding wins: making
+--      the loser visible is the diagnosis, changing the winner is a decision that
+--      needs the evidence first.
 --
 -- ONE 180-slot pass builds the whole reverse index (per-spell scans would be
 -- 20x that).  Manual command only — this never runs on an event path.
@@ -214,12 +221,15 @@ function B.Explain()
       spellID, via = (GetMacroSpell and GetMacroSpell(id) or nil), "macro"
     end
     if spellID then
+      local key, key2
       local cmd = bindingCommand(slot)
-      local key = cmd and GetBindingKey(cmd) or nil
+      if cmd then key, key2 = GetBindingKey(cmd) end
       local list = bySpell[spellID]
       if not list then list = {}; bySpell[spellID] = list end
       list[#list + 1] = { slot = slot, via = via, cmd = cmd,
-                          key = key, short = key and shorten(key) or nil }
+                          key = key, key2 = key2,
+                          short = key and shorten(key) or nil,
+                          short2 = key2 and shorten(key2) or nil }
     end
   end
   return bySpell

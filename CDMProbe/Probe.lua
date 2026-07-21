@@ -316,6 +316,55 @@ local function sectionStackWidth()
 end
 
 --------------------------------------------------------------------------------
+-- SECTION E: the keybind reverse index  (§7.2 item 5)
+--------------------------------------------------------------------------------
+-- "I remapped a key and the HUD didn't pick it up" has been open since v0.4.0
+-- and is explicitly NOT DIAGNOSABLE FROM SOURCE — it depends on the player's
+-- actual bars.  `hud binds` was built to answer it and then had to be READ LIVE,
+-- which is the same scheduling problem this whole file exists to delete.  So the
+-- reverse index goes INTO THE REPORT, and all four failure modes are then
+-- readable off disk after the fact (see ns.HudBinds.Explain's header):
+--
+--   two rows, lower one `<-- used`  -> first-bound-slot-wins
+--   a row with cmd=none             -> the unbindable 13-24 / 109-180 ranges
+--   no rows at all                  -> a macro GetMacroSpell can't resolve
+--   a populated 2nd=                -> the SECONDARY binding was the one remapped
+--
+-- Reads the viewers directly rather than ns.Hud.items, like every other section,
+-- so it still answers with the HUD off.
+local function sectionBinds()
+  ns.Heading("E. Keybind reverse index — every action slot per tracked spell")
+  if not ns.HudBinds then return ns.Print("  |cffff4040HudBinds absent|r") end
+  if InCombatLockdown() then
+    ns.Print("  |cffffd100in combat|r — the bar scan is out-of-combat only, so the cache may be stale (the rows below are a LIVE read).")
+  end
+  local ok, bySpell = pcall(ns.HudBinds.Explain)
+  if not ok or type(bySpell) ~= "table" then
+    return ns.Print("  |cffff4040Explain() failed|r")
+  end
+  for _, s in ipairs(trackedSpells()) do
+    local used = ns.HudBinds.Get(s.id)
+    ns.Printf("  |cffffd100%s|r (%d) -> chrome shows %s",
+      ns.SpellName(s.id) or "?", s.id,
+      used and ("|cff88ff88" .. used .. "|r") or "|cff808080nothing|r")
+    local rows = bySpell[s.id]
+    if not rows then
+      ns.Print("    |cff808080no action slot holds this spell (off-bars, or a macro that doesn't resolve)|r")
+    else
+      for _, r in ipairs(rows) do
+        ns.Printf("    slot %3d (%s)  cmd=%s  key=%s%s  -> %s%s",
+          r.slot, r.via,
+          r.cmd or "|cffff4040none — unbindable slot range|r",
+          r.key or "|cff808080unbound|r",
+          r.key2 and ("  |cffffd1002nd=" .. r.key2 .. " (not used)|r") or "",
+          r.short or "|cff808080-|r",
+          (r.short and r.short == used) and "  |cff88ff88<-- used|r" or "")
+      end
+    end
+  end
+end
+
+--------------------------------------------------------------------------------
 -- The command
 --------------------------------------------------------------------------------
 ns.RegisterCommand("probe",
@@ -344,12 +393,22 @@ ns.RegisterCommand("probe",
     sectionOverrides()
     sectionCasts()
     sectionStackWidth()
+    sectionBinds()
 
     -- The HUD's own state/score/napkin readout, so ONE report has everything.
     if ns.Hud and ns.Hud.on then
       ns.HudState.PrintStatus()
+      -- M3e — the LAST CLOSED PULL, folded in here so one report still has
+      -- everything and the existing OOC-then-combat workflow is unchanged.  The
+      -- status block's `lit now` is a snapshot of THIS instant; this is the
+      -- distribution across the whole fight, which is what §7.3 item 6 actually
+      -- asks about.  (The full ring is `/cdmp hud log all`, or read
+      -- CDMProbeDB.pulls off disk.)
+      ns.Heading("  last pull — M3e (the recorder)")
+      local pulls = ns.db and ns.db.pulls or {}
+      ns.HudLog.Summary(pulls[#pulls] or ns.HudLog.last, 20)
     else
-      ns.Print("(HUD off — enable it with /cdmp hud for the state + score block)")
+      ns.Print("(HUD off — enable it with /cdmp hud for the state + score block, and NOTHING IS BEING RECORDED)")
     end
 
     ns.EndCapture("probe_" .. (InCombatLockdown() and "combat" or "ooc"))
