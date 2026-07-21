@@ -99,13 +99,10 @@ end
 --------------------------------------------------------------------------------
 -- Shared helpers
 --------------------------------------------------------------------------------
-local function secretTable(t)
-  if type(issecrettable) == "function" then
-    local ok, s = pcall(issecrettable, t)
-    return ok and s
-  end
-  return false
-end
+-- ONE definition, in Util beside ns.IsSecret (M3d D1).  This was a duplicate
+-- local; the seeding path needs the same question answered the same way, and
+-- two copies of a secret guard is exactly one copy too many.
+local secretTable = ns.IsSecretTable
 
 -- Every tracked icon-viewer spell, whether or not the HUD is running.  Reading
 -- the viewers directly (rather than ns.Hud.items) keeps the probe useful with

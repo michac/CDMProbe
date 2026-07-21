@@ -247,6 +247,13 @@ local function rebind()
   -- not ours.  bindViewer already pcalls per item; this closes the same gap for
   -- the whole-registry work that follows it.
   pcall(ns.HudState.SyncLevels)
+  -- M3d — seed readiness + the countdown from the client's own numbers.  THIS
+  -- is the login / /reload / zone-in / layout-change path, so this one line is
+  -- the whole cold-start fix: without it the board sits at
+  -- "NEVER · no edge seen yet" until you've played a full cooldown cycle.
+  -- Refuses itself in combat (both here and inside ns.ReadCooldown), so a
+  -- rebind landing mid-fight costs nothing.
+  pcall(ns.HudState.SeedFromReads)
   pcall(ns.HudState.RefreshGlows)  -- ...which also re-drives the dot score
   pcall(checkExpected)             -- B7 — diff expected against bound, warn once
 end
@@ -357,7 +364,7 @@ end
 --------------------------------------------------------------------------------
 local function printStatus()
   local db = ensureDB()
-  ns.Heading("HUD status — M3c-b (the truth pass: live identity + projection)")
+  ns.Heading("HUD status — M3c-b (live identity + projection) + M3d (out-of-combat seeding)")
   ns.Printf("  state: %s   rows: %s (verbose %s)   opener setting: |cffffffff%s|r (M3c)",
     M.on and "|cff88ff88ON|r" or "|cffff8080OFF|r",
     ns.HudRow.on and "|cff88ff88on|r" or "|cffff8080off|r",
@@ -394,6 +401,13 @@ local function printStatus()
         -- (Demonic Art) — the one case M3a's keybind lookup used to miss.
         local ready = ns.HudChrome.GetReady(e.item)
         local sc = ns.HudState.score[key]
+        -- M3d — WHERE that readiness came from.  Both an alert edge and an
+        -- out-of-combat read are direct observations and both render solid, so
+        -- this readout is the only place the two are distinguishable — which is
+        -- also what keeps M3c-b and M3d separable inside one release.
+        local src = ns.HudState.readySource[key]
+        local readyText = (ready == nil) and "|cff808080unknown|r"
+          or ((ready and "|cff88ff88yes|r" or "no") .. (src and ("(" .. src .. ")") or ""))
         ns.Printf("   [%s] cd=%s id=%s%s %s  group=%s/%s cadence=%s%s  key=%s  ready=%s  dot=%s%s",
           VIEWER_TAG[name] or name:sub(1, 4), tostring(e.cooldownID), ns.Describe(e.spellID),
           (e.baseSpellID and e.baseSpellID ~= e.spellID)
@@ -402,7 +416,7 @@ local function printStatus()
           info.group, ns.SpecPole(info), tostring(info.cadence or "-"),
           known and "" or " |cffffd100(not in ns.Spec — neutral)|r",
           ns.HudBinds.GetForItem(e.item, e.spellID) or "|cff808080none|r",
-          ready == nil and "|cff808080unknown|r" or (ready and "|cff88ff88yes|r" or "no"),
+          readyText,
           sc and (sc.level .. (sc.soon and "/SOON" or "") .. (sc.projected and "~est" or "")) or "|cff808080none|r",
           ns.HudChrome.IsGlowing(e.item) and "  |cff44e0ffGLOW|r" or "")
       end

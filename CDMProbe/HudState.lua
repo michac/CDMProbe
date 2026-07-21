@@ -75,7 +75,20 @@ ns.HudState = {
   score          = {},    -- registry key -> the HudScore result, for the row
   candidateSince = {},    -- registry key -> GetTime() when it first became a
                           -- ROTATION candidate; cleared when it stops being one
-  readyAt        = {},    -- base spellID -> when we OBSERVED the ready edge
+  readyAt        = {},    -- base spellID -> when readiness was established
+  -- M3d — WHERE the current readiness boolean came from, mirroring the
+  -- `lastEdge` idiom for presence.  "edge" = an observed alert, "seed" = an
+  -- out-of-combat client read.  Both are direct observations and both render
+  -- SOLID; this exists so the readout can tell them apart, which is also what
+  -- keeps M3c-b and M3d separable inside one release.
+  readySource    = {},    -- registry key -> "edge" | "seed"
+  -- Did the last seeding pass actually get anything?  REPORTED, never assumed —
+  -- the OOC read has only been measured open-world, and if it also goes secret
+  -- in some other out-of-combat context (an instance lobby, a raid between
+  -- pulls) seeding silently does less.  That has to show up here rather than be
+  -- inferred later from a shrug.  Same standing risk the napkin carries.
+  seed           = { passes = 0, blocked = 0, seeded = 0, ready = 0,
+                     unreadable = 0, readable = nil, at = nil },
 }
 local S = ns.HudState
 
@@ -404,8 +417,11 @@ local function onAlert(item, event)
     ns.HudChrome.Settle(item)                 -- [V4]: one-shot, the urgent instant
     -- GROUND TRUTH WINS.  The observed edge retires the napkin estimate outright:
     -- if CDR or a reset brought this up early, the dot goes ROTATION NOW whatever
-    -- the countdown said.  The estimate is never allowed to outlive an observation.
-    local _, e = keyFor(item)
+    -- the countdown said.  The estimate is never allowed to outlive an
+    -- observation — and as of M3d that includes a SEED, which is why Clear is
+    -- unconditional rather than checking where the record came from.
+    local key, e = keyFor(item)
+    if key then S.readySource[key] = "edge" end
     if e and e.baseSpellID then
       -- Clear under BOTH identities: SUCCEEDED files the napkin under whatever
       -- spellID actually went off, which is the OVERRIDE while a transform is
@@ -419,7 +435,8 @@ local function onAlert(item, event)
   elseif event == A.OnCooldown then
     S.fires.oncd = S.fires.oncd + 1
     ns.HudChrome.SetReady(item, false)
-    local _, e = keyFor(item)
+    local key, e = keyFor(item)
+    if key then S.readySource[key] = "edge" end
     if e and e.baseSpellID then S.readyAt[e.baseSpellID] = nil end
     S.Recompute()
   elseif event == A.OnAuraApplied or event == A.OnAuraRemoved then
@@ -520,6 +537,76 @@ local function poll()
 end
 
 --------------------------------------------------------------------------------
+-- OUT-OF-COMBAT SEEDING — M3d
+--------------------------------------------------------------------------------
+-- THE COLD START, deleted.  Until now readiness came ONLY from an observed
+-- alert edge, so on every login, /reload and zone-in every cooldown-bearing
+-- ability read `NEVER · no edge seen yet` until it had been cast once and had
+-- run a full cooldown cycle.  That was written up as "the design holding, not a
+-- bug" — the M3b doctrine is that we refuse to GUESS a secret.  We still do.
+-- This is READING, not guessing (see ns.ReadCooldown's header for the measured
+-- evidence), and the doctrine stands unchanged inside combat.
+--
+-- Three rules, and none of them is optional:
+--
+--   * UNREADABLE TOUCHES NOTHING.  A `nil` from ns.ReadCooldown is not evidence
+--     of anything.  Overwriting a known state with it is the exact B2-shaped
+--     mistake — keep what you had.
+--   * NEVER IN COMBAT.  Gated here AND inside ns.ReadCooldown, because a caller
+--     added later will not remember.
+--   * NO TICKER.  Out of combat a finishing cooldown still fires its `Available`
+--     alert edge, so the event path already covers the tail — consistent with
+--     the standing "if something detaches, the fix is another EVENT, not the
+--     ticker back" (HudCore.lua header).
+function S.SeedFromReads()
+  if not hudOn() then return end
+  if InCombatLockdown() then
+    S.seed.blocked = S.seed.blocked + 1
+    return
+  end
+  local seeded, ready, unreadable = 0, 0, 0
+  for key, e in pairs(ns.Hud.items) do
+    if ns.Hud.IsIconViewer(e.viewer) and e.item then
+      -- The LIVE identity, resolved the way B1 established it in HudScore.For:
+      -- override event -> the item's own reported spell -> the base.  Seeding a
+      -- transformed button from the ability underneath it would put a real,
+      -- confident countdown on a spell that isn't on the bar — B1's failure
+      -- with better numbers.  Do NOT re-derive this a second way.
+      local base   = e.baseSpellID or e.spellID
+      local liveID = (base and S.override[base]) or e.spellID or base
+      local isReady, _, duration, startTime = ns.ReadCooldown(liveID)
+      if isReady == nil then
+        unreadable = unreadable + 1
+      elseif isReady then
+        ready = ready + 1
+        ns.HudChrome.SetReady(e.item, true)
+        -- Same both-identities clear as the Available edge: SUCCEEDED files a
+        -- napkin under whatever spellID actually went off, which is the
+        -- OVERRIDE while a transform is armed.
+        ns.HudNapkin.Clear(liveID)
+        if base and base ~= liveID then ns.HudNapkin.Clear(base) end
+        S.readySource[key] = "seed"
+        if base then S.readyAt[base] = GetTime() end
+      else
+        seeded = seeded + 1
+        ns.HudChrome.SetReady(e.item, false)
+        ns.HudNapkin.Seed(liveID, startTime, duration)
+        S.readySource[key] = "seed"
+        if base then S.readyAt[base] = nil end
+      end
+    end
+  end
+  S.seed.passes = S.seed.passes + 1
+  S.seed.seeded, S.seed.ready, S.seed.unreadable = seeded, ready, unreadable
+  S.seed.at = GetTime()
+  -- Only ever set from a pass that had something to say.  A board with no items
+  -- proves nothing about whether reads work here.
+  if seeded + ready > 0 then S.seed.readable = true
+  elseif unreadable > 0 then S.seed.readable = false end
+  S.Recompute()
+end
+
+--------------------------------------------------------------------------------
 -- Events
 --------------------------------------------------------------------------------
 local ev = CreateFrame("Frame")
@@ -548,6 +635,12 @@ ev:SetScript("OnEvent", function(_, event, a1, a2, a3)
       -- straight to LATE on the first frame of the fight.
       wipe(S.candidateSince)
       S.cast = nil
+      -- M3d — leaving combat RE-TRUTHS the whole board from reads.  Reads go
+      -- secret in combat, so the board has been running on edges + estimates for
+      -- the length of the fight; this is the first moment we can ask the client
+      -- again.  It is also the free fix for "should be up, unconfirmed": a
+      -- drifted estimate is replaced by a real number the instant combat ends.
+      pcall(S.SeedFromReads)
     end
     S.EvaluateBoard()          -- combat state is half of "is the board quiet?"
   elseif event == "UNIT_POWER_UPDATE" or event == "UNIT_POWER_FREQUENT" then
@@ -609,6 +702,7 @@ function S.Stop()
   wipe(S.score)
   wipe(S.candidateSince)
   wipe(S.readyAt)
+  wipe(S.readySource)
   ns.HudChrome.SetRecede(1.0)
 end
 
@@ -639,6 +733,25 @@ function S.PrintStatus()
     if e.item then probe = ns.Describe(e.item.isActive) break end
   end
   ns.Printf("   probe: item.isActive = %s  |cff808080(readable => better level source, M3c)|r", probe)
+
+  -- ── M3d: is out-of-combat seeding actually working HERE? ───────────────────
+  -- "Capability is reported, never assumed" — the same standing the napkin's own
+  -- status line has.  The OOC read is MEASURED open-world only; if it goes
+  -- secret in some other context this line is how we find out, rather than
+  -- wondering later why the cold start came back.
+  local verdict
+  if InCombatLockdown() then
+    verdict = "|cffffd100unavailable in combat|r — by design; the board is running on EDGES + estimates until you drop combat"
+  elseif S.seed.readable == true then
+    verdict = "|cff88ff88live|r — the client answers cooldown reads in this context"
+  elseif S.seed.readable == false then
+    verdict = "|cffff4040unreadable here|r — reads came back <secret> out of combat; seeding is OFF in this context"
+  else
+    verdict = "|cff808080not probed|r — no seeding pass with items yet"
+  end
+  ns.Printf("   seeding (M3d, out-of-combat reads): %s", verdict)
+  ns.Printf("     last pass: %d on cooldown (seeded) / %d ready / %d unreadable   passes=%d  skipped-in-combat=%d",
+    S.seed.seeded, S.seed.ready, S.seed.unreadable, S.seed.passes, S.seed.blocked)
   for sourceID, rule in pairs(ns.SpecProcGlow or {}) do
     local st = S.glowing[sourceID]
     ns.Printf("   glow %s: %s   last edge: %s",

@@ -69,6 +69,17 @@ function ns.IsSecret(v)
   return ok and secret or false
 end
 
+-- True if t is a Secret TABLE — a distinct verdict from ns.IsSecret on a field.
+-- Both were OBSERVED by the v0.12.0 probe (`<secret table>` and `<secret
+-- fields>` are separate lines in Section A), which is why every reader has to
+-- ask both questions: a secret table cannot be indexed at all, while a readable
+-- table can still hand back secret members.
+function ns.IsSecretTable(t)
+  if type(issecrettable) ~= "function" then return false end
+  local ok, s = pcall(issecrettable, t)
+  return ok and s or false
+end
+
 -- Human string for a value, flagging Secret Values in red.  Never compares a
 -- secret (that would error/taint) — it only asks issecretvalue().
 function ns.Describe(v)
@@ -100,6 +111,103 @@ function ns.BaseCooldown(spellID)
   end
   if ms == nil then return nil end
   return math.floor(ms / 1000 + 0.5)
+end
+
+--------------------------------------------------------------------------------
+-- ns.ReadCooldown — the ONE door for "what does the client say about this
+-- cooldown right now"  (M3d D1)
+--------------------------------------------------------------------------------
+-- THIS IS READING, NOT GUESSING, and the distinction is the whole milestone.
+-- The M3b doctrine — readiness comes only from an OBSERVED EDGE, we refuse to
+-- infer a secret — stands unchanged INSIDE COMBAT.  The seam is the combat
+-- boundary, and it was MEASURED, not assumed: the v0.12.0 probe (Probe.lua
+-- Section A) read C_Spell.GetSpellCooldown on all 13 tracked spells in two
+-- contexts and got 13/13 readable OUT OF COMBAT, 0/13 IN COMBAT.  Open-world
+-- both runs, so the gate is COMBAT, not instancing.  And the residual worry —
+-- that duration=0 everywhere meant a "not on cooldown" constant rather than a
+-- real value — was closed by a genuine mid-cooldown read:
+--
+--     Summon Demonic Tyrant        duration=60 startTime=126156.254
+--
+-- startTime is in GetTime() units, so startTime + duration - GetTime() seeds
+-- readiness AND the countdown directly.
+--
+-- Returns (ready, remaining, duration, startTime), or NIL when unreadable.
+-- `nil` is the load-bearing return: an unreadable read is NOT evidence of
+-- anything, and every caller must leave the state it had alone rather than
+-- overwrite it with a shrug.
+local GCD_SPELLID = 61304   -- the global cooldown, as a spell (Probe.lua:155)
+
+-- The raw guarded read, shared by the spell and the GCD paths.  Guards in
+-- order, because each is a DIFFERENT failure: the call itself -> a secret table
+-- (cannot be indexed) -> secret fields on a readable table.
+local function rawCooldown(spellID)
+  if not (C_Spell and C_Spell.GetSpellCooldown) then return nil end
+  local ok, info = pcall(C_Spell.GetSpellCooldown, spellID)
+  if not ok or type(info) ~= "table" then return nil end
+  if ns.IsSecretTable(info) then return nil end
+  local d, st
+  -- Indexing is itself pcall'd: a table that passes issecrettable can still
+  -- throw on access under the 12.0 restrictions, and this runs from rebind(),
+  -- which is a hooksecurefunc callback inside Blizzard's layout path.
+  if not pcall(function() d, st = info.duration, info.startTime end) then return nil end
+  if ns.IsSecret(d) or ns.IsSecret(st) then return nil end
+  if type(d) ~= "number" or type(st) ~= "number" then return nil end
+  return d, st
+end
+
+-- Charges, guarded.  For a CHARGED ability GetSpellCooldown reports the
+-- RECHARGE of the next charge, so an ability with a charge banked would seed as
+-- on-cooldown.  A banked charge means PRESSABLE, whatever the recharge says.
+-- No tracked Demo ability has charges today, so this is pre-emptive — but it is
+-- a one-line miss that would look exactly like "seeding just doesn't work on
+-- that button", which is the failure mode this project keeps re-learning.
+local function readCharges(spellID)
+  if not (C_Spell and C_Spell.GetSpellCharges) then return nil end
+  local ok, info = pcall(C_Spell.GetSpellCharges, spellID)
+  if not ok or type(info) ~= "table" then return nil end
+  if ns.IsSecretTable(info) then return nil end
+  local c
+  if not pcall(function() c = info.currentCharges or info.charges end) then return nil end
+  if ns.IsSecret(c) or type(c) ~= "number" then return nil end
+  return c
+end
+
+function ns.ReadCooldown(spellID)
+  if type(spellID) ~= "number" or ns.IsSecret(spellID) then return nil end
+  -- Short-circuited HERE as well as at the call site, because a caller added
+  -- later will not remember the rule.  The guards above would refuse a combat
+  -- read anyway, but silently burning 13 pcalls per rebind mid-fight is not
+  -- free — and a caller that got `nil` for the wrong reason would look like the
+  -- feature is broken rather than out of scope.
+  if InCombatLockdown() then return nil end
+
+  local duration, startTime = rawCooldown(spellID)
+  if duration == nil then return nil end
+
+  local charges = readCharges(spellID)
+  if charges and charges > 0 then return true, 0, duration, startTime end
+
+  -- ⚠ THE GCD TRAP — load-bearing.  GetSpellCooldown reports the GLOBAL
+  -- COOLDOWN for a spell that is genuinely ready, so a naive `duration > 0`
+  -- reads EVERY ability as on-cooldown for 1.5s after any cast.  Resolved
+  -- against the LIVE GCD rather than a magic number: a (startTime, duration)
+  -- pair matching the GCD's own is the GCD, not this spell's cooldown.
+  local gDur, gStart = rawCooldown(GCD_SPELLID)
+  if gDur and gDur > 0 then
+    if duration == gDur and startTime == gStart then
+      return true, 0, duration, startTime
+    end
+  elseif duration > 0 and duration <= 1.5 then
+    -- Backstop for when the GCD read itself is unavailable.  1.5s is the
+    -- unhasted global; a real cooldown that short is not something we track.
+    return true, 0, duration, startTime
+  end
+
+  if duration <= 0 then return true, 0, duration, startTime end
+  local remaining = startTime + duration - GetTime()
+  if remaining <= 0 then return true, 0, duration, startTime end
+  return false, remaining, duration, startTime
 end
 
 -- Power cost for a spell, as the CLIENT reports it for THIS character's build.

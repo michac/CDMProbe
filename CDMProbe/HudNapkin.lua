@@ -38,13 +38,30 @@
 --      matters most in should be visible, not inferred later from a shrug.
 local ADDON, ns = ...
 
+--------------------------------------------------------------------------------
+-- M3d — the SECOND way to fill the same store
+--------------------------------------------------------------------------------
+-- Out of combat the client will tell us the real remaining time (Util.lua
+-- ns.ReadCooldown, measured 13/13 readable OOC).  That lands here as a napkin
+-- record with `source = "read"` rather than in a parallel store: ONE countdown,
+-- two ways to fill it, so N.Remaining and the SOON treatment need no change at
+-- all.  The only thing that differs is PROVENANCE, which the row prints.
+--
+-- PRECEDENCE, stated once because this is where a future reader will get it
+-- wrong — there are now THREE sources:
+--   1. an OBSERVED ALERT EDGE always wins.  `Available` clears seed and
+--      estimate alike (HudState's onAlert), exactly as it did in M3c.
+--   2. a SEED overwrites a cast-derived ESTIMATE.  It is the client's own
+--      number, not our base-cooldown arithmetic.
+--   3. an ESTIMATE fills only what neither of the above has.
 ns.HudNapkin = {
-  casts    = {},     -- spellID -> { started, length }
+  casts    = {},     -- spellID -> { started, length, source = "cast"|"read" }
   readable = nil,    -- nil = no player cast seen yet; true/false = spellID legible
   seen     = 0,      -- SUCCEEDED events with a readable spellID
   secret   = 0,      -- ...and with a secret one (the raid-context risk, counted)
   tracked  = 0,      -- ...of those, how many had a base cooldown worth tracking
   cleared  = 0,      -- napkins retired by an observed Available edge (ground truth)
+  seeded   = 0,      -- M3d — records written from a real client read, not arithmetic
 }
 local N = ns.HudNapkin
 
@@ -71,9 +88,33 @@ local function onSucceeded(_, _, spellID)
   -- 0 is meaningful, not a failure: Hand of Gul'dan and Demonbolt have no
   -- cooldown at all, so there is nothing to count down and we store nothing.
   if type(len) == "number" and len > 0 then
-    N.casts[spellID] = { started = GetTime(), length = len }
+    N.casts[spellID] = { started = GetTime(), length = len, source = "cast" }
     N.tracked = N.tracked + 1
   end
+end
+
+-- M3d — file a countdown from a REAL READ.  `started`/`length` are the client's
+-- own startTime/duration in GetTime() units, so N.Remaining's arithmetic is
+-- unchanged; only the provenance differs.
+--
+-- Deliberately unconditional: a seed OVERWRITES a cast-derived estimate
+-- (precedence 2 above).  A fresh cast then overwrites the seed in turn, which is
+-- also right — it is the newer observation of the two.
+function N.Seed(spellID, started, length)
+  if type(spellID) ~= "number" then return end
+  if type(started) ~= "number" or type(length) ~= "number" then return end
+  if length <= 0 then return end
+  N.casts[spellID] = { started = started, length = length, source = "read" }
+  N.seeded = N.seeded + 1
+end
+
+-- "read" | "cast" | nil.  The row prints this so the two countdowns stay
+-- tellable apart — `~42.1s (read)` is the client's number, `~1.8s (est)` is our
+-- base-cooldown arithmetic, and they carry different confidence.
+function N.SourceOf(spellID)
+  local c = N.casts[spellID]
+  if not c then return nil end
+  return c.source or "cast"
 end
 
 -- Seconds until the estimate says this comes up.  nil = we have no napkin for
@@ -132,11 +173,16 @@ end
 
 function N.PrintStatus()
   ns.Printf("   napkin (anticipation, lead %.1fs): %s", N.SOON_LEAD, N.StatusText())
-  if N.readable ~= true then return end
+  ns.Printf("     countdowns filled from a client READ (M3d seeding): %d", N.seeded)
+  -- NOT gated on N.readable any more.  That flag describes the CAST channel; a
+  -- cold-started board can be fully seeded from reads with `readable == nil`
+  -- (nothing cast yet), and hiding those rows would report the headline feature
+  -- as doing nothing on exactly the login where it did the most.
   for spellID, c in pairs(N.casts) do
     local left = math.max(0, c.started + c.length - GetTime())
-    ns.Printf("     %s  base %ds  %s", ns.SpellName(spellID) or tostring(spellID),
-      c.length, left > 0 and string.format("~%.1fs", left)
+    ns.Printf("     %s  %s %.0fs  %s", ns.SpellName(spellID) or tostring(spellID),
+      (c.source == "read") and "|cff88ff88read|r" or "|cff808080est|r", c.length,
+      left > 0 and string.format("~%.1fs", left)
         or "|cffffd100should be up, unconfirmed|r")
   end
 end

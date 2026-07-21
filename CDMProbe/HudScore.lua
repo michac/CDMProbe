@@ -203,10 +203,21 @@ function Sc.For(key, e)
     -- this is pre-emptive — but it's a one-line miss that would look exactly
     -- like "anticipation just doesn't work on that button".
     local remain = ns.HudNapkin.Remaining(id)
+    local remainID = id
     if remain == nil and base and base ~= id then
       remain = ns.HudNapkin.Remaining(base)
+      remainID = base
     end
     out.remain = remain
+    -- M3d — PROVENANCE on the countdown.  Two things can now fill the napkin and
+    -- they carry different confidence: `(read)` is the client's own number for
+    -- this cooldown, `(est)` is our base-cooldown arithmetic off an observed
+    -- cast, which haste and CDR both drift.  The dot treatment does NOT change —
+    -- SOON stays HOLLOW whatever the source, because it is a claim about the
+    -- FUTURE and how it was sourced doesn't change that.  Only the word does.
+    out.remainSource = remain and ns.HudNapkin.SourceOf(remainID) or nil
+    local suffix = (out.remainSource == "read") and " (read)"
+      or (out.remainSource and " (est)" or "")
     if remain == nil then
       -- These two are NOT the same fact and printing "on CD" for both is a lie
       -- the first time the HUD is enabled: every cooldown ability sits at
@@ -214,9 +225,12 @@ function Sc.For(key, e)
       -- level is still NEVER — we refuse to guess readiness, that's the design —
       -- but the REASON has to say which of the two it is, or the row is claiming
       -- knowledge it doesn't have.
+      -- The wording STAYS.  It is still correct for a cold start that began IN
+      -- COMBAT — where reads are secret and M3d's seeding cannot run — it will
+      -- simply fire far less often now.
       R[#R + 1] = (ready == false) and "on CD" or "no edge seen yet"
     elseif remain > 0 then
-      R[#R + 1] = string.format("~%.1fs", remain)
+      R[#R + 1] = string.format("~%.1fs%s", remain, suffix)
       -- The anticipation treatment.  Brightens and counts down, and says nothing
       -- about pressability — see the SOON note at the top.
       out.soon = remain <= (ns.HudNapkin.SOON_LEAD or 3.0)
