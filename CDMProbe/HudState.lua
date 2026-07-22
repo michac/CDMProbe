@@ -93,6 +93,12 @@ ns.HudState = {
   -- everywhere a decision is made; fragments only move the partial segment.
   fragments    = nil,     -- 0..(fragmentsMax), nil = unreadable in this context
   fragmentsMax = nil,
+  -- v0.16.3 — MANUAL single/AoE flag, set from a macro (`/cdmp single|multi`).
+  -- We deliberately do NOT auto-detect: nameplate counting is Secret-Value-risky
+  -- in restricted content and settings-dependent, so the player owns this bit
+  -- outright.  Session-only (resets to single on /reload) so it can never get
+  -- stuck in the wrong mode across a login.  false = single target, true = AoE.
+  aoe          = false,
 }
 local S = ns.HudState
 
@@ -250,6 +256,19 @@ end
 -- with HOLD_LEAD ~= 5s (§0.5.8.6 correction 1 — NOT §0.5.1's stale ~15s, which
 -- force-overcaps).  Leaving the slot here means M4 adds a branch instead of
 -- rewriting the ladder.
+-- The manual single/AoE toggle.  `v` is truthy for AoE.  Recomputes so the
+-- board reflects the flip immediately, and logs it so a pull's events show WHEN
+-- you switched — an Implosion that lit is only sensible against the mode you
+-- were in when it lit.
+function S.SetAoE(v)
+  v = v and true or false
+  if S.aoe == v then return v end
+  S.aoe = v
+  if ns.HudLog then ns.HudLog.Note("aoe", v and "AoE (multi-target)" or "single-target") end
+  if hudOn() then pcall(S.Recompute) end
+  return v
+end
+
 function S.Mode()
   local projected, isProjected = S.ProjectedShards()
   if projected == nil then return nil, nil, false end
@@ -1084,6 +1103,9 @@ function S.PrintStatus()
 
   -- ── the score block ────────────────────────────────────────────────────────
   ns.Heading("  score — M3c-a (the dot)")
+  ns.Printf("   target mode (/cdmp single|multi): %s", S.aoe
+    and "|cffbef264MULTI (AoE)|r — Implosion offered"
+    or  "|cff88ccffSINGLE|r — Implosion suppressed")
   -- Is the whole anticipation feature live?  Reported, never assumed: this is
   -- the milestones.md §7 standing assumption made visible.  CHECK IT IN A RAID —
   -- the dummy and the delve already say yes, and a raid is the untested context

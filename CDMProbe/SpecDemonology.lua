@@ -164,6 +164,11 @@ ns.Spec = {
   [S.IMPLOSION] = {
     group = "aoe", kind = "button", cadence = "reactive", baseCD = 15,
     judgeable = false, secretGate = ">=6 imps — count is secret, your call",
+    -- v0.16.3 — an AoE-only button: NEVER in single-target, honoured off the
+    -- manual `/cdmp single|multi` flag (imploding your imps on one target throws
+    -- away the whole Wild Imp bank).  It STILL caps at "your call" in AoE because
+    -- the >=6 gate is secret — the manual flag answers "cleave?", not "worth it?".
+    aoeOnly = true,
     label = "Implosion",
   },
 

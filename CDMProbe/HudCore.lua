@@ -533,6 +533,29 @@ ns.RegisterCommand("hud",
     ns.SetHud(not ensureDB().on)
   end)
 
+-- Manual single/AoE toggle (v0.16.3) — MACRO-FRIENDLY, on purpose.  `/cdmp
+-- single` and `/cdmp multi` are idempotent setters (bind each to a button, or
+-- put both in one /click macro), and `/cdmp aoe` bare-toggles for a single key.
+-- Setting a flag is not a protected action, so these run fine mid-combat.
+local function reportAoE()
+  ns.Printf("target mode: %s", ns.HudState.aoe
+    and "|cffbef264MULTI (AoE)|r — Implosion offered; cleave assumed"
+    or  "|cff88ccffSINGLE|r — Implosion suppressed")
+end
+ns.RegisterCommand("single", "target mode: SINGLE-target (suppresses Implosion). Macro-friendly.", function()
+  ns.HudState.SetAoE(false); reportAoE()
+end)
+ns.RegisterCommand("multi", "target mode: MULTI-target / AoE (offers Implosion). Macro-friendly.", function()
+  ns.HudState.SetAoE(true); reportAoE()
+end)
+ns.RegisterCommand("aoe", "toggle target mode single<->multi (bare toggle for a one-key macro)", function(rest)
+  rest = (rest or ""):lower()
+  if rest:find("on") or rest:find("multi") then ns.HudState.SetAoE(true)
+  elseif rest:find("off") or rest:find("single") then ns.HudState.SetAoE(false)
+  else ns.HudState.SetAoE(not ns.HudState.aoe) end
+  reportAoE()
+end)
+
 -- Fold into /cdmp reset (wrap the chain Probes.lua + Resource.lua built).
 local prevReset = ns.commands.reset and ns.commands.reset.fn
 ns.RegisterCommand("reset", "turn every experiment off (unskin, hide bars/rail, resource + hud off, log off)", function(rest)

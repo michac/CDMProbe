@@ -256,6 +256,16 @@ function Sc.For(key, e)
   ------------------------------------------------------------------------------
   -- Caps — things we will not call, and why
   ------------------------------------------------------------------------------
+  -- Manual single/AoE flag (/cdmp single|multi).  An AoE-only button is NEVER in
+  -- single-target — the player owns the flag; we just honour it.  Checked BEFORE
+  -- the judgeable=false cap so Implosion goes dark in single rather than sitting
+  -- at "your call" against one mob.
+  if info.aoeOnly and not (St and St.aoe) then
+    out.level = Sc.LEVELS.NEVER
+    R[#R + 1] = "single-target — no cleave"
+    return out
+  end
+
   if info.cadence == "utility" then
     out.level = Sc.LEVELS.AVAILABLE
     R[#R + 1] = "utility — your call"
