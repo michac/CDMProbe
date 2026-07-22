@@ -81,6 +81,18 @@ function Sc.ProcArmed(spellID)
   return false
 end
 
+-- Is INFERNAL BOLT armed?  It is the Demonic Art override that lands on the
+-- Shadow Bolt button (the only SB-side art), so "Shadow Bolt is currently a
+-- transform" == Infernal Bolt is up.  Drives the shard-refill priority prune
+-- below (rotation.md ST prio 10 > 11).
+local function infernalBoltArmed()
+  local St = ns.HudState
+  local SB = ns.SpecIDs and ns.SpecIDs.SHADOW_BOLT
+  if not (St and St.override and SB) then return false end
+  local ov = St.override[SB]
+  return ov ~= nil and ns.SpecInfo(ov).spends == "art"
+end
+
 --------------------------------------------------------------------------------
 -- The score
 --------------------------------------------------------------------------------
@@ -375,6 +387,19 @@ function Sc.For(key, e)
   if rot and info.generates and shards and (shards + info.generates) > (ns.SHARD_CAP or 5) then
     rot = false
     R[#R + 1] = string.format("would overcap at %d", shards)
+  end
+
+  -- INFERNAL BOLT PRIORITY (rotation.md ST prio 10 > 11).  At <3 shards the
+  -- shard-refill (Infernal Bolt, +3) outranks spending a Demonic Core on
+  -- Demonbolt (+2), so when IB is armed and we're shard-starved, HOLD Demonbolt —
+  -- refill first.  Keyed on spends=="core" (Demonbolt is the only one).  It stays
+  -- AVAILABLE, not NEVER: the Core proc is real.  ⚠ Demonic Core STACKS are a
+  -- Secret Value — if cores are about to overcap at 4 this call is occasionally
+  -- wrong, which is exactly why it informs (leaves the dot pressable) rather than
+  -- forcing the choice.
+  if rot and info.spends == "core" and shards and shards < 3 and infernalBoltArmed() then
+    rot = false
+    R[#R + 1] = "refill first (Infernal Bolt)"
   end
 
   out.candidate = rot
