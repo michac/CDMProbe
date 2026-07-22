@@ -1103,9 +1103,8 @@ function S.PrintStatus()
 
   -- ── the score block ────────────────────────────────────────────────────────
   ns.Heading("  score — M3c-a (the dot)")
-  ns.Printf("   target mode (/cdmp single|multi): %s", S.aoe
-    and "|cffbef264MULTI (AoE)|r — Implosion offered"
-    or  "|cff88ccffSINGLE|r — Implosion suppressed")
+  ns.Printf("   target mode (/cdmp single|multi): %s  |cff808080(scaffolding — no Demo dot depends on it)|r",
+    S.aoe and "|cffbef264MULTI (AoE)|r" or "|cff88ccffSINGLE|r")
   -- Is the whole anticipation feature live?  Reported, never assumed: this is
   -- the milestones.md §7 standing assumption made visible.  CHECK IT IN A RAID —
   -- the dummy and the delve already say yes, and a raid is the untested context

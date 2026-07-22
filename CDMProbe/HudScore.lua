@@ -256,10 +256,14 @@ function Sc.For(key, e)
   ------------------------------------------------------------------------------
   -- Caps — things we will not call, and why
   ------------------------------------------------------------------------------
-  -- Manual single/AoE flag (/cdmp single|multi).  An AoE-only button is NEVER in
-  -- single-target — the player owns the flag; we just honour it.  Checked BEFORE
-  -- the judgeable=false cap so Implosion goes dark in single rather than sitting
-  -- at "your call" against one mob.
+  -- Manual single/AoE flag (/cdmp single|multi).  An `aoeOnly` button is NEVER in
+  -- single-target — the player owns the flag; we just honour it.
+  --
+  -- ⚠ SCAFFOLDING: NO Demo ability sets `aoeOnly` today.  rotation.md is explicit
+  -- that Demo's priority is "largely the same across target counts", and even
+  -- Implosion is talent-gated (used on ST with To Hell and Back), so there is no
+  -- honest Demo consumer.  The gate is kept wired for a second spec (M7) or a
+  -- talent-aware rule — the flag itself is real, it just drives nothing here yet.
   if info.aoeOnly and not (St and St.aoe) then
     out.level = Sc.LEVELS.NEVER
     R[#R + 1] = "single-target — no cleave"

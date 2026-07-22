@@ -538,9 +538,8 @@ ns.RegisterCommand("hud",
 -- put both in one /click macro), and `/cdmp aoe` bare-toggles for a single key.
 -- Setting a flag is not a protected action, so these run fine mid-combat.
 local function reportAoE()
-  ns.Printf("target mode: %s", ns.HudState.aoe
-    and "|cffbef264MULTI (AoE)|r — Implosion offered; cleave assumed"
-    or  "|cff88ccffSINGLE|r — Implosion suppressed")
+  ns.Printf("target mode: %s  |cff808080(no Demo dot changes yet — Demo is a passive-cleave spec; scaffolding for a 2nd spec / talent rule)|r",
+    ns.HudState.aoe and "|cffbef264MULTI (AoE)|r" or "|cff88ccffSINGLE|r")
 end
 ns.RegisterCommand("single", "target mode: SINGLE-target (suppresses Implosion). Macro-friendly.", function()
   ns.HudState.SetAoE(false); reportAoE()

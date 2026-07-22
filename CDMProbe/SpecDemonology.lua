@@ -164,11 +164,13 @@ ns.Spec = {
   [S.IMPLOSION] = {
     group = "aoe", kind = "button", cadence = "reactive", baseCD = 15,
     judgeable = false, secretGate = ">=6 imps — count is secret, your call",
-    -- v0.16.3 — an AoE-only button: NEVER in single-target, honoured off the
-    -- manual `/cdmp single|multi` flag (imploding your imps on one target throws
-    -- away the whole Wild Imp bank).  It STILL caps at "your call" in AoE because
-    -- the >=6 gate is secret — the manual flag answers "cleave?", not "worth it?".
-    aoeOnly = true,
+    -- ⚠ NOT `aoeOnly` (reverted v0.16.4).  It's tempting, but rotation.md is
+    -- explicit: Implosion at >=6 imps fires "only if 3+ targets OR To Hell and
+    -- Back talented", so on a THaB build it's a single-target press too — a hard
+    -- ST-suppress would black it out wrongly.  Demo is a "passive cleave" spec
+    -- whose priority is "largely the same across target counts", so there is no
+    -- clean ST/AoE dot difference to gate here.  It stays judgeable=false / "your
+    -- call" in both modes; the imp count we can't read is the real gate.
     label = "Implosion",
   },
 
