@@ -90,7 +90,12 @@ Design context + status live in the parent workspace at
   - `hud debug` — verbose rows (identity, cooldown, raw+normalised cost, presence
     source, override state).  `hud dump` prints the same to chat.
   - `hud rows` — turn the text rows off entirely (the dots stay).
-  - `hud opener 1a|1b` — *(M3c)* which opener the pre-pull queue ghosts.
+  - `hud opener 1a|off` — *(M3c-c2, v0.17.0)* the pre-pull opener queue: a
+    draining ghost of the 1a "Tyrant-first burst" sequence, advanced by matching
+    your own casts (drop-through, so out-of-order presses don't jam it) and
+    dissolved on the first Tyrant window close. **Default off** — it's the only
+    instructional widget. Built on the reusable `HudQueue` widget that M4's
+    burst-window queue will reuse. (1b is not shipped — see the milestone docs.)
 - `skin` — *(reference, retired direction)* hide icons on Essential+Utility, paint
   solid color blocks + labels, keep Blizzard's secure cooldown swipe.
 - `resource` — *(reference, retired direction)* resource-centric skin: group-color

@@ -22,7 +22,8 @@
 --------------------------------------------------------------------------------
 --   * `events` — a ring of TRANSITIONS.  Written only when something CHANGES,
 --     never per sample.  { at, kind, text }, kind in
---     dot | ready | mode | cap | cast | seed | combat.
+--     dot | ready | mode | cap | cast | seed | combat | aoe | queue.
+--     (`queue` = the M3c-c2 opener: armed / advanced / dissolved.)
 --   * `hist`  — a HISTOGRAM of the lit count, bumped on every Recompute while in
 --     combat: hist[n] = hist[n] + 1 where n = dots at ROTATION or LATE.
 --

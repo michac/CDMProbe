@@ -16,7 +16,7 @@ local DEFAULTS = {
   skinOn = false,
   -- The real HUD's settings (HudCore fills missing sub-keys defensively too, so
   -- a db written by an older build picks up keys added later).
-  hud = { on = false, opener = "1b" },
+  hud = { on = false, opener = "off" },
   reports = {},          -- persisted `/cdmp probe` output, read off disk
   -- M3e — the pull recorder's ring of the last N closed pulls.  STRUCTURED, not
   -- report text: `CDMProbeDB.pulls[3].hist` reads straight off disk, and nothing

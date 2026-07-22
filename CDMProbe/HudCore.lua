@@ -61,7 +61,7 @@ M.IsIconViewer = isIconViewer
 -- `rail` is DEFAULT-ON (M3c-c1): §0.5.2 makes shard-cap the one cue that
 -- survives every accessibility/mute ceiling, so the surface that carries it is
 -- not an opt-in.  ensureDB() back-fills it, so no migration is needed.
-local HUD_DEFAULTS = { on = false, opener = "1b", rows = true, verbose = false,
+local HUD_DEFAULTS = { on = false, opener = "off", rows = true, verbose = false,
                        rail = true }
 
 local function ensureDB()
@@ -270,8 +270,17 @@ local function rebind()
   pcall(ns.HudState.SeedFromReads)
   pcall(ns.HudState.RefreshGlows)  -- ...which also re-drives the dot score
   pcall(checkExpected)             -- B7 — diff expected against bound, warn once
+  -- M3c-c2 — arm the pre-pull opener for the coming pull.  A viewer-anchored
+  -- HudQueue, re-shown from here like the rail; refuses itself in combat.
+  if ns.HudOpener then pcall(ns.HudOpener.Arm) end
 end
 M.Rebind = rebind
+
+-- The primary icon viewer — the anchor the terminal, rail and opener queue all
+-- hang off.  Exposed so HudOpener (which has no view of ICON_VIEWERS) can find it.
+function M.IconViewer()
+  return ns.GetViewer(ICON_VIEWERS[1])
+end
 
 -- Cheap path for HudBinds: keybind text only, no re-registry.
 function M.RefreshKeybinds()
@@ -354,6 +363,7 @@ function ns.SetHud(on)
     ns.HudBinds.Stop()
     ns.HudChrome.HideTerminal()
     ns.HudChrome.HideRail()
+    if ns.HudOpener then ns.HudOpener.Hide() end
     for _, entry in pairs(M.items) do
       pcall(ns.HudChrome.Detach, entry.item)
     end
@@ -380,11 +390,13 @@ end
 local function printStatus()
   local db = ensureDB()
   ns.Heading("HUD status — M3c-c1 (shard rail + mode spine) on M3c-b + M3d")
-  ns.Printf("  state: %s   rows: %s (verbose %s)   rail: %s   opener setting: |cffffffff%s|r (M3c-c2)",
+  ns.Printf("  state: %s   rows: %s (verbose %s)   rail: %s",
     M.on and "|cff88ff88ON|r" or "|cffff8080OFF|r",
     ns.HudRow.on and "|cff88ff88on|r" or "|cffff8080off|r",
     ns.HudRow.verbose and "|cff88ff88on|r" or "off",
-    db.rail ~= false and "|cff88ff88on|r" or "|cffff8080off|r", tostring(db.opener))
+    db.rail ~= false and "|cff88ff88on|r" or "|cffff8080off|r")
+  ns.Printf("  opener (M3c-c2): %s",
+    ns.HudOpener and ns.HudOpener.StatusText() or "|cff808080module missing|r")
   ns.Printf("  bind fires: RefreshLayout=%d  DATA_LOADED=%d  ENTERING_WORLD=%d  -> rebinds=%d  (|cffffd100no ticker running|r)",
     M.fires.layout, M.fires.dataLoaded, M.fires.enterWorld, M.fires.binds)
   ns.Printf("  hooks installed: %s", M.hooked and "|cff88ff88yes|r" or "|cffff4040no (viewers absent at install time)|r")
@@ -499,7 +511,7 @@ end
 -- toggling the whole HUD.  Every new subcommand goes ABOVE the bare-toggle tail,
 -- and the help string above is the only place a user learns it exists.
 ns.RegisterCommand("hud",
-  "the real spec HUD (dot score + why). 'hud log' = the last recorded pull (histogram + peak set + events; 'hud log all' for the ring); 'hud status' = the readout in chat; 'hud binds' = every slot/key per spell; 'hud debug' = verbose rows; 'hud rows' = toggle the rows entirely; 'hud rail' = toggle the shard rail + mode chrome.",
+  "the real spec HUD (dot score + why). 'hud log' = the last recorded pull (histogram + peak set + events; 'hud log all' for the ring); 'hud status' = the readout in chat; 'hud binds' = every slot/key per spell; 'hud debug' = verbose rows; 'hud rows' = toggle the rows entirely; 'hud rail' = toggle the shard rail + mode chrome; 'hud opener 1a|off' = the pre-pull opener queue (default off).",
   function(rest)
     rest = (rest or ""):lower()
     if rest:find("status") then return printStatus() end
@@ -529,6 +541,18 @@ ns.RegisterCommand("hud",
     if rest:find("rows") then
       ns.HudRow.Set(not ns.HudRow.on)
       return ns.Printf("HUD rows %s.", ns.HudRow.on and "|cff88ff88ON|r" or "|cffff8080OFF|r")
+    end
+    -- M3c-c2 — the pre-pull opener queue.  `1a`/`off` set it; a bare `hud opener`
+    -- toggles off<->1a.  DEFAULT OFF: it is the only instructional widget and is
+    -- on notice (§0.5.8.7 §0), so it must be opted into.
+    if rest:find("opener") then
+      local db = ensureDB()
+      local arg = rest:match("opener%s+(%S+)")
+      if arg == "off" or arg == "1a" or arg == "1b" then db.opener = arg
+      else db.opener = (db.opener == "off") and "1a" or "off" end
+      if M.on and ns.HudOpener then pcall(ns.HudOpener.Arm) end
+      return ns.Printf("HUD opener: %s",
+        ns.HudOpener and ns.HudOpener.StatusText() or tostring(db.opener))
     end
     ns.SetHud(not ensureDB().on)
   end)

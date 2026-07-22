@@ -644,6 +644,9 @@ function S.Recompute()
   -- what makes the predictive SPEND flip land DURING the cast rather than a beat
   -- after it.  No new ticker: HudCore.lua's header rule stands.
   S.PaintRail()
+  -- M3c-c2 — the opener's dissolve clock (first Tyrant window close).  On the
+  -- same tail, no new ticker; a cheap elapsed-time compare against the Tyrant cast.
+  if ns.HudOpener then ns.HudOpener.Tick() end
   -- M3e — the SAMPLE, on the same tail and for the same reason: this is the one
   -- place that sees every input.  Sample() is one increment; the reason strings
   -- are built ONLY when it reports a new peak, which is rare by construction.
@@ -928,6 +931,8 @@ ev:SetScript("OnEvent", function(_, event, a1, a2, a3)
       -- again.  It is also the free fix for "should be up, unconfirmed": a
       -- drifted estimate is replaced by a real number the instant combat ends.
       pcall(S.SeedFromReads)
+      -- M3c-c2 — we are back in PREP; re-arm the opener for the NEXT pull.
+      if ns.HudOpener then pcall(ns.HudOpener.OnCombatEnd) end
     end
     S.fragments, S.fragmentsMax = readFragments()
     S.EvaluateBoard()          -- combat state is half of "is the board quiet?"
@@ -961,6 +966,12 @@ ev:SetScript("OnEvent", function(_, event, a1, a2, a3)
     pcall(beginCast, a3)
   elseif event == "UNIT_SPELLCAST_SUCCEEDED" or event == "UNIT_SPELLCAST_STOP"
       or event == "UNIT_SPELLCAST_INTERRUPTED" then
+    -- M3c-c2 — a SUCCEEDED cast advances the opener queue (STOP/INTERRUPTED do
+    -- not: the press never landed).  a3 is the spellID; the consumer resolves it
+    -- back to the base identity so a transformed press still matches its step.
+    if event == "UNIT_SPELLCAST_SUCCEEDED" and ns.HudOpener then
+      pcall(ns.HudOpener.OnCast, a3)
+    end
     -- The projection is retired by ANY end-of-cast, however it ended.  A cast
     -- that was interrupted spent nothing and a cast that landed has already
     -- moved the live counter, so in both cases the ground truth is now the
