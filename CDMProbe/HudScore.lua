@@ -53,7 +53,22 @@ Sc.LEVELS = { NEVER = "NEVER", AVAILABLE = "AVAILABLE",
 -- accumulation, so its mere presence would be lit nearly all the time).
 function Sc.ProcArmed(spellID)
   local St = ns.HudState
-  if not (St and ns.SpecProcGlow) then return false end
+  if not St then return false end
+  -- A LIVE DEMONIC ART TRANSFORM IS A PROC, by construction: the button only
+  -- shows Ruination / Infernal Bolt while the Art is armed.  Checked FIRST, and
+  -- generically off the override — because HudState.transformedItem() glows ANY
+  -- overridden button, but ns.SpecProcGlow only routes the HoG -> Ruination half
+  -- (Shadow Bolt isn't reliably in the tracked set, so SB -> Infernal Bolt has
+  -- no glow rule with `target = SHADOW_BOLT`).  Without this the glow would light
+  -- Infernal Bolt while the dot pruned it to NEVER "no proc — hold" — the two
+  -- disagreeing on screen, which is precisely the bug this module's header says
+  -- can't happen.  The transform itself is the proof the proc is up; trust it.
+  local ov = St.override and St.override[spellID]
+  if ov then
+    local oinfo = ns.SpecInfo(ov)
+    if oinfo and oinfo.spends == "art" then return true, "art armed" end
+  end
+  if not ns.SpecProcGlow then return false end
   for sourceID, rule in pairs(ns.SpecProcGlow) do
     if rule.target == spellID then
       if rule.transform then

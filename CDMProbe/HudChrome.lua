@@ -152,6 +152,13 @@ H.DOT_COLORS = DOT
 -- i.e. least-actionable, rows) and read as inconsistent chrome.  Flip back to
 -- true to restore it.
 local SHOW_BRACKET = false
+-- Our proc ring, RETIRED in the feedback pass.  Blizzard's own native proc glow
+-- already marks a landed proc, and since the dot now lights ROTATION on the same
+-- procs (HudScore, incl. the Infernal Bolt transform fix), a second border was
+-- redundant chrome.  We keep the glow STATE (SetGlow still records glowOn /
+-- strength — read by `hud status` and the verbose row, and by HudState's
+-- "board-quiet" recede gate) but draw nothing.  Flip back to true to restore it.
+local SHOW_GLOW = false
 local DOT_MASK = "Interface\\CharacterFrame\\TempPortraitAlphaMask"
 local BRACKET_PAD = 4
 
@@ -586,18 +593,27 @@ function H.SetGlow(item, on, strength, group)
   if not on then
     if o.glow then o.glow.ag:Stop(); o.glow:Hide() end
     o.glowOn = false
+    o.glowShown = false
+    return
+  end
+  o.glowStrength = tonumber(strength) or 1.0
+  o.glowGroup = group or "proc"
+  o.glowOn = true
+  -- SHOW_GLOW retired: keep the state above (diagnostics + recede gate), draw
+  -- nothing.  Hide any ring a previous build left up.
+  if not SHOW_GLOW then
+    if o.glow then o.glow.ag:Stop(); o.glow:Hide() end
+    o.glowShown = false
     return
   end
   local f = ensureGlow(o, item)
-  o.glowStrength = tonumber(strength) or 1.0
-  o.glowGroup = group or "proc"
   H.paintGlow(o)
-  if not o.glowOn then
+  if not o.glowShown then
     f:SetAlpha(GLOW_MIN)
     f:Show()
     f.ag:Stop()
     f.ag:Play()
-    o.glowOn = true
+    o.glowShown = true
   end
 end
 
@@ -906,9 +922,14 @@ end
 -- all say otherwise — three committed statements against one.  The flip and the
 -- glitter ship silently; audio arrives in M6 WITH its mute + per-event toggles,
 -- which is what [A3] actually asks for.  Do not add a PlaySound here.
-local RAIL_SEG_H, RAIL_GAP, RAIL_PAD = 10, 4, 6
-local RAIL_SEG_W  = 28
-local RAIL_DROP   = 22      -- below the C:\>_ footer, which sits at viewer -6
+-- VERTICAL rail (feedback pass): it stands to the LEFT of the icon column,
+-- bottom-aligned, as tall as the bottom 3 icons — so the fill rises past SB/DB
+-- (empty) toward HoG (full) as the player re-orders those three to the bottom.
+local RAIL_GAP      = 3     -- gap between shard segments
+local RAIL_SEG_W    = 20    -- the rail's WIDTH, now that it stands vertical
+local RAIL_LEFT_GAP = 6     -- gap between the rail's right edge and the icon column
+local RAIL_ICONS    = 3     -- how many icons tall the rail spans
+local RAIL_DEF_ICON = 34    -- fallback icon pitch if the panel can't be measured
 local RAIL_SPARKS = 10
 -- [X2] — WCAG's three-flashes-in-one-second guidance.  The prototype's
 -- `fireGlitter` fired on EVERY prevCapped transition, so at cap a Hand of
@@ -950,33 +971,57 @@ local function buildSpark(parent)
   return t
 end
 
+-- The pitch (icon-to-icon centre distance) and icon height of the panel, measured
+-- from the live item frames so the rail's height tracks whatever the player set in
+-- Edit Mode.  Falls back to a sane default if the frames aren't laid out yet.
+local function iconMetrics(viewer)
+  local iconH, pitch = RAIL_DEF_ICON, RAIL_DEF_ICON
+  local items = ns.GetItemFrames and select(1, ns.GetItemFrames(viewer)) or nil
+  if items and items[1] and ns.HasMethod(items[1], "GetHeight") then
+    iconH = items[1]:GetHeight() or iconH
+    pitch = iconH
+    if items[2] and ns.HasMethod(items[1], "GetTop") and ns.HasMethod(items[2], "GetTop") then
+      local t1, t2 = items[1]:GetTop(), items[2]:GetTop()
+      if t1 and t2 and math.abs(t1 - t2) > 1 then pitch = math.abs(t1 - t2) end
+    end
+  end
+  return iconH, pitch
+end
+
 local function buildRail(viewer)
   if viewer.__hudRail then return viewer.__hudRail end
   local cap = ns.SHARD_CAP or 5      -- never a literal 5; the spec table owns it
-  local w = cap * RAIL_SEG_W + (cap - 1) * RAIL_GAP + RAIL_PAD * 2
+
+  -- As tall as the bottom RAIL_ICONS icons: from the bottom icon's bottom to the
+  -- Nth icon's top = (N-1) pitches + one icon height.
+  local iconH, pitch = iconMetrics(viewer)
+  local span = (RAIL_ICONS - 1) * pitch + iconH
+  local segH = (span - (cap - 1) * RAIL_GAP) / cap
 
   local f = CreateFrame("Frame", nil, viewer)
   f:SetFrameLevel((ns.HasMethod(viewer, "GetFrameLevel") and viewer:GetFrameLevel() or 1) + 12)
-  -- ⚠ THE CLIPPING HAZARD (see the buildTerminal header, notes.md §9): a wide
-  -- element anchored with TWO horizontal points fixes its width to the ~28px
-  -- icon column and clips.  ONE centre point + an explicit width, always.
-  f:SetSize(w, RAIL_SEG_H + RAIL_PAD * 2)
-  f:SetPoint("TOP", viewer, "BOTTOM", 0, -RAIL_DROP)
+  f:SetSize(RAIL_SEG_W, span)
+  -- To the LEFT of the icon column, bottom-aligned.  Its right edge sits
+  -- RAIL_LEFT_GAP left of the viewer's left edge.
+  f:SetPoint("BOTTOMRIGHT", viewer, "BOTTOMLEFT", -RAIL_LEFT_GAP, 0)
   -- Never EnableMouse: clicks pass through to the secure item beneath.
 
   local bg = f:CreateTexture(nil, "BACKGROUND")
   bg:SetAllPoints(f); bg:SetColorTexture(0, 0, 0, 0.35)
 
+  f.segH = segH
   f.segs = {}
   for i = 1, cap do
     local seg = CreateFrame("Frame", nil, f)
-    seg:SetSize(RAIL_SEG_W, RAIL_SEG_H)
-    seg:SetPoint("LEFT", f, "LEFT", RAIL_PAD + (i - 1) * (RAIL_SEG_W + RAIL_GAP), 0)
+    seg:SetSize(RAIL_SEG_W, segH)
+    -- Segment 1 is at the BOTTOM; the stack grows upward.
+    seg:SetPoint("BOTTOM", f, "BOTTOM", 0, (i - 1) * (segH + RAIL_GAP))
     local segbg = seg:CreateTexture(nil, "ARTWORK")
     segbg:SetAllPoints(seg)
     local fill = seg:CreateTexture(nil, "ARTWORK", nil, 1)
-    fill:SetPoint("LEFT", seg, "LEFT", 0, 0)
-    fill:SetSize(RAIL_SEG_W, RAIL_SEG_H)
+    -- Fill rises from the segment's bottom; its HEIGHT is set per-frame in PaintRail.
+    fill:SetPoint("BOTTOM", seg, "BOTTOM", 0, 0)
+    fill:SetSize(RAIL_SEG_W, segH)
     -- THE GHOST HEAD renders HOLLOW — outline, no fill — which is the same
     -- confidence marker the dots use (H.paintDot: hollow = estimate).  Four
     -- edges rather than a fill, so "incoming" can never be mistaken for "held".
@@ -994,8 +1039,10 @@ local function buildRail(viewer)
     f.segs[i] = seg
   end
 
+  -- The redundant mode label sits just BELOW the rail (centred on its narrow
+  -- column; a one-point FontString never clips).
   f.label = f:CreateFontString(nil, "OVERLAY")
-  f.label:SetFont(TERM_FONT, 11, "OUTLINE")
+  f.label:SetFont(TERM_FONT, 10, "OUTLINE")
   f.label:SetPoint("TOP", f, "BOTTOM", 0, -2)
   f.label:SetJustifyH("CENTER")
 
@@ -1126,7 +1173,9 @@ function H.PaintRail(info)
       seg.bg:SetColorTexture(RAIL_EMPTY[1], RAIL_EMPTY[2], RAIL_EMPTY[3], 0.85)
       local frac = math.max(0, math.min(1, fill - (i - 1)))
       seg.fill:SetColorTexture(col[1], col[2], col[3], 1)
-      seg.fill:SetWidth(math.max(0.001, RAIL_SEG_W * frac))
+      -- Vertical: the fill rises from the segment's bottom, so its HEIGHT tracks
+      -- the fraction (the segment height was computed from the panel in buildRail).
+      seg.fill:SetHeight(math.max(0.001, (f.segH or RAIL_DEF_ICON) * frac))
       seg.fill:SetShown(frac > 0)
       -- The incoming (ghost) segment: strictly ABOVE what we actually hold, and
       -- only while a cast is in flight that ADDS shards.  A spend-side

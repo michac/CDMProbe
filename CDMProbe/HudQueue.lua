@@ -10,7 +10,8 @@
 --
 -- This module knows NOTHING about openers, Demonology, napkins or overrides.  It
 -- holds a step list and a cursor and draws them in the DEMO.SYS terminal idiom.
--- All spell identity lives in the consumer.
+-- All spell identity lives in the consumer — including the KEYBIND string, which
+-- the consumer resolves and hands us as `step.key`; we just draw it.
 --
 -- THE TWO NON-OBVIOUS RULES, both of which M4 will need too:
 --
@@ -23,10 +24,16 @@
 --     Tyrant block is HoG HoG too.  count decrements per matching press and the
 --     step is consumed at 0 — so the field belongs to the WIDGET, not the data.
 --
+-- ORIENTATION (M3c-c2 feedback pass).  The opener is a LEFT-TO-RIGHT strip drawn
+-- ABOVE the icon column: `orient = "horizontal"`.  It shows KEYBINDS, not ability
+-- names — a draining ghost of "which keys, in what order".  The old vertical list
+-- (rows stacked below the panel) is kept behind `orient = "vertical"` for a future
+-- consumer, but nothing ships it today.
+--
 -- RENDER is a DRAINING GHOST, not a nag: the whole script shows dim, the current
 -- step brightens, consumed steps fall off.  It informs the SHAPE of the opening;
--- it never says "press this now".  No motion, positions locked ([V3][V7]) — the
--- same steady-state discipline the rail keeps.
+-- it never says "press this now".  No motion, positions locked — the same
+-- steady-state discipline the rail keeps.
 local ADDON, ns = ...
 
 ns.HudQueue = {}
@@ -34,15 +41,26 @@ local Q = ns.HudQueue
 
 -- Terminal palette + font, matched to HudChrome's DEMO.SYS chrome so the queue
 -- reads as part of the same terminal.  HudChrome keeps these file-local by
--- design; these are four constants echoed here, not a shared contract.
+-- design; these are constants echoed here, not a shared contract.
 local TERM_FONT = "Fonts\\ARIALN.TTF"
 local TERM      = { 0.29, 1.00, 0.48 }   -- the current step (bright)
 local TERM_DIM  = { 0.17, 0.55, 0.30 }   -- header / preamble / upcoming
-local ROW_H     = 12
-local WIDTH     = 150
--- Draw at most this many rows; a longer script shows "+N more" rather than
--- truncating silently (the opener is ~8 rows — this is headroom for M4).
-local MAX_ROWS  = 12
+local ROW_H     = 14
+local WIDTH     = 320                     -- generous; the strip self-centres
+-- Draw at most this many steps in the horizontal strip; a longer script shows
+-- "+N more" rather than running off the edge (the opener is ~7 steps).
+local MAX_STEPS = 10
+
+-- Inline colour codes for the single-FontString horizontal strip (per-segment
+-- colour in one string, so the strip is naturally centred and needs no per-cell
+-- frame maths).
+local function hex(c)
+  return string.format("%02x%02x%02x",
+    math.floor(c[1] * 255 + 0.5), math.floor(c[2] * 255 + 0.5), math.floor(c[3] * 255 + 0.5))
+end
+local BRIGHT = "|cff" .. hex(TERM)
+local DIM    = "|cff" .. hex(TERM_DIM)
+local SEP    = DIM .. "  >  |r"             -- dim ASCII ">" separator
 
 local QueueMeta = {}
 QueueMeta.__index = QueueMeta
@@ -57,21 +75,41 @@ local function buildFrame(viewer, inst)
   -- ONE centre point + an explicit width: the clipping hazard (HudChrome
   -- buildRail / notes.md §9).  Two horizontal points would pin the width to the
   -- ~28px icon column and clip every row.
-  f:SetSize(WIDTH, ROW_H * MAX_ROWS)
-  f:SetPoint("TOP", viewer, "BOTTOM", 0, -inst.drop)
+  f:SetSize(WIDTH, ROW_H * (inst.orient == "horizontal" and 2 or 12))
+  if inst.orient == "horizontal" then
+    -- ABOVE the panel, grown upward, centred on the icon column.
+    f:SetPoint("BOTTOM", viewer, "TOP", 0, inst.drop)
+  else
+    f:SetPoint("TOP", viewer, "BOTTOM", 0, -inst.drop)
+  end
   -- Never EnableMouse: clicks pass through to the secure items beneath.
+
   local hd = f:CreateFontString(nil, "OVERLAY")
   hd:SetFont(TERM_FONT, 9, "OUTLINE")
-  hd:SetPoint("TOP", f, "TOP", 0, 0)
   hd:SetJustifyH("CENTER")
   hd:SetTextColor(TERM_DIM[1], TERM_DIM[2], TERM_DIM[3])
   f.header = hd
+
+  if inst.orient == "horizontal" then
+    -- The strip: one FontString carrying per-step inline colour, at the BOTTOM of
+    -- the frame (nearest the panel); the header sits above it.
+    local strip = f:CreateFontString(nil, "OVERLAY")
+    strip:SetFont(TERM_FONT, 12, "OUTLINE")
+    strip:SetJustifyH("CENTER")
+    strip:SetPoint("BOTTOM", f, "BOTTOM", 0, 0)
+    f.strip = strip
+    hd:SetPoint("BOTTOM", strip, "TOP", 0, 2)
+  else
+    hd:SetPoint("TOP", f, "TOP", 0, 0)
+  end
+
   f:Hide()
   return f
 end
 
 -- Rows are created lazily, in order, and anchored under the one above — so row i
--- always exists when row i+1 is built during the same render pass.
+-- always exists when row i+1 is built during the same render pass.  (Vertical
+-- orientation only.)
 local function rowAt(inst, i)
   local r = inst.rows[i]
   if r then return r end
@@ -83,23 +121,57 @@ local function rowAt(inst, i)
   return r
 end
 
--- Rebuild the visible list from the cursor.  Consumed steps simply aren't drawn
--- (they "drop off"); the step AT the cursor is bright, the rest dim.
-local function render(inst)
+-- The label for a step: the KEYBIND if the consumer resolved one, else the
+-- human name as a fallback (an unbound ability is better named than blank).
+local function stepLabel(s)
+  local base = s.key or s.label or "?"
+  if (s.count or 1) > 1 then base = base .. " x" .. s.count end
+  return base
+end
+
+--------------------------------------------------------------------------------
+-- Horizontal render — one colour-coded strip
+--------------------------------------------------------------------------------
+local function renderHorizontal(inst)
+  inst.frame.header:SetText(inst.header or "")
+  local parts = {}
+  local shown = 0
+  for i = inst.cursor, #inst.steps do
+    local s = inst.steps[i]
+    if not s.consumed then
+      if shown >= MAX_STEPS and i < #inst.steps then
+        local remaining = 0
+        for j = i, #inst.steps do if not inst.steps[j].consumed then remaining = remaining + 1 end end
+        parts[#parts + 1] = DIM .. "+" .. remaining .. " more|r"
+        break
+      end
+      local col = (i == inst.cursor) and BRIGHT or DIM
+      local seg = col .. stepLabel(s) .. "|r"
+      if s.note then seg = seg .. DIM .. " (" .. s.note .. ")|r" end
+      parts[#parts + 1] = seg
+      shown = shown + 1
+    end
+  end
+  inst.frame.strip:SetText(table.concat(parts, SEP))
+end
+
+--------------------------------------------------------------------------------
+-- Vertical render — the original stacked list (no consumer today)
+--------------------------------------------------------------------------------
+local function renderVertical(inst)
   inst.frame.header:SetText(inst.header or "")
   local lines = {}
   if inst.preamble then lines[#lines + 1] = { text = inst.preamble, cur = false } end
   for i = inst.cursor, #inst.steps do
     local s = inst.steps[i]
     if not s.consumed then
-      if #lines >= MAX_ROWS - 1 and i < #inst.steps then
+      if #lines >= 12 - 1 and i < #inst.steps then
         local remaining = 0
         for j = i, #inst.steps do if not inst.steps[j].consumed then remaining = remaining + 1 end end
         lines[#lines + 1] = { text = "+" .. remaining .. " more", cur = false }
         break
       end
-      local label = s.label or "?"
-      if (s.count or 1) > 1 then label = label .. " x" .. s.count end
+      local label = stepLabel(s)
       if s.note then label = label .. "  (" .. s.note .. ")" end
       lines[#lines + 1] = { text = label, cur = (i == inst.cursor) }
     end
@@ -116,20 +188,25 @@ local function render(inst)
   for i = drawn + 1, #inst.rows do inst.rows[i]:Hide() end
 end
 
+local function render(inst)
+  if inst.orient == "horizontal" then renderHorizontal(inst) else renderVertical(inst) end
+end
+
 --------------------------------------------------------------------------------
 -- Instance API
 --------------------------------------------------------------------------------
 
 -- Load a spec and show.  `spec = { header, preamble, steps = { {spell, alt,
--- label, count=1, optional, note}, ... } }`.  Steps are COPIED so `count` can be
--- decremented without mutating the caller's data table.
+-- label, key, count=1, optional, note}, ... } }`.  Steps are COPIED so `count`
+-- can be decremented without mutating the caller's data table.  `key` is the
+-- pre-resolved keybind string the consumer wants drawn instead of the name.
 function QueueMeta:Arm(spec)
   self.header   = spec and spec.header
   self.preamble = spec and spec.preamble
   wipe(self.steps)
   if spec and spec.steps then
     for i, s in ipairs(spec.steps) do
-      self.steps[i] = { spell = s.spell, alt = s.alt, label = s.label,
+      self.steps[i] = { spell = s.spell, alt = s.alt, label = s.label, key = s.key,
                         count = s.count or 1, optional = s.optional, note = s.note,
                         consumed = false }
     end
@@ -170,11 +247,12 @@ function QueueMeta:Dissolve()
   if self.frame then self.frame:Hide() end
 end
 
--- For `/cdmp hud status`.
+-- For `/cdmp hud status`.  Reports the human NAME (not the keybind) so the
+-- readout stays legible.
 function QueueMeta:Info()
   local cur = self.steps[self.cursor]
   return { armed = self.armed, cursor = self.cursor, total = #self.steps,
-           current = cur and cur.label }
+           current = cur and (cur.label or cur.key) }
 end
 
 --------------------------------------------------------------------------------
@@ -183,13 +261,15 @@ end
 
 -- One instance per (viewer, id).  Memoised on the viewer so it rides Edit Mode
 -- and is not rebuilt on every RefreshLayout — exactly like HudChrome's __hudRail.
--- `drop` is the gap below the viewer's bottom (below the rail, for the opener).
-function Q.Ensure(viewer, id, drop)
+-- `drop` is the gap between the viewer edge and the widget; `orient` is
+-- "horizontal" (a strip above the panel) or "vertical" (a list below it).
+function Q.Ensure(viewer, id, drop, orient)
   if not viewer then return nil end
   viewer.__hudQueue = viewer.__hudQueue or {}
   local inst = viewer.__hudQueue[id]
   if inst then return inst end
-  inst = setmetatable({ steps = {}, rows = {}, cursor = 1, drop = drop or 60 }, QueueMeta)
+  inst = setmetatable({ steps = {}, rows = {}, cursor = 1, drop = drop or 8,
+                        orient = orient or "horizontal" }, QueueMeta)
   inst.frame = buildFrame(viewer, inst)
   viewer.__hudQueue[id] = inst
   return inst

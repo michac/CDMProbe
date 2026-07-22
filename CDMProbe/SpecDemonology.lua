@@ -251,15 +251,13 @@ ns.SpecStacks = {
 
 -- The pre-pull opener (M3, §0.5.8.3 #8) ----------------------------------------
 --
--- Consumed by HudOpener via the reusable HudQueue widget.  ONLY 1a ships.
---
--- 1a "Tyrant-first burst" — verified against the live #1 parse (Inphected, WCL
+-- Consumed by HudOpener via the reusable HudQueue widget.  ONE opener — the
+-- "Tyrant-first burst", verified against the live #1 parse (Inphected, WCL
 -- bracket 291, 2026-07-21): Dreadstalkers + Imp Lord pre-stage, Tyrant at t~3.4s,
 -- HoG HoG, Implosion, then rebuild.  Matches diabolist-sequences.md SEQUENCE 1a.
---
--- 1b (textbook build-to-5) is a documented contingency that WCL structurally
--- CANNOT show — logs start at the pull, so the pre-stack is invisible — and is
--- deliberately not authored here (see the milestone plan).
+-- (There is deliberately NO alternate/variant machinery here — if the opener ever
+-- needs to change, we revise this one table.  The old "1a"/"1b" split was a
+-- speculative contingency WCL structurally can't show and was never authored.)
 --
 -- The `preamble` casts (pre-pull HoG, then DB/SB to seed a Core) happen BEFORE we
 -- are listening and cannot be cast-verified — they are SHOWN as setup, never
@@ -267,18 +265,16 @@ ns.SpecStacks = {
 -- in-combat spend is Demonbolt if a Core seeded, else Shadow Bolt).  `optional`
 -- steps (Imp Lord "if up", Implosion "AoE only") drop without stalling the queue.
 ns.SpecOpener = {
-  ["1a"] = {
-    header   = "OPENER 1a",
-    preamble = "pre-stack: HoG -> DB/SB (seed a Core)",
-    steps = {
-      { spell = S.DREADSTALKERS,             label = "Dreadstalkers" },
-      { spell = 136726,                      label = "Imp Lord", optional = true, note = "if up" },
-      { spell = S.TYRANT,                    label = "Tyrant", note = "t~3s" },
-      { spell = S.SHADOW_BOLT, alt = S.DEMONBOLT, label = "SB / DB" },
-      { spell = S.HAND_OF_GULDAN,            label = "HoG", count = 2 },
-      { spell = S.IMPLOSION,                 label = "Implosion", optional = true, note = "AoE" },
-      { spell = S.SHADOW_BOLT,               label = "SB", count = 3, note = "rebuild" },
-    },
+  header   = "OPENER",
+  preamble = "pre-stack: HoG -> DB/SB (seed a Core)",
+  steps = {
+    { spell = S.DREADSTALKERS,             label = "Dreadstalkers" },
+    { spell = 136726,                      label = "Imp Lord", optional = true, note = "if up" },
+    { spell = S.TYRANT,                    label = "Tyrant", note = "t~3s" },
+    { spell = S.SHADOW_BOLT, alt = S.DEMONBOLT, label = "SB / DB" },
+    { spell = S.HAND_OF_GULDAN,            label = "HoG", count = 2 },
+    { spell = S.IMPLOSION,                 label = "Implosion", optional = true, note = "AoE" },
+    { spell = S.SHADOW_BOLT,               label = "SB", count = 3, note = "rebuild" },
   },
 }
 

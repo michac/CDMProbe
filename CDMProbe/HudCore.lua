@@ -511,7 +511,7 @@ end
 -- toggling the whole HUD.  Every new subcommand goes ABOVE the bare-toggle tail,
 -- and the help string above is the only place a user learns it exists.
 ns.RegisterCommand("hud",
-  "the real spec HUD (dot score + why). 'hud log' = the last recorded pull (histogram + peak set + events; 'hud log all' for the ring); 'hud status' = the readout in chat; 'hud binds' = every slot/key per spell; 'hud debug' = verbose rows; 'hud rows' = toggle the rows entirely; 'hud rail' = toggle the shard rail + mode chrome; 'hud opener 1a|off' = the pre-pull opener queue (default off).",
+  "the real spec HUD (dot score + why). 'hud log' = the last recorded pull (histogram + peak set + events; 'hud log all' for the ring); 'hud status' = the readout in chat; 'hud binds' = every slot/key per spell; 'hud debug' = verbose rows; 'hud rows' = toggle the rows entirely; 'hud rail' = toggle the shard rail + mode chrome; 'hud opener on|off' = the pre-pull opener strip (keybinds, above the panel; default off).",
   function(rest)
     rest = (rest or ""):lower()
     if rest:find("status") then return printStatus() end
@@ -542,14 +542,15 @@ ns.RegisterCommand("hud",
       ns.HudRow.Set(not ns.HudRow.on)
       return ns.Printf("HUD rows %s.", ns.HudRow.on and "|cff88ff88ON|r" or "|cffff8080OFF|r")
     end
-    -- M3c-c2 — the pre-pull opener queue.  `1a`/`off` set it; a bare `hud opener`
-    -- toggles off<->1a.  DEFAULT OFF: it is the only instructional widget and is
-    -- on notice (§0.5.8.7 §0), so it must be opted into.
+    -- M3c-c2 — the pre-pull opener strip.  `on`/`off` set it; a bare `hud opener`
+    -- toggles.  DEFAULT OFF: it is the only instructional widget and is on notice
+    -- (§0.5.8.7 §0), so it must be opted into.
     if rest:find("opener") then
       local db = ensureDB()
       local arg = rest:match("opener%s+(%S+)")
-      if arg == "off" or arg == "1a" or arg == "1b" then db.opener = arg
-      else db.opener = (db.opener == "off") and "1a" or "off" end
+      if arg == "off" then db.opener = "off"
+      elseif arg == "on" or arg == "1a" then db.opener = "on"   -- 1a: legacy alias
+      else db.opener = (db.opener == "off") and "on" or "off" end
       if M.on and ns.HudOpener then pcall(ns.HudOpener.Arm) end
       return ns.Printf("HUD opener: %s",
         ns.HudOpener and ns.HudOpener.StatusText() or tostring(db.opener))

@@ -1,16 +1,17 @@
 -- HudOpener.lua — the pre-pull OPENER, first consumer of HudQueue.  M3c-c2.
 --
--- WHAT IT OWNS.  The Demonology opener: which variant (ns.SpecOpener), when to
--- ARM it (out of combat — the §0.5.8.2(a) pre-pull affordance), how to ADVANCE it
--- (our own casts, resolved to the BASE identity so a transformed press still
--- matches its step), and when to DISSOLVE it (the first Tyrant window closes, or
--- the script drains).  HudQueue draws; this decides.  M4's burst window is the
--- second consumer and plugs into HudQueue the same way — a sibling of this file.
+-- WHAT IT OWNS.  The Demonology opener (ns.SpecOpener): when to ARM it (out of
+-- combat — the §0.5.8.2(a) pre-pull affordance), how to ADVANCE it (our own
+-- casts, resolved to the BASE identity so a transformed press still matches its
+-- step), and when to DISSOLVE it (the first Tyrant window closes, or the script
+-- drains).  HudQueue draws; this decides.  M4's burst window is the second
+-- consumer and plugs into HudQueue the same way — a sibling of this file.
 --
 -- INFORM, DON'T INSTRUCT (§0.5.8.7 §0).  The opener is the ONLY instructional
 -- widget in the project and is on notice: it shows the SHAPE of the opening as a
--- draining ghost, never "press this now".  It is DEFAULT OFF for the same reason
--- — opt in with `/cdmp hud opener 1a`.
+-- draining ghost of KEYBINDS (not ability names), never "press this now".  It is
+-- DEFAULT OFF for the same reason — opt in with `/cdmp hud opener on`.  It draws
+-- as a LEFT-TO-RIGHT strip ABOVE the cooldown panel.
 --
 -- NO SECRET READS, NO NEW EVENTS.  It advances off casts HudState already
 -- watches, and dissolves off the napkin's fixed-60s Tyrant clock read as a plain
@@ -25,18 +26,19 @@ local O = ns.HudOpener
 -- cast (guidance-model.md §0.5.8.2(a): "the queue dissolves when the first Tyrant
 -- window closes").  A plain elapsed-time compare, no secret read.
 local TYRANT_WINDOW = 15
-local DROP          = 60      -- below the shard rail (rail sits at viewer -22)
+-- The opener strip sits ABOVE the panel — clear of the DEMO.SYS terminal header,
+-- which hangs at viewer +9 (HudChrome buildTerminal).
+local GAP           = 24
 
 O.inst     = nil     -- the HudQueue instance (memoised on the viewer)
 O.tyrantAt = nil     -- GetTime() of the Tyrant cast, for the dissolve clock
 
--- Which variant is active, or nil for off.  Only 1a ships; "1b" is a documented
--- contingency WCL can't show (logs start at the pull, hiding the pre-stack) and
--- is not authored, so it falls back to 1a with the raw setting reported as-is.
-local function variant()
+-- Is the opener enabled?  Any truthy, non-"off" setting counts (the DB stored
+-- the legacy "1a" before the variant machinery was scrubbed; it is treated as
+-- plain "on").
+local function enabled()
   local v = ns.db and ns.db.hud and ns.db.hud.opener
-  if not v or v == "off" then return nil end
-  return (ns.SpecOpener and ns.SpecOpener["1a"]) and "1a" or nil
+  return v ~= nil and v ~= false and v ~= "off"
 end
 
 -- Reverse the live override map.  A cast SUCCEEDS under the OVERRIDE spellID while
@@ -55,6 +57,25 @@ local function baseOfCast(spellID)
   return spellID
 end
 
+-- Build a render spec from ns.SpecOpener with each step's KEYBIND resolved (the
+-- strip shows keys, not names).  Resolved at ARM time — the opener only arms out
+-- of combat, exactly when the keybind cache (HudBinds, OOC-only) is fresh.  An
+-- unbound step keeps its name as a fallback (HudQueue does that); an `alt` step
+-- prefers the primary spell's key, then the alt's.
+local function armSpec()
+  local src = ns.SpecOpener
+  if not src then return nil end
+  local out = { header = src.header, preamble = src.preamble, steps = {} }
+  for i, s in ipairs(src.steps or {}) do
+    local key = ns.HudBinds and ns.HudBinds.Get(s.spell)
+    if not key and s.alt and ns.HudBinds then key = ns.HudBinds.Get(s.alt) end
+    local copy = { spell = s.spell, alt = s.alt, label = s.label, key = key,
+                   count = s.count, optional = s.optional, note = s.note }
+    out.steps[i] = copy
+  end
+  return out
+end
+
 --------------------------------------------------------------------------------
 -- Lifecycle
 --------------------------------------------------------------------------------
@@ -64,16 +85,17 @@ end
 -- nothing.  Called from rebind()'s tail (login / /reload / zone-in / layout) and
 -- on leaving combat (back to PREP for the next pull).
 function O.Arm()
-  local v = variant()
-  if not v then O.Dissolve() return end
+  if not enabled() then O.Dissolve() return end
   if InCombatLockdown() then return end
   local viewer = ns.Hud and ns.Hud.IconViewer and ns.Hud.IconViewer()
   if not viewer then return end
-  O.inst = ns.HudQueue.Ensure(viewer, "opener", DROP)
+  O.inst = ns.HudQueue.Ensure(viewer, "opener", GAP, "horizontal")
   if not O.inst then return end
   O.tyrantAt = nil
-  O.inst:Arm(ns.SpecOpener[v])
-  if ns.HudLog then ns.HudLog.Note("queue", "opener armed (" .. v .. ")") end
+  local spec = armSpec()
+  if not spec then return end
+  O.inst:Arm(spec)
+  if ns.HudLog then ns.HudLog.Note("queue", "opener armed") end
 end
 
 -- A SUCCEEDED cast.  Advances the queue and, on a Tyrant cast, starts the
@@ -123,16 +145,12 @@ end
 -- Status (`/cdmp hud status`)
 --------------------------------------------------------------------------------
 function O.StatusText()
-  local raw = ns.db and ns.db.hud and ns.db.hud.opener
-  if not raw or raw == "off" then return "|cff808080off|r  (|cffffffff/cdmp hud opener 1a|r to enable)" end
-  if not variant() then
-    return string.format("|cffffd100%s|r — no data (only 1a is shipped)", tostring(raw))
-  end
+  if not enabled() then return "|cff808080off|r  (|cffffffff/cdmp hud opener on|r to enable)" end
   if O.inst and O.inst.armed then
     local info = O.inst:Info()
-    return string.format("|cff88ff88%s|r — armed: %s (%d/%d)%s",
-      tostring(raw), info.current or "?", info.cursor, info.total,
+    return string.format("|cff88ff88on|r — armed: %s (%d/%d)%s",
+      info.current or "?", info.cursor, info.total,
       O.tyrantAt and "  |cffffd100Tyrant window open|r" or "")
   end
-  return string.format("|cff88ff88%s|r — idle (arms out of combat)", tostring(raw))
+  return "|cff88ff88on|r — idle (arms out of combat)"
 end
