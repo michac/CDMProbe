@@ -30,7 +30,17 @@ local O = ns.HudOpener
 -- window closes").  A plain elapsed-time compare, no secret read.
 local TYRANT_WINDOW = 15
 
-O.tyrantAt = nil     -- GetTime() of the Tyrant cast, for the dissolve clock
+-- Feedback 2026-07-23 — the opener was blocking the BURST window for the whole
+-- fight: BURST may not preempt the opener (HudBurst D1), but a player who ignores
+-- the opener (builds shards first, no opener key pressed) left it sitting PRIMED,
+-- owning the pane forever, so burst never armed.  If the opener is still primed
+-- this many seconds INTO COMBAT, it hands the pane off (dissolves) so the live
+-- Tyrant window can arm burst.  A STARTED opener (un-primed) is exempt — it runs
+-- to its Tyrant-window / drain as before.
+local OPENER_GRACE = 6
+
+O.tyrantAt    = nil  -- GetTime() of the Tyrant cast, for the dissolve clock
+O.primedSince = nil  -- GetTime() the opener first sat primed IN COMBAT
 
 -- Is the opener enabled?  Any truthy, non-"off" setting counts (the DB stored
 -- the legacy "1a" before the variant machinery was scrubbed; it is treated as
@@ -89,6 +99,7 @@ function O.Arm()
   if InCombatLockdown() then return end
   if not ns.HudPane then return end
   O.tyrantAt = nil
+  O.primedSince = nil
   local spec = armSpec()
   if not spec then return end
   -- HudPane arms the shared strip PRIMED (start-on-first-key) — the desync fix —
@@ -121,6 +132,15 @@ end
 function O.Tick()
   if not (ns.HudPane and ns.HudPane.OwnedBy("opener")) then return end
   ns.HudPane.RefreshPrereqs()
+  -- Hand off a still-primed opener after the grace, so an ignored opener stops
+  -- holding the pane and burst can arm the live Tyrant window.  Only IN COMBAT and
+  -- only while PRIMED — a started opener clears the timer and runs normally.
+  if InCombatLockdown() and ns.HudPane.IsPrimed() then
+    O.primedSince = O.primedSince or GetTime()
+    if (GetTime() - O.primedSince) >= OPENER_GRACE then O.Dissolve() return end
+  else
+    O.primedSince = nil
+  end
   if O.tyrantAt and (GetTime() - O.tyrantAt) >= TYRANT_WINDOW then O.Dissolve() end
 end
 
@@ -130,6 +150,7 @@ function O.Dissolve()
     ns.HudPane.Dissolve("opener")
   end
   O.tyrantAt = nil
+  O.primedSince = nil
 end
 
 -- Leaving combat: we are back in PREP, so re-arm for the next pull.

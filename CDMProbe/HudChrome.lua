@@ -120,24 +120,29 @@ local STACK_COL    = { 1.00, 0.86, 0.35 }   -- bright gold; must beat the icon a
 -- blindness and is never colour-alone.
 --   NEVER / AVAILABLE (held / overcap / quiet) — no bleed
 --   judge-ready (Implosion off CD, gate is a secret) — cyan, narrow, steady
---   SOON     — yellow, medium, gentle alpha pulse
+--   SOON     — yellow, medium, gentle alpha breathe
 --   ROTATION — green, wide, steady
---   LATE     — green, wide, slow size pulse
-local BLEED_H_PAD = 5            -- bleed overshoots the icon height top+bottom
-local BLEED_MAX_W = 72           -- the widest bleed (ROTATION/LATE) — sizes ROW_OFFSET
-H.ROW_OFFSET      = BLEED_MAX_W + 8   -- where HudRow anchors its (debug-only) text
+--   LATE     — green, wide, slow alpha breathe (brighter) — overdue
+--
+-- It reads as a GLOW, not paint: ADD blend mode (emitted light over the dark
+-- terminal) + a soft radial mask feathering all four edges, so it blends into the
+-- icon like an aura rather than a flat rectangular swipe (feedback 2026-07-23).
+-- There is NO size motion — a growing bleed overflowed into neighbouring icons —
+-- so LATE/SOON carry motion on ALPHA only.
+local BLEED_H_PAD  = -3          -- INSET: the bleed sits inside the icon height so
+                                 -- it doesn't tower over the icons (it feathers too)
+local BLEED_OVERLAP = 4          -- how far it laps ONTO the icon edge (glow attaches)
+local BLEED_MAX_W  = 64          -- the widest bleed (ROTATION/LATE) — sizes ROW_OFFSET
+H.ROW_OFFSET       = BLEED_MAX_W + 8  -- where HudRow anchors its (debug-only) text
 
--- c        — the level hue
--- w        — spread: how far the bleed reaches off the icon edge, in px
--- a        — peak alpha at the icon edge (fades to 0 outward)
--- pulse    — alpha bounce period, seconds (SOON) ; nil = steady
--- sizePulse— width bounce period (LATE) ; nil = static.  pulseMin/Max scale it.
+-- c     — level hue · w — spread off the icon edge · a — peak alpha at the edge
+-- pulse — a slow ALPHA breathe period (s); nil = steady.  (These are first-pass
+--         glow values under ADD blend — tune here, one edit site.)
 local BLEED = {
-  JUDGE    = { c = { 0.27, 0.88, 1.00 }, w = 26, a = 0.60 },
-  SOON     = { c = { 1.00, 0.86, 0.15 }, w = 46, a = 0.55, pulse = 0.85 },
-  ROTATION = { c = { 0.24, 1.00, 0.42 }, w = BLEED_MAX_W, a = 0.80 },
-  LATE     = { c = { 0.24, 1.00, 0.42 }, w = BLEED_MAX_W, a = 0.80,
-               sizePulse = 1.1, pulseMin = 0.86, pulseMax = 1.16 },
+  JUDGE    = { c = { 0.27, 0.88, 1.00 }, w = 30, a = 0.55 },
+  SOON     = { c = { 1.00, 0.86, 0.15 }, w = 46, a = 0.50, pulse = 0.85 },
+  ROTATION = { c = { 0.30, 1.00, 0.48 }, w = BLEED_MAX_W, a = 0.70 },
+  LATE     = { c = { 0.42, 1.00, 0.58 }, w = BLEED_MAX_W, a = 0.82, pulse = 1.3 },
 }
 
 -- Level -> word colour, for the DEBUG rows only (non-verbose draws no words).
@@ -322,6 +327,7 @@ end
 -- solid bleed — the same defensive idiom as the old dot's mask/scale setters.  A
 -- flat fallback is a cosmetic loss; a throw in a per-item paint path is the HUD
 -- going dark, so this never gets to throw.
+local BLEED_MASK = "Interface\\CharacterFrame\\TempPortraitAlphaMask"  -- soft radial
 local function ensureBleed(o, item)
   if o.bleed then return o.bleed end
   local f = CreateFrame("Frame", nil, item)
@@ -329,43 +335,46 @@ local function ensureBleed(o, item)
   local t = f:CreateTexture(nil, "OVERLAY")
   t:SetTexture("Interface\\Buttons\\WHITE8X8")
   t:SetAllPoints(f)
+  -- GLOW, not paint (feedback 2026-07-23): ADD blend reads as emitted light over
+  -- the dark terminal, and a soft radial mask feathers all four edges so it blends
+  -- into the icon like an aura instead of a hard rectangular swipe.  Both are
+  -- best-effort — a missing texture/method degrades to a flat bleed, never a throw.
+  pcall(function() t:SetBlendMode("ADD") end)
+  pcall(function()
+    local m = f:CreateMaskTexture()
+    m:SetTexture(BLEED_MASK, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+    m:SetAllPoints(t)
+    t:AddMaskTexture(m)
+  end)
 
-  -- Two independent pulse groups: an ALPHA bounce (SOON) and a SCALE bounce
-  -- (LATE's slow grow/shrink).  Kept separate so a level picks exactly one and
-  -- the other never fights it.  The scale origin is set at the icon edge in
-  -- anchorBleed so the bleed grows OUTWARD, not from its centre.
+  -- ONE alpha pulse group (SOON / LATE breathe).  No scale group any more: size
+  -- motion overflowed into neighbouring icons and was retired.
   local ag = f:CreateAnimationGroup()
   local a = ag:CreateAnimation("Alpha")
   a:SetFromAlpha(0.45)
   a:SetToAlpha(1.00)
   ag:SetLooping("BOUNCE")
 
-  local sg = f:CreateAnimationGroup()
-  local sc = sg:CreateAnimation("Scale")
-  sg:SetLooping("BOUNCE")
-
   f.tex, f.ag, f.anim = t, ag, a
-  f.sg, f.scaleAnim = sg, sc
   f:Hide()
   o.bleed = f
   return f
 end
 
--- Anchor top/bottom to the icon (so the bleed is the icon's height + overshoot),
--- pinned by the icon-edge side; the width is set per-paint from the level spec.
+-- Anchor top/bottom to the icon (INSET by BLEED_H_PAD so it never towers over the
+-- icon), pinned by the icon-edge side and lapping BLEED_OVERLAP onto the icon so
+-- the glow attaches; the width is set per-paint from the level spec.
 local function anchorBleed(o)
   local f = o.bleed
   if not f then return end
   f:ClearAllPoints()
   if o.side == "LEFT" then
-    f:SetPoint("TOPRIGHT", o.item, "TOPLEFT", 2, BLEED_H_PAD)
-    f:SetPoint("BOTTOMRIGHT", o.item, "BOTTOMLEFT", 2, -BLEED_H_PAD)
+    f:SetPoint("TOPRIGHT", o.item, "TOPLEFT", BLEED_OVERLAP, BLEED_H_PAD)
+    f:SetPoint("BOTTOMRIGHT", o.item, "BOTTOMLEFT", BLEED_OVERLAP, -BLEED_H_PAD)
   else
-    f:SetPoint("TOPLEFT", o.item, "TOPRIGHT", -2, BLEED_H_PAD)
-    f:SetPoint("BOTTOMLEFT", o.item, "BOTTOMRIGHT", -2, -BLEED_H_PAD)
+    f:SetPoint("TOPLEFT", o.item, "TOPRIGHT", -BLEED_OVERLAP, BLEED_H_PAD)
+    f:SetPoint("BOTTOMLEFT", o.item, "BOTTOMRIGHT", -BLEED_OVERLAP, -BLEED_H_PAD)
   end
-  -- Grow outward from the icon edge (the pinned side), never from the centre.
-  pcall(function() f.scaleAnim:SetOrigin(o.side == "LEFT" and "RIGHT" or "LEFT", 0, 0) end)
   f.anchoredSide = o.side
 end
 
@@ -383,8 +392,10 @@ function H.paintBleed(o)
   local t = f.tex
   local ok = pcall(function()
     -- White base, gradient tints it.  Solid at the icon edge -> transparent
-    -- outward; the SOLID end is whichever side the icon is on.
+    -- outward; the SOLID end is whichever side the icon is on.  Re-assert ADD:
+    -- SetColorTexture can reset the blend mode on some client builds.
     t:SetColorTexture(1, 1, 1, 1)
+    t:SetBlendMode("ADD")
     local solid = CreateColor(c[1], c[2], c[3], a)
     local clear = CreateColor(c[1], c[2], c[3], 0)
     if o.side == "LEFT" then
@@ -415,9 +426,16 @@ function H.SetDot(item, viewer, level, judgeReady)
   elseif level == "AVAILABLE" and judgeReady then bkey = "JUDGE"
   end
   local spec = bkey and BLEED[bkey]
+  -- Item 7 (feedback 2026-07-23): the keybind HINT stays, tinted to the current
+  -- bleed colour so the corner key and its glow read as one — near-white when the
+  -- icon carries no call.
+  if o.key then
+    local kc = spec and spec.c or KEY_COL
+    o.key:SetTextColor(kc[1], kc[2], kc[3])
+  end
   if not spec then
     o.bleedLevel = nil
-    if o.bleed then o.bleed.ag:Stop(); o.bleed.sg:Stop(); o.bleed:SetScale(1); o.bleed:Hide() end
+    if o.bleed then o.bleed.ag:Stop(); o.bleed:Hide() end
     return
   end
   local f = ensureBleed(o, item)
@@ -425,23 +443,9 @@ function H.SetDot(item, viewer, level, judgeReady)
   o.bleedLevel = bkey
   H.paintBleed(o)
   if changed then
-    f.ag:Stop(); f.sg:Stop()
-    f:SetAlpha(1); f:SetScale(1)
-    if spec.sizePulse then
-      -- Widen/narrow about the icon edge — LATE's "you're ignoring this" motion.
-      -- The Scale-animation from/to setters were renamed across API generations
-      -- (SetScaleFrom/To <- SetFromScale/To <- plain SetScale), so try them in
-      -- order and fall back to a bare SetScale bounce (1.0 -> max -> 1.0).
-      local lo, hi = spec.pulseMin or 0.85, spec.pulseMax or 1.15
-      local sc = f.scaleAnim
-      local ok = pcall(function()
-        if sc.SetScaleFrom then sc:SetScaleFrom(lo, lo); sc:SetScaleTo(hi, hi)
-        elseif sc.SetFromScale then sc:SetFromScale(lo, lo); sc:SetToScale(hi, hi)
-        else sc:SetScale(hi, hi) end
-        sc:SetDuration(spec.sizePulse)
-      end)
-      if ok then f.sg:Play() end
-    elseif spec.pulse then
+    f.ag:Stop()
+    f:SetAlpha(1)
+    if spec.pulse then
       f.anim:SetDuration(spec.pulse)
       f.ag:Play()
     end

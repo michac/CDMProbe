@@ -60,7 +60,7 @@ local function hex(c)
 end
 local BRIGHT = "|cff" .. hex(TERM)
 local DIM    = "|cff" .. hex(TERM_DIM)
-local SEP    = DIM .. "  >  |r"             -- dim ASCII ">" separator
+local SEP    = DIM .. "-|r"                  -- compact dim dash: [E]-[sE]-[Q]
 
 local QueueMeta = {}
 QueueMeta.__index = QueueMeta
@@ -131,8 +131,15 @@ local function rowAt(inst, i)
   return r
 end
 
--- The label for a step: the KEYBIND if the consumer resolved one, else the
--- human name as a fallback (an unbound ability is better named than blank).
+-- One display CELL for a step: the bracketed keybind (already short, e.g. "sE"),
+-- or the human name as a fallback (an unbound ability is better named than blank).
+-- A repeated step (HoG x2) is NOT "[R] x2" — it renders as one cell PER remaining
+-- press ([R]-[R]), so the widget owns the repetition, not the label.
+local function cellText(s)
+  return "[" .. (s.key or s.label or "?") .. "]"
+end
+
+-- Kept for the vertical renderer (no live consumer), where "x2" is fine.
 local function stepLabel(s)
   local base = s.key or s.label or "?"
   if (s.count or 1) > 1 then base = base .. " x" .. s.count end
@@ -152,13 +159,15 @@ local function renderHorizontal(inst)
       if shown >= MAX_STEPS and i < #inst.steps then
         local remaining = 0
         for j = i, #inst.steps do if not inst.steps[j].consumed then remaining = remaining + 1 end end
-        parts[#parts + 1] = DIM .. "+" .. remaining .. " more|r"
+        parts[#parts + 1] = DIM .. "+" .. remaining .. "|r"
         break
       end
+      -- The current step is bright; upcoming dim.  Notes ("t~3s"/"AoE") are
+      -- dropped — they made the strip too long and overlapped other UI.  A count
+      -- draws as repeated cells ([R]-[R]), so "two presses left" reads at a glance.
       local col = (i == inst.cursor) and BRIGHT or DIM
-      local seg = col .. stepLabel(s) .. "|r"
-      if s.note then seg = seg .. DIM .. " (" .. s.note .. ")|r" end
-      parts[#parts + 1] = seg
+      local cell = col .. cellText(s) .. "|r"
+      for _ = 1, (s.count or 1) do parts[#parts + 1] = cell end
       shown = shown + 1
     end
   end
@@ -238,6 +247,36 @@ function QueueMeta:SetPrimed(v)
   self.primed = v and true or false
 end
 
+-- JUICE (feedback 2026-07-23): a pressed step doesn't just vanish — its key
+-- brightens and RISES off the strip, then fades.  A transient FontString above
+-- the strip; consumed cells drop from the FRONT and the strip is centre-justified,
+-- so centre is the honest launch point.  Horizontal orient only.
+function QueueMeta:playPop(text)
+  local f = self.frame
+  if not (f and self.orient == "horizontal" and f.strip) then return end
+  local pop = f.pop
+  if not pop then
+    pop = f:CreateFontString(nil, "OVERLAY")
+    ns.SetFont(pop, 16, "OUTLINE")
+    pop:SetJustifyH("CENTER")
+    local ag = pop:CreateAnimationGroup()
+    local tr = ag:CreateAnimation("Translation")
+    tr:SetDuration(0.5); tr:SetSmoothing("OUT"); tr:SetOffset(0, 18)
+    local fade = ag:CreateAnimation("Alpha")
+    fade:SetFromAlpha(1); fade:SetToAlpha(0); fade:SetDuration(0.5); fade:SetSmoothing("IN")
+    ag:SetScript("OnFinished", function() pop:SetAlpha(0) end)
+    pop.ag = ag
+    f.pop = pop
+  end
+  pop:ClearAllPoints()
+  pop:SetPoint("BOTTOM", f.strip, "TOP", 0, 2)
+  pop:SetTextColor(TERM[1], TERM[2], TERM[3])
+  pop:SetText(text)
+  pop.ag:Stop()
+  pop:SetAlpha(1)
+  pop.ag:Play()
+end
+
 -- A press landed.  Returns true if it advanced the queue (matched a step),
 -- false if the cast wasn't in the script.  DROP-THROUGH: matching a later step
 -- consumes every earlier un-pressed one.
@@ -259,6 +298,7 @@ function QueueMeta:Advance(spellID)
     local s = self.steps[k]
     if not s.consumed and (s.spell == spellID or s.alt == spellID) then
       for j = self.cursor, k - 1 do self.steps[j].consumed = true end
+      self:playPop(cellText(s))     -- the pressed key rises + fades before the redraw
       s.count = (s.count or 1) - 1
       if s.count <= 0 then s.consumed = true end
       local c = self.cursor

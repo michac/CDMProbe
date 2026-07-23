@@ -254,6 +254,7 @@ function P.Advance(spellID)
 end
 
 function P.SetPrimed(v) if P.queue then P.queue:SetPrimed(v) end end
+function P.IsPrimed() return (P.queue and P.queue.primed) and true or false end
 function P.IsEmpty() return (not P.queue) or P.queue:IsEmpty() end
 
 function P.Info()
