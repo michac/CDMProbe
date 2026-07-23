@@ -113,9 +113,14 @@ ns.Spec = {
   -- cadence = "oncd": these are the abilities the user rates the biggest win —
   -- "firing cooldown abilities as soon as they are up".  So a ready edge on any
   -- of them is a ROTATION call outright, and the napkin gives them lead time.
+  -- `emphasis = "burst"` (A3, M4.4): Tyrant's cue bar is the WIDEST on the board
+  -- regardless of level — the burst go-signal shouts even when it is only SOON
+  -- (yellow).  A DEDICATED field, NOT `goGate` (that is Tyrant + Dreadstalkers);
+  -- feedback 5 wants Tyrant SPECIFICALLY the widest.  Extensible to a lesser tier.
   [S.TYRANT] = {
     group = "summon", kind = "button", spends = "shards", cadence = "oncd",
-    burstAlign = true, goGate = true, baseCD = 60, label = "Summon Demonic Tyrant",
+    burstAlign = true, goGate = true, emphasis = "burst",
+    baseCD = 60, label = "Summon Demonic Tyrant",
   },
   -- `stage = true` (M4): inside the BURST window HudScore reads this AVAILABLE
   -- "stage for Tyrant" instead of greenlighting it on cooldown, so it lands FRESH

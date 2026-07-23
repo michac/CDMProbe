@@ -114,7 +114,7 @@ end
 local function lineFor(key, e)
   local info, known = ns.SpecInfo(e.baseSpellID or e.spellID)
 
-  -- M4.1 — NON-VERBOSE + a scored icon draws NO reason text: the bleed off the
+  -- M4.1 — NON-VERBOSE + a scored icon draws NO reason text: the cue bar off the
   -- icon edge is the whole signal now (this reverses M3c-a's words-first default,
   -- on purpose — the fix for illegible colour is a legible visual, not permanent
   -- words).  Return nil so the row hides and its bracket collapses.  `hud debug`

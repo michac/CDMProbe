@@ -298,6 +298,12 @@ function P.Advance(spellID)
   return matched
 end
 
+-- C2 (M4.4) — cast-START feedback: a "casting…" shimmer on the current step.
+-- The consumer resolves the base identity and forwards here; the shimmer only
+-- fires when the started spell matches the current step (HudQueue guards that).
+function P.CastStart(spellID) if P.queue then P.queue:playCastStart(spellID) end end
+function P.ClearCastStart() if P.queue then P.queue:clearCastStart() end end
+
 function P.SetPrimed(v) if P.queue then P.queue:SetPrimed(v) end end
 function P.IsPrimed() return (P.queue and P.queue.primed) and true or false end
 function P.IsEmpty() return (not P.queue) or P.queue:IsEmpty() end

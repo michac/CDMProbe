@@ -126,6 +126,14 @@ function O.OnCast(spellID)
   if ns.HudPane.IsEmpty() then O.Dissolve() end
 end
 
+-- C2 (M4.4) — a cast STARTED.  If we own the pane, shimmer the current step (the
+-- start-side sibling of OnCast).  Resolves the override back to base so a
+-- transformed press (Ruination for HoG) still shimmers its authored step.
+function O.OnCastStart(spellID)
+  if not (ns.HudPane and ns.HudPane.OwnedBy("opener")) then return end
+  ns.HudPane.CastStart(baseOfCast(spellID))
+end
+
 -- The dissolve clock, checked on S.Recompute's tail (no new ticker) — the first
 -- Tyrant window closing is the handoff to sustain.  Also keeps the prereqs row
 -- current while the pane sits primed pre-pull (shards/readiness drift OOC).

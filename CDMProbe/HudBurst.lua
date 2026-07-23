@@ -46,6 +46,23 @@ local function enabled()
   return v ~= nil and v ~= false and v ~= "off"
 end
 
+-- E (M4.4) — is this base one of the BURST sequence steps (or a burst-aligned
+-- summon)?  Scopes the floating reward text so it stays a burst celebration, not
+-- a running combat log.  Built lazily from ns.SpecBurst.steps once.
+local burstStepSet
+local function isBurstStep(spellID)
+  if type(spellID) ~= "number" then return false end
+  if not burstStepSet then
+    burstStepSet = {}
+    for _, s in ipairs((ns.SpecBurst and ns.SpecBurst.steps) or {}) do
+      if s.spell then burstStepSet[s.spell] = true end
+      if s.alt then burstStepSet[s.alt] = true end
+    end
+  end
+  if burstStepSet[spellID] then return true end
+  return ns.SpecInfo(spellID).burstAlign and true or false
+end
+
 -- Resolve an override spellID back to its BASE, so a transformed press (Ruination
 -- for HoG, Infernal Bolt for SB) still matches its authored step.  Same reverse
 -- scan the opener uses.
@@ -133,12 +150,24 @@ function B.OnCast(spellID)
     B.burning      = true
     B.tyrantCastAt = GetTime()
   end
+  -- E (M4.4) — reward text over the character for landing a burst-window press.
+  -- Scoped to burst steps so it stays a celebration; Tyrant reads loudest (A3).
+  if ns.HudFloat and isBurstStep(base) then
+    ns.HudFloat.Say(ns.SpellName(base) or tostring(base), { loud = base == TYR })
+  end
   if ns.HudPane.Advance(base) and ns.HudLog then
     local info = ns.HudPane.Info()
     ns.HudLog.Note("queue", "burst advanced " .. (ns.SpellName(base) or tostring(base))
       .. " -> " .. (info.current or "done"))
   end
   if ns.HudPane.IsEmpty() then B.Dissolve() end
+end
+
+-- C2 (M4.4) — a cast STARTED.  If we own the pane, shimmer the current step (the
+-- start-side sibling of OnCast).  Resolves the override back to base like OnCast.
+function B.OnCastStart(spellID)
+  if not (ns.HudPane and ns.HudPane.OwnedBy("burst")) then return end
+  ns.HudPane.CastStart(baseOfCast(spellID))
 end
 
 -- The dissolve clocks + prereqs refresh, on S.Recompute's tail (no new ticker).

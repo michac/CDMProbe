@@ -107,50 +107,59 @@ local STACK_SIZE   = 30     -- Wild Imp count: the one AoE readout (§0.5.8.3 #1
                             -- icon art it sits on.
 local STACK_COL    = { 1.00, 0.86, 0.35 }   -- bright gold; must beat the icon art
 
--- ── The BLEED = a coloured DROP SHADOW (M4.3) ────────────────────────────────
+-- ── The CUE BAR = a coloured DROP SHADOW carrying the level (M4.3, M4.4) ──────
 -- The actionability mark.  hue/sat/luminance/alpha are all spoken for on the icon,
 -- so the level signal is its OWN object.  The mental model (feedback 2026-07-23):
 -- a bright light shines on the icons from the LEFT, so each casts a soft DROP
 -- SHADOW to the RIGHT (LEFT for Utility, per H.SideFor) — except the shadow is
 -- COLOURED by the level.  So it is an icon-shaped soft square, offset toward the
--- bleed side, drawn BEHIND the icon (BACKGROUND layer on the item frame) so the
+-- cue side, drawn BEHIND the icon (BACKGROUND layer on the item frame) so the
 -- icon art sits cleanly on top and only the coloured shadow peeks out.
 --
--- COLOUR CARRIES **LEVEL** (the M3b inversion, unchanged).  Earlier tries — a
--- horizontal gradient (read as a flat swipe) and a radial-masked glow (read as an
--- oval) — are retired for this.  Motion is ALPHA only (a growing shadow overflowed
--- neighbours).
+-- The name is the **cue bar** (M4.4), chosen over "AHB" to dodge the keybind-HINT
+-- collision.  Two redundant axes carry the level ([X1] — never colour-alone):
+--   * COLOUR carries **LEVEL** (the M3b inversion, unchanged).
+--   * WIDTH  carries **URGENCY** (M4.4, restored): a fatter bar reads as "press
+--     this now" even on a dim monitor or to a colourblind eye where a hue shift
+--     alone might not.  CUE_MIN is the floor; ROTATION/LATE widen; a burst
+--     emphasis (A3) overrides to the widest bar on the board regardless of level.
+--
+-- Motion is ALPHA only (a growing shadow overflowed neighbours).
 --   NEVER / AVAILABLE (held / overcap / quiet) — no shadow
---   judge-ready (Implosion off CD, gate is a secret) — cyan, steady
---   SOON     — yellow, gentle alpha breathe
---   ROTATION — green, steady
---   LATE     — green, slow alpha breathe (brighter) — overdue
+--   judge-ready (Implosion off CD, gate is a secret) — cyan, steady, min width
+--   SOON     — yellow, gentle alpha breathe, min width
+--   ROTATION — green, steady, fatter
+--   LATE     — green, slow alpha breathe (brighter), fattest — overdue
+--   burst    — its level's hue, CUE_BURST width — the widest bar (Tyrant, A3)
 --
 -- SHAPE (feedback 2026-07-23 v2): NOT a full square (it read misaligned + boxy).
 -- It is a THICK vertical BAR pinned to the icon's outer EDGE — only the "1,1→1,0"
 -- side of the icon square — spanning the icon's exact height.  Anchored to the
 -- icon corners so it lines up by construction, and it fades outward (solid at the
 -- edge → soft outward) for the drop-shadow feel.
-local BLEED_THICK = 14     -- bar thickness in px ("thicker" per feedback)
-H.ROW_OFFSET      = BLEED_THICK + 30   -- HudRow debug text sits past the bar
+local CUE_MIN, CUE_BURST = 14, 30   -- min bar thickness; burst-emphasis override
+-- Off the WIDEST possible bar (CUE_BURST), so the HudRow debug text never overlaps
+-- a Tyrant cue bar even when it is at its widest.
+H.ROW_OFFSET = CUE_BURST + 30
 
 -- c — level hue · a — alpha · pulse — slow alpha breathe period (s); nil = steady.
-local BLEED = {
-  JUDGE    = { c = { 0.27, 0.88, 1.00 }, a = 0.85 },
-  SOON     = { c = { 1.00, 0.86, 0.15 }, a = 0.80, pulse = 0.85 },
-  ROTATION = { c = { 0.30, 1.00, 0.48 }, a = 1.00 },
-  LATE     = { c = { 0.42, 1.00, 0.58 }, a = 1.00, pulse = 1.3 },
+-- w — bar thickness in px; CUE_MIN is the floor, ROTATION/LATE widen (A2, M4.4).
+local CUE = {
+  JUDGE    = { c = { 0.27, 0.88, 1.00 }, a = 0.85,               w = CUE_MIN },
+  SOON     = { c = { 1.00, 0.86, 0.15 }, a = 0.80, pulse = 0.85, w = CUE_MIN },
+  ROTATION = { c = { 0.30, 1.00, 0.48 }, a = 1.00,               w = 22 },
+  LATE     = { c = { 0.42, 1.00, 0.58 }, a = 1.00, pulse = 1.3,  w = 24 },
 }
 
 -- Level -> word colour, for the DEBUG rows only (non-verbose draws no words).
--- Derived from the bleed hues so the word and the bleed teach each other; keeps
+-- Derived from the cue hues so the word and the cue bar teach each other; keeps
 -- the H.DOT_COLORS name HudRow.levelTag already reads.
 H.DOT_COLORS = {
   NEVER     = { c = { 0.55, 0.55, 0.60 } },
   AVAILABLE = { c = { 0.29, 1.00, 0.48 } },
-  SOON      = { c = BLEED.SOON.c },
-  ROTATION  = { c = BLEED.ROTATION.c },
-  LATE      = { c = BLEED.LATE.c },
+  SOON      = { c = CUE.SOON.c },
+  ROTATION  = { c = CUE.ROTATION.c },
+  LATE      = { c = CUE.LATE.c },
 }
 
 -- The group-hue BRACKET around each icon.  Turned OFF for the v0.16.2 test: it
@@ -322,16 +331,16 @@ function H.Apply(o)
   end
   o.key:SetAlpha(recede)
   if o.glow then H.paintGlow(o) end
-  if o.bleedLevel then H.paintBleed(o) end
+  if o.cueLevel then H.paintCue(o) end
 end
 
 --------------------------------------------------------------------------------
--- The bleed — §0.5.8.7, the actionability mark (a coloured drop shadow, M4.3)
+-- The cue bar — §0.5.8.7, the actionability mark (a coloured drop shadow, M4.3/M4.4)
 --------------------------------------------------------------------------------
 -- A texture on o.frame (our overlay, SetAllPoints(item)).  It lives just OUTSIDE
 -- the icon edge, so it never covers the art and needs no behind-the-icon trickery.
-local function ensureBleed(o, item)
-  if o.bleed then return o.bleed end
+local function ensureCue(o, item)
+  if o.cue then return o.cue end
   local t = o.frame:CreateTexture(nil, "OVERLAY")
   t:SetTexture("Interface\\Buttons\\WHITE8X8")
 
@@ -345,15 +354,16 @@ local function ensureBleed(o, item)
 
   t.ag, t.anim = ag, a
   t:Hide()
-  o.bleed = t
+  o.cue = t
   return t
 end
 
--- Pin the bar to the icon's OUTER edge, the icon's EXACT height, BLEED_THICK wide,
--- extending outward.  Anchoring to the icon corners is what makes it line up (the
--- misalignment was a CENTER-offset square guessing the size).
-local function anchorBleed(o)
-  local t, item = o.bleed, o.item
+-- Pin the bar to the icon's OUTER edge, the icon's EXACT height, extending outward.
+-- Anchoring to the icon corners is what makes it line up (the misalignment was a
+-- CENTER-offset square guessing the size).  WIDTH is set per-frame in paintCue,
+-- since it varies by level (A2) and burst emphasis (A3) — not a constant any more.
+local function anchorCue(o)
+  local t, item = o.cue, o.item
   if not (t and item) then return end
   t:ClearAllPoints()
   if o.side == "LEFT" then
@@ -363,13 +373,12 @@ local function anchorBleed(o)
     t:SetPoint("TOPLEFT", item, "TOPRIGHT", 0, 0)
     t:SetPoint("BOTTOMLEFT", item, "BOTTOMRIGHT", 0, 0)
   end
-  t:SetWidth(BLEED_THICK)
   t.anchoredSide = o.side
 end
 
--- The keybind hint sits just PAST the shadow bar on the shadow side, vertically
--- centred (BLEED_THICK + a small gap), so the two don't overlap.
-local KEY_GAP = BLEED_THICK + 4
+-- The keybind hint sits just PAST the cue bar on the cue side, vertically centred.
+-- Off the WIDEST possible bar (CUE_BURST) so a wide Tyrant cue never runs under it.
+local KEY_GAP = CUE_BURST + 4
 local function anchorKey(o)
   local k = o.key
   if not k then return end
@@ -387,11 +396,14 @@ end
 -- never the region alpha — region alpha belongs to the breathe.  A horizontal
 -- gradient (solid at the icon edge → soft outward) gives the drop-shadow depth;
 -- pcall'd, falling back to a flat bar if SetGradient's shape differs on a client.
-function H.paintBleed(o)
-  local t = o.bleed
-  local spec = o.bleedLevel and BLEED[o.bleedLevel]
+-- WIDTH (A2/A3): the level's own `w`, unless a burst emphasis overrides it to the
+-- widest bar on the board (Tyrant's go-signal is widest even in yellow SOON).
+function H.paintCue(o)
+  local t = o.cue
+  local spec = o.cueLevel and CUE[o.cueLevel]
   if not (t and spec) then return end
-  if t.anchoredSide ~= o.side then anchorBleed(o) end
+  if t.anchoredSide ~= o.side then anchorCue(o) end
+  t:SetWidth((o.emphasis == "burst") and CUE_BURST or (spec.w or CUE_MIN))
   local c = spec.c
   local a = spec.a * recede
   local ok = pcall(function()
@@ -408,33 +420,37 @@ function H.paintBleed(o)
 end
 
 -- level:      one of the score LEVELS ("NEVER"/"AVAILABLE"/"SOON"/"ROTATION"/
---             "LATE"), or nil to clear the bleed entirely.
+--             "LATE"), or nil to clear the cue bar entirely.
 -- judgeReady: true when a judgeable=false ability is otherwise up (Implosion off
 --             cooldown) — the one AVAILABLE that lights (cyan "ready, your call").
--- NEVER and plain AVAILABLE draw NOTHING; the board only ever bleeds a call.
-function H.SetDot(item, viewer, level, judgeReady)
+-- emphasis:   "burst" makes this the WIDEST bar on the board regardless of level
+--             (A3, Tyrant only) — hue still carries the level, width carries "this
+--             is the burst go-signal".  nil for everything else.
+-- NEVER and plain AVAILABLE draw NOTHING; the board only ever cues a call.
+function H.SetCue(item, viewer, level, judgeReady, emphasis)
   local o = item and item.__hud
   if not o then return end
   if viewer then o.side = H.SideFor(viewer) end
+  o.emphasis = emphasis
   local bkey
   if level == "SOON" then bkey = "SOON"
   elseif level == "ROTATION" then bkey = "ROTATION"
   elseif level == "LATE" then bkey = "LATE"
   elseif level == "AVAILABLE" and judgeReady then bkey = "JUDGE"
   end
-  local spec = bkey and BLEED[bkey]
+  local spec = bkey and CUE[bkey]
   -- The keybind hint is NOT tinted to the level any more (M4.3): it now sits ON the
   -- coloured shadow beside the icon, so it stays high-contrast near-white + outline
   -- for readability rather than matching (and disappearing into) the shadow hue.
   if not spec then
-    o.bleedLevel = nil
-    if o.bleed then o.bleed.ag:Stop(); o.bleed:Hide() end
+    o.cueLevel = nil
+    if o.cue then o.cue.ag:Stop(); o.cue:Hide() end
     return
   end
-  local f = ensureBleed(o, item)
-  local changed = (o.bleedLevel ~= bkey)
-  o.bleedLevel = bkey
-  H.paintBleed(o)
+  local f = ensureCue(o, item)
+  local changed = (o.cueLevel ~= bkey)
+  o.cueLevel = bkey
+  H.paintCue(o)
   if changed then
     f.ag:Stop()
     f:SetAlpha(1)
@@ -446,9 +462,48 @@ function H.SetDot(item, viewer, level, judgeReady)
   f:Show()
 end
 
-function H.GetDot(item)
+function H.GetCue(item)
   local o = item and item.__hud
-  return o and o.bleedLevel or nil
+  return o and o.cueLevel or nil
+end
+
+--------------------------------------------------------------------------------
+-- Cast-start flair on the icon — D (M4.4)
+--------------------------------------------------------------------------------
+-- A quiet one-shot bloom beside a CASTING ability's icon, on UNIT_SPELLCAST_START.
+-- Confirmation the cast is going, never a call — the icon already carries the cue
+-- bar + keybind + native swipe, so this is deliberately brief and low-alpha.  It
+-- reuses the cue-bar texture plumbing (a pooled OVERLAY texture on o.frame, its
+-- own one-shot Alpha group) rather than spinning up new animation machinery.
+local function ensureFlash(o)
+  if o.castFlash then return o.castFlash end
+  local t = o.frame:CreateTexture(nil, "OVERLAY")
+  t:SetTexture("Interface\\Buttons\\WHITE8X8")
+  t:SetAllPoints(o.frame)
+  local ag = t:CreateAnimationGroup()
+  local a = ag:CreateAnimation("Alpha")
+  a:SetFromAlpha(0.28)          -- low-alpha: confirmation, not a call
+  a:SetToAlpha(0)
+  a:SetDuration(0.45)
+  ag:SetScript("OnFinished", function() t:SetAlpha(0) end)
+  t.ag = ag
+  t:SetAlpha(0)
+  o.castFlash = t
+  return t
+end
+
+-- Fire once per cast start.  Re-fire restarts rather than stacking (the H.Settle
+-- discipline).  Tinted to the icon's group hue so it reads as "this" lighting up.
+function H.CastFlash(item)
+  local o = item and item.__hud
+  if not (o and o.attached and o.identity) then return end
+  local t = ensureFlash(o)
+  local id = o.identity
+  t:SetColorTexture(lighten(id.r, 0.5), lighten(id.g, 0.5), lighten(id.b, 0.5), 1)
+  t.ag:Stop()
+  t:SetAlpha(0.28)
+  t:Show()
+  t.ag:Play()
 end
 
 -- The row reports how wide its text came out, and the bracket grows to include
@@ -741,7 +796,7 @@ function H.Detach(item)
   if not o then return end
   o.attached = false            -- ...so no global repaint can bring it back
   H.SetGlow(item, false)
-  H.SetDot(item, nil, nil)
+  H.SetCue(item, nil, nil)
   if o.settle then o.settle.ag:Stop(); o.settle:Hide() end
   o.ready = nil                       -- next enable starts at UNKNOWN, not stale
   o.rowExtent = 0                     -- ...and so does the bracket width
@@ -913,14 +968,24 @@ end
 -- glitter ship silently; audio arrives in M6 WITH its mute + per-event toggles,
 -- which is what [A3] actually asks for.  Do not add a PlaySound here.
 -- VERTICAL rail (feedback pass): it stands to the LEFT of the icon column,
--- bottom-aligned, as tall as the bottom 3 icons — so the fill rises past SB/DB
--- (empty) toward HoG (full) as the player re-orders those three to the bottom.
-local RAIL_GAP      = 3     -- gap between shard segments
-local RAIL_SEG_W    = 12    -- the rail's WIDTH (M4.1: 20 -> 12, slimmer)
+-- bottom-aligned, centred on the Essential viewer's full height — five DOTS
+-- (M4.4) rising bottom-to-top as shards fill.
+--
+-- FIVE DOTS, not a sliced bar (B, M4.4).  Each shard segment renders as a
+-- round-ish DOT (a masked circle where the mask loads, a square fallback), with a
+-- generous gap so five read as five discrete dots.  Three explicit states — empty
+-- ring / incoming projected-ring / filled disc — via one paintDot().
+local RAIL_GAP      = 8     -- gap between shard DOTS (was 3 for the sliced bar)
+local RAIL_SEG_W    = 14    -- the rail's WIDTH = the dot diameter (kept slim)
 local RAIL_LEFT_GAP = 6     -- gap between the rail's right edge and the icon column
 local RAIL_ICONS    = 3     -- fallback span (icons tall) if the viewer can't be measured
 local RAIL_DEF_ICON = 34    -- fallback icon pitch if the panel can't be measured
+local RAIL_RING_W   = 3     -- ring thickness for the empty/incoming states
 local RAIL_SPARKS = 10
+-- A circular alpha mask that ships with the client (the retired disc's idiom).
+-- pcall-guarded at apply: if it ever fails to load, the dot stays a square, which
+-- still reads as five discrete segments given the gap.
+local DOT_MASK = "Interface\\CHARACTERFRAME\\TempPortraitAlphaMask"
 -- [X2] — WCAG's three-flashes-in-one-second guidance.  The prototype's
 -- `fireGlitter` fired on EVERY prevCapped transition, so at cap a Hand of
 -- Gul'dan (-3) followed by a refill re-fires within a couple of GCDs.  That is a
@@ -941,7 +1006,8 @@ local RAIL_COL = {
   CAP      = { 0.961, 0.773, 0.259 },-- gold
   UNKNOWN  = { 0.50, 0.50, 0.56 },   -- grey: a state, never a guess
 }
-local RAIL_EMPTY = { 0.10, 0.09, 0.13 }
+local RAIL_RING = { 0.30, 0.29, 0.36 }   -- empty dot: a faint placeholder ring
+local RAIL_HOLE = { 0.05, 0.05, 0.07 }   -- the dark centre of an empty/incoming ring
 
 local rail
 local railStats = { edges = 0, glitters = 0, suppressed = 0, lastGlitter = 0 }
@@ -979,6 +1045,17 @@ local function iconMetrics(viewer)
   return iconH, pitch
 end
 
+-- One dot = two masked-circle textures stacked: a RIM (the outer disc) and a
+-- CORE (the smaller inner disc).  A filled dot is rim+core both in the mode hue;
+-- an empty/incoming dot is a coloured rim over a DARK core, so it reads as a
+-- hollow ring — the same hollow-estimate convention the cue bar and napkin use.
+local function makeDisc(seg, sublevel)
+  local t = seg:CreateTexture(nil, "ARTWORK", nil, sublevel)
+  t:SetTexture("Interface\\Buttons\\WHITE8X8")
+  pcall(t.SetMask, t, DOT_MASK)     -- circle where the mask loads; square fallback
+  return t
+end
+
 local function buildRail(viewer)
   if viewer.__hudRail then return viewer.__hudRail end
   local cap = ns.SHARD_CAP or 5      -- never a literal 5; the spec table owns it
@@ -990,7 +1067,11 @@ local function buildRail(viewer)
   local iconH, pitch = iconMetrics(viewer)
   local span = (ns.HasMethod(viewer, "GetHeight") and viewer:GetHeight()) or 0
   if not span or span < 1 then span = (RAIL_ICONS - 1) * pitch + iconH end
+  -- Each dot gets an equal SLOT of the span; the round dot is centred in its slot,
+  -- so the five dots spread evenly over the Essential viewer's full height.  The
+  -- dot itself is clamped roughly square (never wider than the slim rail).
   local segH = (span - (cap - 1) * RAIL_GAP) / cap
+  local dotSize = math.max(8, math.min(segH, RAIL_SEG_W))
 
   local f = CreateFrame("Frame", nil, viewer)
   f:SetFrameLevel((ns.HasMethod(viewer, "GetFrameLevel") and viewer:GetFrameLevel() or 1) + 12)
@@ -1000,36 +1081,23 @@ local function buildRail(viewer)
   f:SetPoint("BOTTOMRIGHT", viewer, "BOTTOMLEFT", -RAIL_LEFT_GAP, 0)
   -- Never EnableMouse: clicks pass through to the secure item beneath.
 
-  local bg = f:CreateTexture(nil, "BACKGROUND")
-  bg:SetAllPoints(f); bg:SetColorTexture(0, 0, 0, 0.35)
-
   f.segH = segH
+  f.dotSize = dotSize
   f.segs = {}
   for i = 1, cap do
     local seg = CreateFrame("Frame", nil, f)
     seg:SetSize(RAIL_SEG_W, segH)
-    -- Segment 1 is at the BOTTOM; the stack grows upward.
+    -- Slot 1 is at the BOTTOM; the stack grows upward.
     seg:SetPoint("BOTTOM", f, "BOTTOM", 0, (i - 1) * (segH + RAIL_GAP))
-    local segbg = seg:CreateTexture(nil, "ARTWORK")
-    segbg:SetAllPoints(seg)
-    local fill = seg:CreateTexture(nil, "ARTWORK", nil, 1)
-    -- Fill rises from the segment's bottom; its HEIGHT is set per-frame in PaintRail.
-    fill:SetPoint("BOTTOM", seg, "BOTTOM", 0, 0)
-    fill:SetSize(RAIL_SEG_W, segH)
-    -- THE GHOST HEAD renders HOLLOW — outline, no fill — an ESTIMATE confidence
-    -- marker (an in-flight cast that would ADD shards).  Four edges rather than a
-    -- fill, so "incoming" can never be mistaken for "held".
-    seg.ghost = {}
-    for _, side in ipairs({ "TOP", "BOTTOM", "LEFT", "RIGHT" }) do
-      seg.ghost[side] = seg:CreateTexture(nil, "ARTWORK", nil, 2)
-    end
-    local g = seg.ghost
-    g.TOP:SetPoint("TOPLEFT", seg, "TOPLEFT"); g.TOP:SetPoint("TOPRIGHT", seg, "TOPRIGHT"); g.TOP:SetHeight(2)
-    g.BOTTOM:SetPoint("BOTTOMLEFT", seg, "BOTTOMLEFT"); g.BOTTOM:SetPoint("BOTTOMRIGHT", seg, "BOTTOMRIGHT"); g.BOTTOM:SetHeight(2)
-    g.LEFT:SetPoint("TOPLEFT", seg, "TOPLEFT"); g.LEFT:SetPoint("BOTTOMLEFT", seg, "BOTTOMLEFT"); g.LEFT:SetWidth(2)
-    g.RIGHT:SetPoint("TOPRIGHT", seg, "TOPRIGHT"); g.RIGHT:SetPoint("BOTTOMRIGHT", seg, "BOTTOMRIGHT"); g.RIGHT:SetWidth(2)
-    seg.fill = fill
-    seg.bg = segbg
+    -- The dot, centred in the slot.  Rim under core; PaintRail recolours both.
+    local rim = makeDisc(seg, 1)
+    rim:SetSize(dotSize, dotSize)
+    rim:SetPoint("CENTER", seg, "CENTER", 0, 0)
+    local core = makeDisc(seg, 2)
+    core:SetSize(math.max(2, dotSize - 2 * RAIL_RING_W), math.max(2, dotSize - 2 * RAIL_RING_W))
+    core:SetPoint("CENTER", seg, "CENTER", 0, 0)
+    seg.rim = rim
+    seg.core = core
     f.segs[i] = seg
   end
 
@@ -1038,7 +1106,7 @@ local function buildRail(viewer)
   -- fill hue + the DEMO.SYS terminal tint (SetTerminalMode).  The shard count
   -- still shows on the HudRow summary line.
 
-  -- ⚠ RECEDE vs. ANIMATION (H.paintBleed's header states the rule): recede is
+  -- ⚠ RECEDE vs. ANIMATION (H.paintCue's header states the rule): recede is
   -- baked into TEXTURE alpha, never frame alpha, because frame alpha belongs to
   -- the animation.  The rail as a whole DOES take frame alpha — it joins the
   -- board's common fate — so the cap flash and sparks live on a SIBLING frame,
@@ -1136,7 +1204,31 @@ end
 --------------------------------------------------------------------------------
 -- The painter
 --------------------------------------------------------------------------------
--- `info` comes from ns.HudState.RailInfo() — one computation, so the rail's fill
+-- Colour one dot into one of the three explicit states (B, M4.4).  filled = a
+-- solid disc in the mode hue; empty = a faint placeholder ring; incoming = a dim
+-- mode-hue ring (a shard a live cast will add — the hollow-estimate convention,
+-- so "projected" can never be mistaken for "held").  unknown = a grey ring when
+-- shards are unreadable — never a blank, because a blank is a CLAIM we can't make.
+local function paintDot(seg, state, col)
+  local rim, core = seg.rim, seg.core
+  if not (rim and core) then return end
+  if state == "filled" then
+    rim:SetVertexColor(col[1], col[2], col[3], 1)
+    core:SetVertexColor(col[1], col[2], col[3], 1)
+  elseif state == "incoming" then
+    rim:SetVertexColor(col[1], col[2], col[3], 0.55)
+    core:SetVertexColor(RAIL_HOLE[1], RAIL_HOLE[2], RAIL_HOLE[3], 1)
+  elseif state == "unknown" then
+    rim:SetVertexColor(RAIL_COL.UNKNOWN[1], RAIL_COL.UNKNOWN[2], RAIL_COL.UNKNOWN[3], 0.45)
+    core:SetVertexColor(RAIL_HOLE[1], RAIL_HOLE[2], RAIL_HOLE[3], 1)
+  else -- empty
+    rim:SetVertexColor(RAIL_RING[1], RAIL_RING[2], RAIL_RING[3], 0.85)
+    core:SetVertexColor(RAIL_HOLE[1], RAIL_HOLE[2], RAIL_HOLE[3], 1)
+  end
+  rim:Show(); core:Show()
+end
+
+-- `info` comes from ns.HudState.RailInfo() — one computation, so the rail's dots
 -- and the terminal's tint can never disagree about the mode.
 function H.PaintRail(info)
   local f = rail
@@ -1151,41 +1243,26 @@ function H.PaintRail(info)
   local col = RAIL_COL[key] or RAIL_COL.UNKNOWN
 
   local live = info.shards
-  local fill = info.fill or 0
+  local proj = info.projected
   for i = 1, cap do
     local seg = f.segs[i]
     if mode == nil then
-      -- UNREADABLE draws an explicit UNKNOWN, never an empty bar.  An empty bar
+      -- UNREADABLE draws explicit UNKNOWN rings, never empty dots.  An empty dot
       -- is a CLAIM — "you have no shards" — and we do not know that.
-      seg.bg:SetColorTexture(RAIL_COL.UNKNOWN[1], RAIL_COL.UNKNOWN[2], RAIL_COL.UNKNOWN[3], 0.30)
-      seg.fill:Hide()
-      for _, t in pairs(seg.ghost) do t:Hide() end
+      paintDot(seg, "unknown", col)
+    elseif live and i <= live then
+      paintDot(seg, "filled", col)
+    elseif info.isProjected and live and proj and proj > live and i > live and i <= proj then
+      -- The incoming dot: strictly ABOVE what we hold, and only while a cast in
+      -- flight ADDS shards.  A spend-side projection moves the mode, not the dots.
+      paintDot(seg, "incoming", col)
     else
-      seg.bg:SetColorTexture(RAIL_EMPTY[1], RAIL_EMPTY[2], RAIL_EMPTY[3], 0.85)
-      local frac = math.max(0, math.min(1, fill - (i - 1)))
-      seg.fill:SetColorTexture(col[1], col[2], col[3], 1)
-      -- Vertical: the fill rises from the segment's bottom, so its HEIGHT tracks
-      -- the fraction (the segment height was computed from the panel in buildRail).
-      seg.fill:SetHeight(math.max(0.001, (f.segH or RAIL_DEF_ICON) * frac))
-      seg.fill:SetShown(frac > 0)
-      -- The incoming (ghost) segment: strictly ABOVE what we actually hold, and
-      -- only while a cast is in flight that ADDS shards.  A spend-side
-      -- projection moves the mode, not the head.
-      local ghostOn = info.isProjected and live and info.projected
-        and info.projected > live and i > live and i <= info.projected
-      for _, t in pairs(seg.ghost) do
-        if ghostOn then
-          t:SetColorTexture(col[1], col[2], col[3], 0.85)
-          t:Show()
-        else
-          t:Hide()
-        end
-      end
+      paintDot(seg, "empty", col)
     end
   end
 
-  -- The mode label was retired (M4.1); mode reads via the fill hue + terminal
-  -- tint (SetTerminalMode, at the tail).  `col`/`key` still drive the fills above.
+  -- The mode label was retired (M4.1); mode reads via the dot hue + terminal
+  -- tint (SetTerminalMode, at the tail).  `col`/`key` still drive the dots above.
 
   -- The cap EDGE, once.  Counted whether or not the glitter was allowed to play,
   -- so `hud status` can show the throttle doing its job rather than implying the

@@ -184,11 +184,16 @@ local function renderHorizontal(inst)
         parts[#parts + 1] = DIM .. "+" .. remaining .. "|r"
         break
       end
-      -- The current step brightens ONLY when the wall is down (inst.ready); until
-      -- prereqs are met the whole strip stays dim, so a brightened [E] never reads
-      -- as "start now" while you should be building to 5 shards (feedback
-      -- 2026-07-23).  A count draws as repeated cells ([R]-[R]).
-      local col = (inst.ready and i == cur) and BRIGHT or DIM
+      -- The current step brightens.  The dim-until-ready gate (inst.ready, the
+      -- prereq wall) only bites while PRIMED — i.e. before the sequence has
+      -- started, when a bright [E] would wrongly read "start now" during the
+      -- pre-pull build to 5 shards.  Once un-primed (the drain has begun) the
+      -- current step ALWAYS brightens (C1, M4.4): the old `inst.ready` gate stayed
+      -- wired mid-fight, so casting the opener's step 1 dropped shards below the
+      -- 5-shard prereq, flipped ready=false, and dimmed the whole strip — the new
+      -- current step never lit.  A count draws as repeated cells ([R]-[R]).
+      local lit = (i == cur) and (inst.primed == false or inst.ready)
+      local col = lit and BRIGHT or DIM
       local cell = col .. cellText(s) .. "|r"
       for _ = 1, (s.count or 1) do parts[#parts + 1] = cell end
       shown = shown + 1
@@ -314,6 +319,48 @@ function QueueMeta:playPop(text)
   pop.ag:Play()
 end
 
+-- C2 (M4.4): a "casting…" shimmer on the CURRENT step when ITS cast STARTS —
+-- distinct from playPop's advance rise (this pulses in place, no translation).
+-- Only fires when the started spell matches the current step, so a cast of an
+-- unrelated spell doesn't shimmer.  A STOP without a SUCCEEDED (fizzle / interrupt)
+-- clears it via clearCastStart.  Shares pop's slot above the strip — the two never
+-- fire together (shimmer on START, pop on the SUCCEEDED advance).
+function QueueMeta:playCastStart(spellID)
+  local f = self.frame
+  if not (f and self.orient == "horizontal" and f.strip and self.armed) then return end
+  if type(spellID) ~= "number" then return end
+  local cur
+  for i = self.cursor, #self.steps do
+    local s = self.steps[i]
+    if not s.consumed and not stepSkipped(self, s) then cur = s; break end
+  end
+  if not (cur and (cur.spell == spellID or cur.alt == spellID)) then return end
+  local sh = f.shimmer
+  if not sh then
+    sh = f:CreateFontString(nil, "OVERLAY")
+    ns.SetFont(sh, 16, "OUTLINE")
+    sh:SetJustifyH("CENTER")
+    sh:SetPoint("BOTTOM", f.strip, "TOP", 0, 2)
+    local ag = sh:CreateAnimationGroup()
+    ag:SetLooping("BOUNCE")
+    local a = ag:CreateAnimation("Alpha")
+    a:SetFromAlpha(0.35); a:SetToAlpha(1); a:SetDuration(0.25)
+    sh.ag = ag
+    f.shimmer = sh
+  end
+  sh:SetTextColor(TERM[1], TERM[2], TERM[3])
+  sh:SetText(cellText(cur))
+  sh.ag:Stop()
+  sh:SetAlpha(1)
+  sh:Show()
+  sh.ag:Play()
+end
+
+function QueueMeta:clearCastStart()
+  local sh = self.frame and self.frame.shimmer
+  if sh then sh.ag:Stop(); sh:Hide() end
+end
+
 -- A press landed.  Returns true if it advanced the queue (matched a step),
 -- false if the cast wasn't in the script.  DROP-THROUGH: matching a later step
 -- consumes every earlier un-pressed one.
@@ -335,6 +382,7 @@ function QueueMeta:Advance(spellID)
     local s = self.steps[k]
     if not s.consumed and (s.spell == spellID or s.alt == spellID) then
       for j = self.cursor, k - 1 do self.steps[j].consumed = true end
+      self:clearCastStart()         -- the shimmer gives way to the advance pop
       self:playPop(cellText(s))     -- the pressed key rises + fades before the redraw
       s.count = (s.count or 1) - 1
       if s.count <= 0 then s.consumed = true end

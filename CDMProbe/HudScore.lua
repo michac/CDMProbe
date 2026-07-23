@@ -141,7 +141,12 @@ function Sc.For(key, e)
 
   local id = liveID
   local R = {}
-  local out = { reasons = R, candidate = false, cadence = info.cadence }
+  local out = { reasons = R, candidate = false, cadence = info.cadence,
+                -- A3 (M4.4) — the burst-emphasis bit rides through to the cue bar
+                -- so Tyrant draws the widest bar regardless of level (nil for all
+                -- else).  A DATA field on the ability, never "goGate" (which is
+                -- Tyrant + Dreadstalkers) — feedback 5 wants Tyrant specifically.
+                emphasis = info.emphasis }
   -- Say so on the row when the thing being scored isn't the thing underneath.
   if liveID ~= base then
     R[#R + 1] = string.format("now %s", ns.SpellName(liveID) or tostring(liveID))
@@ -307,7 +312,7 @@ function Sc.For(key, e)
     out.level = Sc.LEVELS.AVAILABLE
     -- M4.1 — JUDGE-READY.  We reached here past the NEVER gate, so cdReady and
     -- gateMet both hold: the ability is OTHERWISE up (Implosion off cooldown) and
-    -- only its true gate (imp count) is secret.  This lights the bleed cyan
+    -- only its true gate (imp count) is secret.  This lights the cue bar cyan
     -- "ready, your call" instead of drawing nothing — the one AVAILABLE that
     -- shows.  Plain AVAILABLE (utility, held HoG, overcap) stays dark.
     out.judgeReady = true

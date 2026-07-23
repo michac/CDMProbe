@@ -418,6 +418,18 @@ local function transformedItem()
   return nil
 end
 
+-- The icon item a CAST spellID belongs to (D, M4.4 — the cast-start flash).  A
+-- direct match first; failing that, an override cast (Ruination for HoG) resolves
+-- back to the base icon it landed on.  nil when the spell isn't drawn.
+local function castItemFor(spellID)
+  local item = iconItemFor(spellID)
+  if item then return item end
+  for base, over in pairs(S.override) do
+    if over == spellID then return iconItemFor(base) end
+  end
+  return nil
+end
+
 -- Re-evaluate every proc rule from current presence + override + shard state.
 -- Idempotent, so it's safe to call from any edge.
 function S.RefreshGlows()
@@ -521,7 +533,7 @@ end
 --     ROTATION-eligible, cleared when it stops.  This is what LATE is measured
 --     from, and it is an OBSERVED timestamp, not an estimate — which is exactly
 --     why LATE needs no napkin and can be trusted where the countdown can't.
---   * the dot itself — one SetDot per icon item, so the scorer never touches a
+--   * the dot itself — one SetCue per icon item, so the scorer never touches a
 --     frame.
 -- The LIVE identity of a registry entry, as a name.  ONE definition, because
 -- naming the BASE here is precisely what printed "Grimoire: Fel Ravager — use on
@@ -644,13 +656,15 @@ function S.Recompute()
         S.score[key] = sc
         -- M4.1 — the 4th arg is now `judgeReady` (was the B4 hollow flag, retired
         -- with the disc): a judgeable=false ability that is otherwise up (Implosion
-        -- off cooldown) lights the bleed cyan "ready, your call".  The B4 estimate
+        -- off cooldown) lights the cue bar cyan "ready, your call".  The B4 estimate
         -- marker now rides the debug row's `~est` text only.
         -- SOON is a treatment on NEVER, never a level of its own: it brightens
         -- and counts down but claims nothing about pressability.
-        pcall(ns.HudChrome.SetDot, e.item, e.viewer,
+        -- The 5th arg is `emphasis` (A3, M4.4) — "burst" makes Tyrant's cue bar
+        -- the widest on the board regardless of level.
+        pcall(ns.HudChrome.SetCue, e.item, e.viewer,
           (sc.soon and sc.level == ns.HudScore.LEVELS.NEVER) and "SOON" or sc.level,
-          sc.judgeReady)
+          sc.judgeReady, sc.emphasis)
       else
         -- Losing a dot is a transition too, and a LOUD one: it is what an
         -- unrecognised override looks like (HudScore returns nil rather than
@@ -662,7 +676,7 @@ function S.Recompute()
         end
         S.score[key] = nil
         S.candidateSince[key] = nil
-        pcall(ns.HudChrome.SetDot, e.item, e.viewer, nil)
+        pcall(ns.HudChrome.SetCue, e.item, e.viewer, nil)
       end
     end
   end
@@ -996,6 +1010,18 @@ ev:SetScript("OnEvent", function(_, event, a1, a2, a3)
   elseif event == "UNIT_SPELLCAST_START" then
     -- (unit, castGUID, spellID) — RegisterUnitEvent already filters to player.
     pcall(beginCast, a3)
+    -- C2 (M4.4) — the sequence pane's start-side shimmer, the sibling of the
+    -- SUCCEEDED OnCast route below.  Ownership tags keep only the armed one lit.
+    if ns.HudOpener then pcall(ns.HudOpener.OnCastStart, a3) end
+    if ns.HudBurst then pcall(ns.HudBurst.OnCastStart, a3) end
+    -- D (M4.4) — a quiet cast-start flash beside the CASTING icon.  START fires
+    -- only for cast-time spells (an instant fires SUCCEEDED alone), so gating on
+    -- this event already scopes D to cast-time abilities.  Resolve the (possibly
+    -- overridden) cast id back to the icon it landed on.
+    if type(a3) == "number" and not ns.IsSecret(a3) then
+      local item = castItemFor(a3)
+      if item then pcall(ns.HudChrome.CastFlash, item) end
+    end
   elseif event == "UNIT_SPELLCAST_SUCCEEDED" or event == "UNIT_SPELLCAST_STOP"
       or event == "UNIT_SPELLCAST_INTERRUPTED" then
     -- M3c-c2 — a SUCCEEDED cast advances the opener queue (STOP/INTERRUPTED do
@@ -1007,6 +1033,10 @@ ev:SetScript("OnEvent", function(_, event, a1, a2, a3)
       -- ownership tags (HudPane) keep only the armed one advancing.
       if ns.HudBurst then pcall(ns.HudBurst.OnCast, a3) end
     end
+    -- C2 (M4.4) — the cast is over (landed, stopped or interrupted), so the
+    -- start-side "casting…" shimmer has no business outliving it.  A SUCCEEDED
+    -- already gave way to the advance pop; a fizzle just clears the shimmer.
+    if ns.HudPane then pcall(ns.HudPane.ClearCastStart) end
     -- The projection is retired by ANY end-of-cast, however it ended.  A cast
     -- that was interrupted spent nothing and a cast that landed has already
     -- moved the live counter, so in both cases the ground truth is now the
