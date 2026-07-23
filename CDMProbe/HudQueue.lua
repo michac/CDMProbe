@@ -150,25 +150,45 @@ end
 --------------------------------------------------------------------------------
 -- Horizontal render — one colour-coded strip
 --------------------------------------------------------------------------------
+-- A step is SKIPPED from the strip when it is OPTIONAL and its ability is on
+-- cooldown — so a 2-min Grimoire (Imp Lord) never nags as "press this" on an
+-- off-Tyrant cycle.  It reappears when it comes off cooldown.  Readiness comes from
+-- the consumer via inst.stepReadyFn (nil ⇒ never skip).
+local function stepSkipped(inst, s)
+  return s.optional and inst.stepReadyFn and s.spell and not inst.stepReadyFn(s.spell)
+end
+
 local function renderHorizontal(inst)
-  inst.frame.header:SetText(inst.header or "")
+  -- The hosting pane draws the header (M4.3 v2 — over the prereqs); only the
+  -- standalone above-panel widget draws its own.
+  if not inst.host then inst.frame.header:SetText(inst.header or "") end
+  -- Effective current step = first non-consumed, non-skipped step, so the bright
+  -- "now" highlight lands on a real press, never on a skipped optional one.
+  local cur
+  for i = inst.cursor, #inst.steps do
+    local s = inst.steps[i]
+    if not s.consumed and not stepSkipped(inst, s) then cur = i; break end
+  end
   local parts = {}
   local shown = 0
   for i = inst.cursor, #inst.steps do
     local s = inst.steps[i]
-    if not s.consumed then
+    if not s.consumed and not stepSkipped(inst, s) then
       if shown >= MAX_STEPS and i < #inst.steps then
         local remaining = 0
-        for j = i, #inst.steps do if not inst.steps[j].consumed then remaining = remaining + 1 end end
+        for j = i, #inst.steps do
+          if not inst.steps[j].consumed and not stepSkipped(inst, inst.steps[j]) then
+            remaining = remaining + 1
+          end
+        end
         parts[#parts + 1] = DIM .. "+" .. remaining .. "|r"
         break
       end
       -- The current step brightens ONLY when the wall is down (inst.ready); until
       -- prereqs are met the whole strip stays dim, so a brightened [E] never reads
       -- as "start now" while you should be building to 5 shards (feedback
-      -- 2026-07-23).  Notes ("t~3s"/"AoE") are dropped — too long.  A count draws
-      -- as repeated cells ([R]-[R]), so "two presses left" reads at a glance.
-      local col = (inst.ready and i == inst.cursor) and BRIGHT or DIM
+      -- 2026-07-23).  A count draws as repeated cells ([R]-[R]).
+      local col = (inst.ready and i == cur) and BRIGHT or DIM
       local cell = col .. cellText(s) .. "|r"
       for _ = 1, (s.count or 1) do parts[#parts + 1] = cell end
       shown = shown + 1
@@ -257,9 +277,10 @@ end
 -- stays fully dim (de-emphasised — "keep building"); when true the current step
 -- brightens ("go").  Re-renders only on a change.
 function QueueMeta:SetReady(v)
-  local nv = v and true or false
-  if self.ready == nv then return end
-  self.ready = nv
+  -- Always re-render (not just on a ready change): the consumer calls this every
+  -- prereq refresh, which is exactly when an optional step's cooldown status can
+  -- have changed, and stepSkipped needs a fresh pass to add/drop it.
+  self.ready = v and true or false
   if self.armed then render(self) end
 end
 

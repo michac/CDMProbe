@@ -95,6 +95,15 @@ ns.SpecIDs = {
 
 local S = ns.SpecIDs
 
+-- Keybind-resolution aliases.  A spell whose CDM/cast id differs from the id that
+-- sits on the action bar won't resolve a keybind under its own id — Imp Lord is
+-- the case (cast 1276452 vs talent entry 136726).  HudBinds.Get falls back to the
+-- alias so the icon + sequence show the key either way.  Bidirectional.
+ns.SpecBindAlias = {
+  [1276452] = 136726,
+  [136726]  = 1276452,
+}
+
 -- The Soul Shard cap.  Used by the overcap guard: a generator that would push
 -- past this stops being a ROTATION call even when its proc is genuinely up.
 ns.SHARD_CAP = 5

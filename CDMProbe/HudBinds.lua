@@ -169,7 +169,12 @@ function B.Get(spellID)
   -- Never index with a Secret Value (that taints); an unreadable ID is simply
   -- an unbound one as far as the chrome is concerned.
   if type(spellID) ~= "number" or ns.IsSecret(spellID) then return nil end
-  return B.map[spellID]
+  local k = B.map[spellID]
+  if k then return k end
+  -- Fall back to a known alias id (e.g. Imp Lord cast 1276452 ↔ talent 136726):
+  -- the bar may hold the other id than the one the CDM tracks.
+  local alias = ns.SpecBindAlias and ns.SpecBindAlias[spellID]
+  return (alias and B.map[alias]) or nil
 end
 
 -- Resolve for an ITEM rather than a bare spellID — the finding-3 fix (v0.7.0).

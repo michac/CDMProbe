@@ -125,20 +125,20 @@ local STACK_COL    = { 1.00, 0.86, 0.35 }   -- bright gold; must beat the icon a
 --   SOON     — yellow, gentle alpha breathe
 --   ROTATION — green, steady
 --   LATE     — green, slow alpha breathe (brighter) — overdue
-local BLEED_SIZE  = 1.18   -- shadow size as a multiple of the icon (soft spread)
-local BLEED_OFF   = 0.52   -- horizontal offset toward the bleed side, × icon width
-local BLEED_DROP  = 0.12   -- downward offset, × icon height (light from upper-left)
-H.ROW_OFFSET      = 48     -- where HudRow anchors its (debug-only) text, past it
--- The Blizzard Cooldown-Manager proc-glow atlas is a soft square — perfect shadow
--- shape.  Tinted per level via SetVertexColor; falls back to a flat WHITE8X8
--- square if the atlas is unavailable on this client.
-local BLEED_ATLAS = "UI-CooldownManager-VisualAlert-Glow"
+--
+-- SHAPE (feedback 2026-07-23 v2): NOT a full square (it read misaligned + boxy).
+-- It is a THICK vertical BAR pinned to the icon's outer EDGE — only the "1,1→1,0"
+-- side of the icon square — spanning the icon's exact height.  Anchored to the
+-- icon corners so it lines up by construction, and it fades outward (solid at the
+-- edge → soft outward) for the drop-shadow feel.
+local BLEED_THICK = 14     -- bar thickness in px ("thicker" per feedback)
+H.ROW_OFFSET      = BLEED_THICK + 30   -- HudRow debug text sits past the bar
 
 -- c — level hue · a — alpha · pulse — slow alpha breathe period (s); nil = steady.
 local BLEED = {
-  JUDGE    = { c = { 0.27, 0.88, 1.00 }, a = 0.75 },
-  SOON     = { c = { 1.00, 0.86, 0.15 }, a = 0.70, pulse = 0.85 },
-  ROTATION = { c = { 0.30, 1.00, 0.48 }, a = 0.90 },
+  JUDGE    = { c = { 0.27, 0.88, 1.00 }, a = 0.85 },
+  SOON     = { c = { 1.00, 0.86, 0.15 }, a = 0.80, pulse = 0.85 },
+  ROTATION = { c = { 0.30, 1.00, 0.48 }, a = 1.00 },
   LATE     = { c = { 0.42, 1.00, 0.58 }, a = 1.00, pulse = 1.3 },
 }
 
@@ -328,20 +328,15 @@ end
 --------------------------------------------------------------------------------
 -- The bleed — §0.5.8.7, the actionability mark (a coloured drop shadow, M4.3)
 --------------------------------------------------------------------------------
--- The shadow is a TEXTURE on the item frame at BACKGROUND (behind the icon art),
--- not a child frame — a child frame always renders ABOVE its parent's textures, so
--- it could never sit behind the icon.  Its own AnimationGroup drives the breathe.
+-- A texture on o.frame (our overlay, SetAllPoints(item)).  It lives just OUTSIDE
+-- the icon edge, so it never covers the art and needs no behind-the-icon trickery.
 local function ensureBleed(o, item)
   if o.bleed then return o.bleed end
-  local t = item:CreateTexture(nil, "BACKGROUND", nil, -8)
-  -- Soft square from Blizzard's own CDM proc-glow atlas; a flat WHITE8X8 square is
-  -- the fallback if the atlas isn't on this client (a hard-edged shadow, still a
-  -- readable coloured shape — never a throw).
-  t.usedAtlas = pcall(function() t:SetAtlas(BLEED_ATLAS, false) end)
-  if not t.usedAtlas then t:SetTexture("Interface\\Buttons\\WHITE8X8") end
+  local t = o.frame:CreateTexture(nil, "OVERLAY")
+  t:SetTexture("Interface\\Buttons\\WHITE8X8")
 
   -- ONE alpha breathe group (SOON / LATE).  Region alpha only, so it never fights
-  -- the recede baked into the vertex-colour alpha.
+  -- the recede baked into the colour alpha.
   local ag = t:CreateAnimationGroup()
   local a = ag:CreateAnimation("Alpha")
   a:SetFromAlpha(0.5)
@@ -354,23 +349,27 @@ local function ensureBleed(o, item)
   return t
 end
 
--- Size + position the shadow: an icon-sized soft square, offset toward the bleed
--- side and slightly down (light from the upper-left).  Scales with the live icon
--- so it tracks whatever size the player set the CDM to in Edit Mode.
+-- Pin the bar to the icon's OUTER edge, the icon's EXACT height, BLEED_THICK wide,
+-- extending outward.  Anchoring to the icon corners is what makes it line up (the
+-- misalignment was a CENTER-offset square guessing the size).
 local function anchorBleed(o)
   local t, item = o.bleed, o.item
   if not (t and item) then return end
-  local w = (ns.HasMethod(item, "GetWidth") and item:GetWidth()) or 32
-  local h = (ns.HasMethod(item, "GetHeight") and item:GetHeight()) or 32
   t:ClearAllPoints()
-  t:SetSize(w * BLEED_SIZE, h * BLEED_SIZE)
-  local dx = (o.side == "LEFT") and -(w * BLEED_OFF) or (w * BLEED_OFF)
-  t:SetPoint("CENTER", item, "CENTER", dx, -h * BLEED_DROP)
+  if o.side == "LEFT" then
+    t:SetPoint("TOPRIGHT", item, "TOPLEFT", 0, 0)
+    t:SetPoint("BOTTOMRIGHT", item, "BOTTOMLEFT", 0, 0)
+  else
+    t:SetPoint("TOPLEFT", item, "TOPRIGHT", 0, 0)
+    t:SetPoint("BOTTOMLEFT", item, "BOTTOMRIGHT", 0, 0)
+  end
+  t:SetWidth(BLEED_THICK)
   t.anchoredSide = o.side
 end
 
--- The keybind hint sits just off the icon on the shadow side, vertically centred.
-local KEY_GAP = 5
+-- The keybind hint sits just PAST the shadow bar on the shadow side, vertically
+-- centred (BLEED_THICK + a small gap), so the two don't overlap.
+local KEY_GAP = BLEED_THICK + 4
 local function anchorKey(o)
   local k = o.key
   if not k then return end
@@ -384,20 +383,28 @@ local function anchorKey(o)
   end
 end
 
--- Repaint at the current level x recede.  Recede is baked into the VERTEX-colour
--- alpha (atlas) or the texture-colour alpha (fallback), never the region alpha —
--- region alpha belongs to the breathe, and sharing the channel would kill it.
+-- Repaint at the current level x recede.  Recede is baked into the colour alpha,
+-- never the region alpha — region alpha belongs to the breathe.  A horizontal
+-- gradient (solid at the icon edge → soft outward) gives the drop-shadow depth;
+-- pcall'd, falling back to a flat bar if SetGradient's shape differs on a client.
 function H.paintBleed(o)
   local t = o.bleed
   local spec = o.bleedLevel and BLEED[o.bleedLevel]
   if not (t and spec) then return end
   if t.anchoredSide ~= o.side then anchorBleed(o) end
-  local c, a = spec.c, spec.a * recede
-  if t.usedAtlas then
-    t:SetVertexColor(c[1], c[2], c[3], a)
-  else
-    t:SetColorTexture(c[1], c[2], c[3], a)
-  end
+  local c = spec.c
+  local a = spec.a * recede
+  local ok = pcall(function()
+    t:SetColorTexture(1, 1, 1, 1)
+    local solid = CreateColor(c[1], c[2], c[3], a)
+    local soft  = CreateColor(c[1], c[2], c[3], a * 0.35)
+    if o.side == "LEFT" then
+      t:SetGradient("HORIZONTAL", soft, solid)   -- solid at the icon (right) edge
+    else
+      t:SetGradient("HORIZONTAL", solid, soft)   -- solid at the icon (left) edge
+    end
+  end)
+  if not ok then t:SetColorTexture(c[1], c[2], c[3], a) end
 end
 
 -- level:      one of the score LEVELS ("NEVER"/"AVAILABLE"/"SOON"/"ROTATION"/

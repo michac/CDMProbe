@@ -45,7 +45,7 @@ local BRIGHT = "|cff" .. hex(TERM)
 local DIM    = "|cff" .. hex(TERM_DIM)
 local SEP    = DIM .. "  ·  |r"
 
-local PANE_W, PANE_H = 340, 48
+local PANE_W, PANE_H = 340, 60   -- 60: header + prereqs + strip (M4.3 v2)
 
 P.frame      = nil
 P.queue      = nil       -- the hosted HudQueue instance
@@ -65,6 +65,22 @@ local function savedPos()
   local p = ns.db and ns.db.hud and ns.db.hud.sequence
   if type(p) ~= "table" then p = { point = "CENTER", x = 0, y = 120 } end
   return p
+end
+
+-- Is a sequence step's ability off cooldown right now?  Used to skip optional
+-- steps (Imp Lord) that are on CD.  readyAt is set on a ready edge and cleared on
+-- cooldown-start (HudState), so non-nil ⇒ ready; a no-cooldown ability (resource-
+-- gated) is always "ready"; the napkin covers the pre-edge estimate.
+local function stepReady(spell)
+  if not spell then return true end
+  local St = ns.HudState
+  if St and St.readyAt and St.readyAt[spell] ~= nil then return true end
+  if ns.HudNapkin then
+    local r = ns.HudNapkin.Remaining(spell)
+    if r ~= nil and r <= 0 then return true end
+  end
+  if (ns.BaseCooldown and ns.BaseCooldown(spell) or 0) == 0 then return true end
+  return false
 end
 
 --------------------------------------------------------------------------------
@@ -103,16 +119,28 @@ function P.Ensure()
   content:SetAllPoints(f)
   P.content = content
 
-  -- Prereqs row at the TOP.  M4.1: JetBrains Mono (ns.SetFont) at 13 (was 10).
+  -- HEADER at the very TOP (M4.3 v2 — over the prereqs, not squeezed between them
+  -- and the strip).  The hosted queue's own header is suppressed (HudQueue checks
+  -- `host`), so this is the one header shown.
+  local hdr = content:CreateFontString(nil, "OVERLAY")
+  ns.SetFont(hdr, 13, "OUTLINE")
+  hdr:SetJustifyH("CENTER")
+  hdr:SetTextColor(TERM[1], TERM[2], TERM[3])
+  hdr:SetPoint("TOP", content, "TOP", 0, -2)
+  P.headerRow = hdr
+
+  -- Prereqs row BELOW the header.  JetBrains Mono (ns.SetFont) at 13.
   local pr = content:CreateFontString(nil, "OVERLAY")
   ns.SetFont(pr, 13, "OUTLINE")
   pr:SetJustifyH("CENTER")
-  pr:SetPoint("TOP", content, "TOP", 0, -2)
+  pr:SetPoint("TOP", hdr, "BOTTOM", 0, -3)
   P.prereqRow = pr
 
   -- The step strip: a hosted HudQueue mounted INSIDE the content (host arg).  The
   -- memo lives on `content`, so re-arm reuses the one instance.
   P.queue = ns.HudQueue.Ensure(content, "sequence", 0, "horizontal", content)
+  -- Teach the strip which steps are on cooldown so it can skip optional ones.
+  P.queue.stepReadyFn = stepReady
 
   -- Juice overlay — a one-shot alpha flash, above the content, never on an icon.
   -- Same discipline as H.Settle / fireGlitter: Stop() before Play() so a re-fire
@@ -238,6 +266,7 @@ function P.Arm(spec, prereqs, owner)
   P.Ensure()
   P.owner      = owner
   P.prereqSpec = prereqs
+  if P.headerRow then P.headerRow:SetText(spec and spec.header or "") end
   P.queue:Arm(spec)
   P.queue:SetPrimed(true)
   P.RefreshPrereqs()
@@ -289,6 +318,7 @@ function P.Dissolve(owner)
   P.prereqSpec = nil
   if P.queue then P.queue:Dissolve() end
   if P.prereqRow then P.prereqRow:SetText("") end
+  if P.headerRow then P.headerRow:SetText("") end
   if P.frame and P.locked then
     -- Let an in-flight completion flourish finish before hiding the frame.
     local wait = P.flourishUntil and (P.flourishUntil - GetTime()) or 0
@@ -314,7 +344,8 @@ end
 local function showPlaceholder()
   P.Ensure()
   P.prereqSpec = nil
-  P.prereqRow:SetText(DIM .. "SEQUENCE — drag to position, then /cdmp hud pane lock|r")
+  if P.headerRow then P.headerRow:SetText(BRIGHT .. "SEQUENCE|r") end
+  P.prereqRow:SetText(DIM .. "drag to position, then /cdmp hud pane lock|r")
   P.queue:Arm({ header = "SEQUENCE", steps = {
     { label = "step 1" }, { label = "step 2" }, { label = "step 3" } } })
   P.queue:SetPrimed(false)
