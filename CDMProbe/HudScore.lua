@@ -487,3 +487,52 @@ function Sc.Why(sc)
   if not sc or not sc.reasons or #sc.reasons == 0 then return "" end
   return table.concat(sc.reasons, " · ")
 end
+
+--------------------------------------------------------------------------------
+-- Stabilise — the CHURN gate (M4.6 §4.5b)
+--------------------------------------------------------------------------------
+-- Play-test 5, measured off the pull recorder: 2.25 dot transitions PER SECOND,
+-- with a mean "green dwell" of ~1.9s on Demonbolt and Hand of Gul'dan and 0.1s on
+-- Call Dreadstalkers.  Something was lit in 100% of samples, yet the player read
+-- the board as "nothing is green" — because the green never stayed on the SAME
+-- button for longer than a GCD.  `lit` counts how many dots are lit and is blind
+-- to churn, so a board thrashing at 2.25Hz scored identically to a calm one.
+--
+-- THE CAUSE is threshold chatter on the IN-FLIGHT SHARD PROJECTION.  Every cast
+-- walks the shard total across Hand of Gul'dan's `>=3` gate, and HoG and Demonbolt
+-- sit on opposite sides of it, so they trade the cue every cast:
+--
+--   Demonbolt        NEVER -> ROTATION ~est : cast in flight -> ~0 shards · core up
+--   Demonbolt        ROTATION -> NEVER      : spend mode — dump shards first
+--   Hand of Gul'dan  NEVER -> ROTATION      : shards 4>=3
+--   Hand of Gul'dan  ROTATION -> NEVER ~est : cast in flight -> ~1 shards · shards 1<3
+--
+-- THE RULE, and it is not a new one: **an ESTIMATE may not move the cue.**  The
+-- napkin already works this way ("an observed ready edge always wins; an expired
+-- estimate says 'should be up, unconfirmed' rather than promoting a dot").  The
+-- shard projection is just as much an estimate and was exempt from the doctrine by
+-- oversight.  So while a cast is in flight, a level DERIVED FROM THE PROJECTION
+-- may not change what the cue shows; the real count on landing decides.
+--
+-- Deliberately a PURE function of (previous painted level, previous projected-ness,
+-- new score) so busted can cover it — the paint seam in HudChrome owns frames and
+-- is untestable.  It gates the CUE only: `sc.level` is untouched, so the debug row,
+-- the transition log and `lit` all keep reporting the TRUE score.  The cue is a
+-- claim to the player; the log is a record for us, and only the claim is damped.
+--
+-- prevLevel     — the level the cue is currently PAINTED at (nil = nothing shown)
+-- prevProjected — whether that painted level was itself derived from a projection
+-- sc            — the fresh score
+-- returns       — the level the cue should paint
+function Sc.Stabilise(prevLevel, prevProjected, sc)
+  if not sc then return nil end
+  local lv = sc.level
+  -- Only a projection-derived score is damped, and only when it would CHANGE a
+  -- cue that was painted from a REAL reading.  Two consecutive projected frames
+  -- are allowed to move (a long cast that genuinely changes its mind), and the
+  -- first real reading after a cast lands always repaints.
+  if sc.projected and prevLevel and not prevProjected and lv ~= prevLevel then
+    return prevLevel
+  end
+  return lv
+end

@@ -236,6 +236,15 @@ ns.Spec = {
   -- `expect = false` — it only ever appears as an override.
   [388215]  = { group = "cc",  kind = "button", cadence = "utility", expect = false,
                 label = "Devour Magic" },
+  -- THE SAME DEFECT, A DIFFERENT PET — found by the first real `wowkb.cdmp check`
+  -- (play-test 5).  Singe Magic is the IMP's dispel and it overrides the Grimoire
+  -- button exactly as Devour Magic does for the Felhunter; the capture caught
+  -- `base=1276452 -> over=132411` four times plus a live divergence, and 132411
+  -- was mapped NOWHERE, so the button silently lost its dot.  Name confirmed off
+  -- wago DB2 SpellName @ 12.0.7.68256 (the static spell API 404s on pet spells).
+  -- `expect = false` — like Devour Magic, it only ever appears as an override.
+  [132411]  = { group = "cc",  kind = "button", cadence = "utility", expect = false,
+                label = "Singe Magic" },
   [1271802] = { group = "cc",  kind = "button", cadence = "utility", label = "Blight of Tongues" },
   [48020]   = { group = "mob", kind = "button", cadence = "utility", label = "Demonic Circle: Teleport" },
 
@@ -265,6 +274,22 @@ ns.Spec = {
 --                 overcap guard is the same rule expressed as a level.
 --   transform   — this proc arms a spell OVERRIDE; the override event is the
 --                 primary trigger and this presence edge only corroborates.
+-- M4.6 §4.7 — buttons that NEVER carry a cue of their own.
+-- The Grimoires are driven by the BURST SEQUENCE: the pane already says when to
+-- press them, so an independent cue is a second voice giving the same order out
+-- of step with the first — and because they are `discretion` buttons it was a
+-- CYAN "your call" cue arguing with a pane step that had already decided.
+-- ⚠ This is a suppression, not a settled design.  If we later decide that firing
+-- a Grimoire outside burst beats letting it idle a whole minute, this table is
+-- the thing to revisit — the scoring for these buttons is untouched and still
+-- correct, only the CUE is muted.  (Also: 132411 Singe Magic / 388215 Devour
+-- Magic override this same button; those are utilities and never cue anyway.)
+ns.SpecNoCue = {
+  [1276467]     = true,   -- Grimoire: Fel Ravager
+  [S.IMP_LORD]  = true,   -- Grimoire: Imp Lord
+  [136726]      = true,   -- Grimoire: Imp Lord (talent entry-id alias)
+}
+
 ns.SpecProcGlow = {
   [S.DEMONIC_CORE] = {
     target = S.DEMONBOLT, group = "proc", softenAbove = 4,

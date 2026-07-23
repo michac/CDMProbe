@@ -117,6 +117,39 @@ function B.Arm()
   -- advance it and the strip waits for the actual first summon to begin draining.
   ns.HudPane.Arm(spec, spec.prereqs, "burst")
   if ns.HudLog then ns.HudLog.Note("queue", "burst armed") end
+  B.Announce()
+end
+
+-- M4.6 §4.6, hint 1 of 2 — "BURST COMING" as CENTRE-SCREEN TEXT.
+-- The pane and the cue both live in peripheral vision; the whole point of this
+-- one is that it lands in the middle of the screen, once, at the moment the
+-- napkin's Tyrant clock says the window is opening.  ONE-SHOT per arm: B.Arm is
+-- already guarded by B.active, so a mode that flickers BURST cannot re-announce
+-- until the window has actually dissolved.
+--
+-- RaidNotice (not the floating-combat-text API) on purpose: CombatText_AddMessage
+-- lives in the loadable Blizzard_CombatText addon and is nil unless the player has
+-- Blizzard's floating text enabled, so it would be a silent no-op for some setups.
+-- RaidNotice_AddMessage is always present.  pcall'd anyway — a cosmetic hint may
+-- never be the thing that breaks a rotation frame.
+function B.Announce()
+  if ns.db and ns.db.hud and ns.db.hud.burstCall == false then return end
+  pcall(function()
+    RaidNotice_AddMessage(RaidWarningFrame, "BURST COMING",
+      ChatTypeInfo and ChatTypeInfo["RAID_WARNING"] or { r = 1, g = 0.86, b = 0.15 })
+  end)
+end
+
+-- M4.6 §4.6, hint 2 of 2 — is the window open but the SHARD wall still up?
+-- Drives the "SHARDS!" call-out HudRow prints beside Tyrant.  True only while the
+-- window is armed and Tyrant has NOT yet been cast (after the cast you are
+-- spending, so nagging for shards would be backwards), and only when the count is
+-- READABLE and short — unreadable shards say nothing rather than guessing.
+function B.NeedShards()
+  if not (B.active and not B.burning) then return false end
+  local held = ns.HudState and ns.HudState.shards
+  if type(held) ~= "number" then return false end
+  return held < (ns.SHARD_CAP or 5)
 end
 
 -- Driven off the MODE, from S.PaintRail's tail.  Arms on entering BURST, dissolves

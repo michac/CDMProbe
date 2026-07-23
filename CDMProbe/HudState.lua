@@ -75,6 +75,12 @@ ns.HudState = {
   score          = {},    -- registry key -> the HudScore result, for the row
   candidateSince = {},    -- registry key -> GetTime() when it first became a
                           -- ROTATION candidate; cleared when it stops being one
+  -- M4.6 §4.5b — what the CUE is currently painted at, which is NOT always
+  -- `score[key].level`: Sc.Stabilise damps a change driven only by the in-flight
+  -- shard projection.  Kept separate on purpose — `score` stays the true reading
+  -- that the row and the log report, and this is the damped CLAIM on screen.
+  cueLevel       = {},    -- registry key -> the level the cue shows
+  cueProjected   = {},    -- registry key -> was that level projection-derived?
   readyAt        = {},    -- base spellID -> when readiness was established
   -- M3d — WHERE the current readiness boolean came from, mirroring the
   -- `lastEdge` idiom for presence.  "edge" = an observed alert, "seed" = an
@@ -662,9 +668,36 @@ function S.Recompute()
         -- and counts down but claims nothing about pressability.
         -- The 5th arg is `emphasis` (A3, M4.4) — "burst" makes Tyrant's cue bar
         -- the widest on the board regardless of level.
+        -- M4.6 §4.5b — the CHURN gate.  Sc.Stabilise damps a cue change that is
+        -- driven only by the in-flight shard PROJECTION; `sc.level` itself is
+        -- left alone, so the row / log / `lit` still report the true score.
+        local painted = ns.HudScore.Stabilise(S.cueLevel[key], S.cueProjected[key], sc)
+        S.cueLevel[key]     = painted
+        S.cueProjected[key] = sc.projected or false
+        -- M4.6 §4.7 — Grimoire NEVER carries a cue.  It is driven by the burst
+        -- sequence (the pane tells you when), so an independent cue on it is a
+        -- second voice giving the same order out of step with the first.
+        -- ⚠ Open question, not a closed one: if we later decide firing it outside
+        -- burst beats letting it idle, this suppression is what to revisit.
+        local live = S.LiveID(e)
+        local suppressed = live and ns.SpecNoCue and ns.SpecNoCue[live]
+        local paintKey = (sc.soon and painted == ns.HudScore.LEVELS.NEVER)
+          and "SOON" or painted
+        -- M4.6 §4.6 — TYRANT IS YELLOW UNTIL THE GO IS REAL.  Green on the burst
+        -- button is the one signal that should mean "press it NOW", so it is held
+        -- back until the window is genuinely takeable: Tyrant pressable AND shards
+        -- capped.  Short of that it stays yellow — "coming, not yet" — while the
+        -- burst EMPHASIS keeps it the loudest box on the board either way, so the
+        -- hue change costs no prominence.  Unreadable shards read as NOT full: a
+        -- green we cannot justify is the one we must not draw.
+        if live and ns.SpecIDs and live == ns.SpecIDs.TYRANT
+           and paintKey and paintKey ~= "SOON" then
+          local held = S.shards
+          local full = (type(held) == "number") and held >= (ns.SHARD_CAP or 5)
+          if not full then paintKey = "SOON" end
+        end
         pcall(ns.HudChrome.SetCue, e.item, e.viewer,
-          (sc.soon and sc.level == ns.HudScore.LEVELS.NEVER) and "SOON" or sc.level,
-          sc.judgeReady, sc.emphasis)
+          suppressed and nil or paintKey, sc.judgeReady, sc.emphasis)
       else
         -- Losing a dot is a transition too, and a LOUD one: it is what an
         -- unrecognised override looks like (HudScore returns nil rather than
@@ -676,6 +709,8 @@ function S.Recompute()
         end
         S.score[key] = nil
         S.candidateSince[key] = nil
+        S.cueLevel[key] = nil
+        S.cueProjected[key] = nil
         pcall(ns.HudChrome.SetCue, e.item, e.viewer, nil)
       end
     end

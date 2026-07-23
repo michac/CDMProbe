@@ -130,3 +130,57 @@ describe("HudScore.For", function()
     assert.equals("ROTATION", ok.level)
   end)
 end)
+
+--------------------------------------------------------------------------------
+-- Sc.Stabilise — the churn gate (M4.6 §4.5b)
+--------------------------------------------------------------------------------
+-- Guards the fix for the play-test-5 defect: the cue traded between Demonbolt and
+-- Hand of Gul'dan every cast because the in-flight shard PROJECTION walked the
+-- total back and forth across HoG's `>=3` gate.  The rule under test is "an
+-- estimate may not move the cue", the same rule the napkin already follows.
+describe("HudScore.Stabilise", function()
+  local Sc
+
+  before_each(function()
+    local ns = H.fresh()
+    H.load("HudScore.lua")
+    Sc = ns.HudScore
+  end)
+
+  local function sc(level, projected) return { level = level, projected = projected } end
+
+  it("holds the painted level when a PROJECTION would change it", function()
+    -- The exact observed flip: HoG painted ROTATION off a real reading, then a
+    -- cast in flight projects shards below its gate and would blank it.
+    assert.equals("ROTATION", Sc.Stabilise("ROTATION", false, sc("NEVER", true)))
+  end)
+
+  it("lets a REAL reading change the cue", function()
+    assert.equals("NEVER", Sc.Stabilise("ROTATION", false, sc("NEVER", false)))
+  end)
+
+  it("lets a projection paint when nothing is painted yet", function()
+    -- Damping a first paint would make the board LATE rather than calm.
+    assert.equals("ROTATION", Sc.Stabilise(nil, false, sc("ROTATION", true)))
+  end)
+
+  it("lets a projection move a level that was itself projected", function()
+    -- A long cast is allowed to change its mind; what may not happen is an
+    -- estimate overriding an observation.
+    assert.equals("NEVER", Sc.Stabilise("ROTATION", true, sc("NEVER", true)))
+  end)
+
+  it("repaints on the first real reading after the cast lands", function()
+    local held = Sc.Stabilise("ROTATION", false, sc("NEVER", true))
+    assert.equals("ROTATION", held)
+    assert.equals("NEVER", Sc.Stabilise(held, false, sc("NEVER", false)))
+  end)
+
+  it("is a no-op on an unchanged level, projected or not", function()
+    assert.equals("ROTATION", Sc.Stabilise("ROTATION", false, sc("ROTATION", true)))
+  end)
+
+  it("returns nil for no score", function()
+    assert.is_nil(Sc.Stabilise("ROTATION", false, nil))
+  end)
+end)

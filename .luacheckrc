@@ -25,6 +25,8 @@ stds.wow = {
     "CreateFrame", "hooksecurefunc", "GetTime", "InCombatLockdown",
     "UIParent", "CopyTable", "wipe", "issecretvalue", "issecrettable",
     "canaccessvalue", "GetSpellBaseCooldown", "CreateColor",
+    -- M4.6 §4.6 — the centre-screen "BURST COMING" call-out.
+    "RaidNotice_AddMessage", "RaidWarningFrame", "ChatTypeInfo",
     "DEFAULT_CHAT_FRAME", "GetMacroSpell", "GetMacroInfo",
     "GetBindingKey", "GetBindingText", "SecureButton_GetModifiedAttribute",
     "GetCVar", "GetCVarBool", "InterfaceOptions_AddCategory",

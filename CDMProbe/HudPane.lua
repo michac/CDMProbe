@@ -1,16 +1,24 @@
 -- HudPane.lua — the SEQUENCE PANE.  M4.
 --
 -- WHY IT IS ITS OWN FRAME.  The sequence helper (opener + burst) is
--- INSTRUCTIONAL and wants central vision — over the character, where the eyes
+-- INSTRUCTIONAL and wants CENTRAL vision, near the character where the eyes
 -- already are — but every other HUD surface is VIEWER-ANCHORED to the CDM column
 -- (HudChrome's terminal/rail, HudQueue's above-the-panel strip).  So the pane is
 -- the addon's FIRST UIParent-anchored frame: movable, drag-to-save, and NOT part
--- of Edit Mode (its own lock/unlock + a saved position is the only placement
--- path, by design — over-the-head is the whole point).
+-- of Edit Mode (its own lock/unlock + a saved position is the only placement path).
 --
--- WHAT IT IS.  A shared surface with two parts:
+-- ⚠ It defaults BELOW the character, not above (§4.1, play-test 5).  The original
+-- M4 build read "central vision" as "over the head" and put it there; that band is
+-- the busiest real estate on screen (nameplates, cast bars, floating combat text)
+-- and the pane competed with all of it.  See DEFAULT_POS below.
+--
+-- WHAT IT IS.  A WINDOW (§4.2) — a backing, a title bar and hairline separators,
+-- so the rows read as one object rather than free-floating text — holding:
+--   * a TITLE BAR carrying the header ("BURST" / "OPENER").
 --   * a PREREQS ROW (a FontString) — the pre-pull wall-down state ("Tyrant ·
---     Dreadstalkers · 5 shards"), each lit bright when met, dim when not.
+--     Dreadstalkers"), each lit bright when met, dim when not.
+--   * a SHARD DOT ROW (§4.3) — the `5 shards` prereq as SHARD_CAP dots rather
+--     than a word.  Hidden, never drawn empty, when shards are unreadable.
 --   * a hosted HUDQUEUE STRIP — the draining ghost of keybinds, mounted INSIDE
 --     the pane via HudQueue's new `host` arg.
 --
@@ -44,7 +52,24 @@ local BRIGHT = "|cff" .. hex(TERM)
 local DIM    = "|cff" .. hex(TERM_DIM)
 local SEP    = DIM .. "  ·  |r"
 
-local PANE_W, PANE_H = 340, 60   -- 60: header + prereqs + strip (M4.3 v2)
+-- M4.6 §4.2 — the pane is now a WINDOW: title bar, separators, a persistent
+-- backing.  Deliberately NOT Blizzard-frame ornate (no gold, no tiled borders) —
+-- just enough surface to read the four rows as ONE object rather than four
+-- free-floating strings over the world.
+-- Height grew from 60 to fit the title bar and the shard row (§4.3).
+local PANE_W, PANE_H = 340, 92
+local TITLE_H  = 18              -- title bar strip
+local PAD      = 6
+
+-- Window chrome palette — a dark translucent backing, one hairline rule weight.
+local WIN_BG    = { 0.05, 0.06, 0.09, 0.72 }
+local WIN_TITLE = { 0.10, 0.12, 0.17, 0.85 }
+local WIN_RULE  = { 0.45, 0.47, 0.52, 0.55 }
+
+-- Shard dots (§4.3) — the pane's `5 shards` prereq as a GRAPHIC, not text.
+local DOT_SIZE, DOT_GAP = 9, 5
+local DOT_FILLED = { 0.62, 0.40, 0.95 }   -- soul-shard violet
+local DOT_EMPTY  = { 0.28, 0.29, 0.34 }
 
 P.frame      = nil
 P.queue      = nil       -- the hosted HudQueue instance
@@ -58,11 +83,18 @@ P.hooks      = { onCorrect = nil, onMiss = nil, onComplete = nil }
 --------------------------------------------------------------------------------
 -- Saved position
 --------------------------------------------------------------------------------
--- Default OVER THE CHARACTER (UIParent CENTER, nudged up toward the head).  Read
--- defensively so a db written by an older build (no `sequence` key) still works.
+-- Default BELOW THE CHARACTER (§4.1, play-test 5).  This reverses the original
+-- M4 placement, and the reasoning that put it overhead is worth correcting rather
+-- than deleting: "over the character, where the eyes already are" is true of the
+-- CHARACTER, not of the space above them — overhead the pane competes with
+-- nameplates, cast bars and floating combat text, all of which live in that band
+-- and all of which move.  Below the character the band is quiet, still central,
+-- and reads on the same glance as the personal resource display.
+-- Read defensively so a db written by an older build (no `sequence` key) works.
+local DEFAULT_POS = { point = "CENTER", x = 0, y = -170 }
 local function savedPos()
   local p = ns.db and ns.db.hud and ns.db.hud.sequence
-  if type(p) ~= "table" then p = { point = "CENTER", x = 0, y = 120 } end
+  if type(p) ~= "table" then p = DEFAULT_POS end
   return p
 end
 
@@ -91,7 +123,8 @@ function P.Ensure()
   f:SetSize(PANE_W, PANE_H)
   f:SetFrameStrata("MEDIUM")
   local p = savedPos()
-  f:SetPoint(p.point or "CENTER", UIParent, p.point or "CENTER", p.x or 0, p.y or 120)
+  f:SetPoint(p.point or DEFAULT_POS.point, UIParent, p.point or DEFAULT_POS.point,
+    p.x or DEFAULT_POS.x, p.y or DEFAULT_POS.y)
   -- Drag-to-save, ported from the parked prototype (Resource.lua:153-158).  The
   -- StartMoving is gated on `not P.locked` so a locked pane is inert even though
   -- it stays movable/registered.
@@ -105,12 +138,44 @@ function P.Ensure()
     ns.db.hud.sequence = { point = point, x = x, y = y }
   end)
 
-  -- Backdrop: only shown while UNLOCKED, as a visible drag target.
+  -- ── Window chrome (§4.2) ───────────────────────────────────────────────────
+  -- PERSISTENT now, where the old backdrop only appeared while unlocked.  The
+  -- ask was "some background to bring it together"; the drag-target job it used
+  -- to do is taken over by the brighter `dragBg` below, so unlocking still reads
+  -- differently from locked.
   local bg = f:CreateTexture(nil, "BACKGROUND")
   bg:SetAllPoints(f)
-  bg:SetColorTexture(TERM_DIM[1] * 0.35, TERM_DIM[2] * 0.35, TERM_DIM[3] * 0.35, 0.55)
-  bg:Hide()
+  bg:SetColorTexture(unpack(WIN_BG))
   P.bg = bg
+
+  -- Title bar — a slightly lighter strip across the top, with a rule under it.
+  local title = f:CreateTexture(nil, "BACKGROUND", nil, 1)
+  title:SetPoint("TOPLEFT", f, "TOPLEFT", 0, 0)
+  title:SetPoint("TOPRIGHT", f, "TOPRIGHT", 0, 0)
+  title:SetHeight(TITLE_H)
+  title:SetColorTexture(unpack(WIN_TITLE))
+  P.titleBar = title
+
+  -- Hairline separators: under the title bar, and above the step strip.  One
+  -- weight, one colour — the "panel separators" ask, kept to the minimum that
+  -- still groups the rows.
+  local function rule(yOffAnchor, yOff)
+    local r = f:CreateTexture(nil, "BORDER")
+    r:SetPoint("TOPLEFT", f, "TOPLEFT", PAD, yOff)
+    r:SetPoint("TOPRIGHT", f, "TOPRIGHT", -PAD, yOff)
+    r:SetHeight(1)
+    r:SetColorTexture(unpack(WIN_RULE))
+    return r
+  end
+  P.ruleTop = rule(nil, -TITLE_H)
+  P.ruleMid = rule(nil, -(TITLE_H + 38))
+
+  -- The brighter drag wash — ONLY while unlocked, over the window backing.
+  local dragBg = f:CreateTexture(nil, "ARTWORK")
+  dragBg:SetAllPoints(f)
+  dragBg:SetColorTexture(TERM_DIM[1] * 0.35, TERM_DIM[2] * 0.35, TERM_DIM[3] * 0.35, 0.45)
+  dragBg:Hide()
+  P.dragBg = dragBg
 
   -- Content holder — a child so a miss can dim JUST the content, not the whole
   -- drag frame (the flash overlay lives outside it, so a dim never hides a flash).
@@ -121,19 +186,42 @@ function P.Ensure()
   -- HEADER at the very TOP (M4.3 v2 — over the prereqs, not squeezed between them
   -- and the strip).  The hosted queue's own header is suppressed (HudQueue checks
   -- `host`), so this is the one header shown.
+  -- The header now sits INSIDE the title bar (§4.2) and is left-aligned, the way
+  -- a window title reads, rather than centred over the content.
   local hdr = content:CreateFontString(nil, "OVERLAY")
-  ns.SetFont(hdr, 13, "OUTLINE")
-  hdr:SetJustifyH("CENTER")
+  ns.SetFont(hdr, 12, "OUTLINE")
+  hdr:SetJustifyH("LEFT")
   hdr:SetTextColor(TERM[1], TERM[2], TERM[3])
-  hdr:SetPoint("TOP", content, "TOP", 0, -2)
+  hdr:SetPoint("TOPLEFT", content, "TOPLEFT", PAD + 2, -4)
   P.headerRow = hdr
 
-  -- Prereqs row BELOW the header.  JetBrains Mono (ns.SetFont) at 13.
+  -- Prereqs row BELOW the title bar.  JetBrains Mono (ns.SetFont) at 13.
   local pr = content:CreateFontString(nil, "OVERLAY")
   ns.SetFont(pr, 13, "OUTLINE")
   pr:SetJustifyH("CENTER")
-  pr:SetPoint("TOP", hdr, "BOTTOM", 0, -3)
+  pr:SetPoint("TOP", content, "TOP", 0, -(TITLE_H + 4))
   P.prereqRow = pr
+
+  -- ── Shard dots (§4.3) ──────────────────────────────────────────────────────
+  -- The `5 shards` prereq as a graphic: SHARD_CAP dots, filled = held.  It lives
+  -- on its own row under the text prereqs so the text row keeps its centring
+  -- regardless of how many dots the spec asks for.
+  local dotRow = CreateFrame("Frame", nil, content)
+  dotRow:SetSize(1, DOT_SIZE)
+  dotRow:SetPoint("TOP", pr, "BOTTOM", 0, -4)
+  P.dotRow  = dotRow
+  P.dots    = {}
+  P.dotNeed = nil            -- how many the current prereq spec requires
+  local cap = ns.SHARD_CAP or 5
+  for i = 1, cap do
+    local d = dotRow:CreateTexture(nil, "OVERLAY")
+    d:SetSize(DOT_SIZE, DOT_SIZE)
+    d:SetPoint("LEFT", dotRow, "LEFT", (i - 1) * (DOT_SIZE + DOT_GAP), 0)
+    d:SetColorTexture(unpack(DOT_EMPTY))
+    P.dots[i] = d
+  end
+  dotRow:SetWidth(cap * DOT_SIZE + (cap - 1) * DOT_GAP)
+  dotRow:Hide()              -- shown only when a spec carries a shard prereq
 
   -- The step strip: a hosted HudQueue mounted INSIDE the content (host arg).  The
   -- memo lives on `content`, so re-arm reuses the one instance.
@@ -228,6 +316,26 @@ local function evalPrereq(p)
   return p.label or "?", false
 end
 
+-- §4.3 — paint the shard dot row.  `filled` = shards held; the dots BELOW the
+-- requirement stay dim so the row reads as "how far up the wall you are".
+-- Shards unreadable is NOT drawn as zero: an empty row would be a claim ("you
+-- have none") we cannot make, so the row hides instead — the same refusal the
+-- rail and the dot score already make elsewhere.
+function P.RefreshShardDots()
+  local row = P.dotRow
+  if not row then return end
+  if not P.dotNeed then row:Hide() return end
+  local held = ns.HudState and ns.HudState.shards
+  if type(held) ~= "number" then row:Hide() return end
+  for i, d in ipairs(P.dots) do
+    local c = (i <= held) and DOT_FILLED or DOT_EMPTY
+    -- A dot past the requirement that is still filled is fine (5/5 when 5 needed);
+    -- what matters is the first `need` dots being lit.
+    d:SetColorTexture(c[1], c[2], c[3], (i <= held) and 1 or 0.55)
+  end
+  row:Show()
+end
+
 function P.RefreshPrereqs()
   if not (P.frame and P.prereqRow) then return end
   local spec = P.prereqSpec
@@ -238,16 +346,25 @@ function P.RefreshPrereqs()
   end
   local parts = {}
   local allMet = true
+  local shardNeed = nil
   for _, p in ipairs(spec) do
     local label, met = evalPrereq(p)
     -- Feedback 2026-07-23: the sequence only "goes" once its REQUIRED prereqs are
     -- met (5 shards, Tyrant, Dreadstalkers).  An OPTIONAL prereq (Imp Lord) shows
     -- its state but does NOT gate readiness.
     if not met and not p.optional then allMet = false end
-    parts[#parts + 1] = (met and BRIGHT or DIM) .. label
-      .. (p.optional and DIM .. " (opt)" or "") .. "|r"
+    -- §4.3 — a shard prereq is rendered by the DOT ROW, not as a word.  It still
+    -- gates `allMet` exactly as before; only its rendering moved.
+    if p.shards then
+      shardNeed = p.shards
+    else
+      parts[#parts + 1] = (met and BRIGHT or DIM) .. label
+        .. (p.optional and DIM .. " (opt)" or "") .. "|r"
+    end
   end
   P.prereqRow:SetText(table.concat(parts, SEP))
+  P.dotNeed = shardNeed
+  P.RefreshShardDots()
   -- Drives the strip's emphasis: dim until ready, current step brightens when the
   -- wall is down (so a brightened [E] never says "start" while you should be
   -- building to 5 shards).
@@ -271,7 +388,7 @@ function P.Arm(spec, prereqs, owner)
   P.RefreshPrereqs()
   P.content:SetAlpha(1)
   P.frame:Show()
-  if not P.locked then P.bg:Show() end
+  if not P.locked then P.dragBg:Show() end
 end
 
 -- Is the pane armed (optionally: by a specific owner)?
@@ -324,6 +441,8 @@ function P.Dissolve(owner)
   if P.queue then P.queue:Dissolve() end
   if P.prereqRow then P.prereqRow:SetText("") end
   if P.headerRow then P.headerRow:SetText("") end
+  P.dotNeed = nil
+  if P.dotRow then P.dotRow:Hide() end
   if P.frame and P.locked then
     -- Let an in-flight completion flourish finish before hiding the frame.
     local wait = P.flourishUntil and (P.flourishUntil - GetTime()) or 0
@@ -365,12 +484,12 @@ function P.SetLocked(locked)
   P.locked = locked and true or false
   if P.locked then
     P.frame:EnableMouse(false)
-    P.bg:Hide()
+    P.dragBg:Hide()
     if P.owner == "placeholder" then P.Dissolve() end
     if not P.OwnedBy() then P.frame:Hide() end
   else
     P.frame:EnableMouse(true)
-    P.bg:Show()
+    P.dragBg:Show()
     P.frame:Show()
     if not P.OwnedBy() then showPlaceholder() end
   end

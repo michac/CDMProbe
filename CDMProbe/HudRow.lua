@@ -120,6 +120,16 @@ local function lineFor(key, e)
   -- words).  Return nil so the row hides and its bracket collapses.  `hud debug`
   -- restores the full reasoned rows below unchanged (the correctness view), and
   -- the buff-viewer PRESENT rows + the `lit` summary line are untouched.
+  -- M4.6 §4.6, hint 2 — "SHARDS!" beside TYRANT, in the space the debug row
+  -- normally occupies.  This is the ONE row that prints with `hud debug` off: the
+  -- burst window is open, the go-signal is sitting there yellow, and the single
+  -- thing standing between you and pressing it is the shard count.  It is a
+  -- call-out, not a reason line, so it is checked BEFORE the non-verbose return.
+  if ns.HudBurst and ns.HudBurst.NeedShards()
+     and ns.SpecIDs and (e.baseSpellID or e.spellID) == ns.SpecIDs.TYRANT then
+    return AMBER .. "SHARDS!|r"
+  end
+
   if ns.Hud.IsIconViewer(e.viewer) and not D.verbose then return nil end
 
   local parts = {}
@@ -305,11 +315,27 @@ function D.Refresh()
       if okRow then drawn = drawn + 1 end
     end
   end
-  local s = ensureSummary()
-  if s then
-    local ok, line = pcall(summaryLine)
-    s.text:SetText(ok and line or "")
-    s:Show()
+  -- M4.6 §4.8 — the `shards N/5  lit N` line is OFF the HUD by default.  Player
+  -- read it as debug information they never looked at, and they are right that it
+  -- is not a rotation cue: shards are already on the rail and in the pane's dot
+  -- row, and `lit` is instrumentation for US.
+  --
+  -- ⚠ It is MOVED, not deleted, and that distinction matters.  `lit` is the
+  -- STRICTNESS METER — the thing that tells us whether the rules are too loose —
+  -- and §4.5b is an open strictness defect, so deleting the readout while the
+  -- defect is open would remove the instrument we need to confirm the fix.  It
+  -- still draws under `hud debug`, and `hud dump` / `hud status` / `probe` all
+  -- carry it unconditionally.
+  local s = summary
+  if D.verbose then
+    s = ensureSummary()
+    if s then
+      local ok, line = pcall(summaryLine)
+      s.text:SetText(ok and line or "")
+      s:Show()
+    end
+  elseif s then
+    s:Hide()
   end
   return drawn
 end

@@ -137,18 +137,34 @@ local STACK_COL    = { 1.00, 0.86, 0.35 }   -- bright gold; must beat the icon a
 -- side of the icon square — spanning the icon's exact height.  Anchored to the
 -- icon corners so it lines up by construction, and it fades outward (solid at the
 -- edge → soft outward) for the drop-shadow feel.
-local CUE_MIN, CUE_BURST = 14, 30   -- min bar thickness; burst-emphasis override
--- Off the WIDEST possible bar (CUE_BURST), so the HudRow debug text never overlaps
--- a Tyrant cue bar even when it is at its widest.
-H.ROW_OFFSET = CUE_BURST + 30
+-- ── M4.6 §4.4 — THE CUE BOX (replaces the M4.3/M4.4 thickness bar) ───────────
+-- The working space is now a SQUARE THE SIZE OF THE ICON, sitting beside it.
+-- Priority is carried by how much of that box the colour FILLS, bottom-up:
+-- max priority fills the whole box, min fills about a quarter.  The box itself
+-- is never drawn — only the fill — so an empty box costs no ink.
+--
+-- WHY THE AXIS CHANGED.  The old bar carried priority in THICKNESS (14 -> 30px)
+-- against no reference, so "thicker" was only legible next to another cue.  A
+-- fill against a fixed square is self-referencing: one icon alone still tells you
+-- how much of its box is lit.  [X1] is preserved — fill height is a non-colour
+-- channel, so the signal survives a colourblind or dim-monitor read.
+--
+-- The keybind hint now sits SQUARE IN THE MIDDLE of that box and is allowed to
+-- overlap the fill (player call, §4.4) — the hint keeps its outline, so it stays
+-- legible on any fill level.
+local CUE_FILL = { JUDGE = 0.25, SOON = 0.45, ROTATION = 0.80, LATE = 1.00 }
+local CUE_BURST_FILL = 1.00   -- burst emphasis always fills the box (A3, Tyrant)
+-- The row text clears the whole box, since the box is icon-width now.
+H.CUE_BOX_PAD = 4
+H.ROW_OFFSET = 44
 
 -- c — level hue · a — alpha · pulse — slow alpha breathe period (s); nil = steady.
--- w — bar thickness in px; CUE_MIN is the floor, ROTATION/LATE widen (A2, M4.4).
+-- `fill` — fraction of the icon-sized box the colour occupies (§4.4).
 local CUE = {
-  JUDGE    = { c = { 0.27, 0.88, 1.00 }, a = 0.85,               w = CUE_MIN },
-  SOON     = { c = { 1.00, 0.86, 0.15 }, a = 0.80, pulse = 0.85, w = CUE_MIN },
-  ROTATION = { c = { 0.30, 1.00, 0.48 }, a = 1.00,               w = 22 },
-  LATE     = { c = { 0.42, 1.00, 0.58 }, a = 1.00, pulse = 1.3,  w = 24 },
+  JUDGE    = { c = { 0.27, 0.88, 1.00 }, a = 0.85,               fill = CUE_FILL.JUDGE },
+  SOON     = { c = { 1.00, 0.86, 0.15 }, a = 0.80, pulse = 0.85, fill = CUE_FILL.SOON },
+  ROTATION = { c = { 0.30, 1.00, 0.48 }, a = 1.00,               fill = CUE_FILL.ROTATION },
+  LATE     = { c = { 0.42, 1.00, 0.58 }, a = 1.00, pulse = 1.3,  fill = CUE_FILL.LATE },
 }
 
 -- Level -> word colour, for the DEBUG rows only (non-verbose draws no words).
@@ -358,37 +374,46 @@ local function ensureCue(o, item)
   return t
 end
 
--- Pin the bar to the icon's OUTER edge, the icon's EXACT height, extending outward.
--- Anchoring to the icon corners is what makes it line up (the misalignment was a
--- CENTER-offset square guessing the size).  WIDTH is set per-frame in paintCue,
--- since it varies by level (A2) and burst emphasis (A3) — not a constant any more.
+-- Pin the FILL inside an icon-sized box beside the icon.  The box is square and
+-- matches the icon's dimensions; the fill grows from its BOTTOM edge upward, so
+-- the level reads like a meter.  Anchoring to the icon's own corners is what keeps
+-- it aligned by construction (the M4.3 misalignment was a CENTER-offset square
+-- guessing the size — do not reintroduce that).
+--
+-- SIDE stays per-viewer (H.SideFor), not hard-right: the box mirrors to the icon's
+-- OUTER edge so it never lands between two icon columns.
 local function anchorCue(o)
   local t, item = o.cue, o.item
   if not (t and item) then return end
+  local w = (ns.HasMethod(item, "GetWidth") and item:GetWidth()) or 0
+  if w <= 0 then w = 28 end               -- pre-layout fallback; re-anchored later
   t:ClearAllPoints()
+  -- Bottom-anchored, so SetHeight() in paintCue grows the fill upward.
   if o.side == "LEFT" then
-    t:SetPoint("TOPRIGHT", item, "TOPLEFT", 0, 0)
     t:SetPoint("BOTTOMRIGHT", item, "BOTTOMLEFT", 0, 0)
   else
-    t:SetPoint("TOPLEFT", item, "TOPRIGHT", 0, 0)
     t:SetPoint("BOTTOMLEFT", item, "BOTTOMRIGHT", 0, 0)
   end
+  t:SetWidth(w)
+  t.boxW = w
   t.anchoredSide = o.side
 end
 
--- The keybind hint sits just PAST the cue bar on the cue side, vertically centred.
--- Off the WIDEST possible bar (CUE_BURST) so a wide Tyrant cue never runs under it.
-local KEY_GAP = CUE_BURST + 4
+-- The keybind hint sits SQUARE IN THE MIDDLE of the cue box (§4.4).  Overlapping
+-- the fill is explicitly fine — the hint carries an outline, so it stays readable
+-- at any fill level, and centring it means the eye finds the key in the same spot
+-- on every icon instead of tracking a bar's outer edge.
 local function anchorKey(o)
   local k = o.key
-  if not k then return end
+  if not (k and o.item) then return end
+  local w = (ns.HasMethod(o.item, "GetWidth") and o.item:GetWidth()) or 28
+  if w <= 0 then w = 28 end
   k:ClearAllPoints()
+  k:SetJustifyH("CENTER")
   if o.side == "LEFT" then
-    k:SetPoint("RIGHT", o.item, "LEFT", -KEY_GAP, 0)
-    k:SetJustifyH("RIGHT")
+    k:SetPoint("CENTER", o.item, "LEFT", -w / 2, 0)
   else
-    k:SetPoint("LEFT", o.item, "RIGHT", KEY_GAP, 0)
-    k:SetJustifyH("LEFT")
+    k:SetPoint("CENTER", o.item, "RIGHT", w / 2, 0)
   end
 end
 
@@ -402,21 +427,37 @@ function H.paintCue(o)
   local t = o.cue
   local spec = o.cueLevel and CUE[o.cueLevel]
   if not (t and spec) then return end
-  if t.anchoredSide ~= o.side then anchorCue(o) end
-  t:SetWidth((o.emphasis == "burst") and CUE_BURST or (spec.w or CUE_MIN))
+  if t.anchoredSide ~= o.side or not t.boxW then anchorCue(o) end
+  local item = o.item
+  local boxH = (item and ns.HasMethod(item, "GetHeight") and item:GetHeight()) or 0
+  if boxH <= 0 then boxH = t.boxW or 28 end
+  -- §4.4 — FILL is the priority axis.  Burst emphasis fills the box outright.
+  local frac = (o.emphasis == "burst") and CUE_BURST_FILL or (spec.fill or CUE_FILL.JUDGE)
+  t:SetHeight(math.max(2, boxH * frac))
+
   local c = spec.c
   local a = spec.a * recede
-  local ok = pcall(function()
-    t:SetColorTexture(1, 1, 1, 1)
+  -- ⚠ §4.5a — THE BASE IS THE LEVEL COLOUR, NEVER WHITE.
+  -- This used to be `SetColorTexture(1,1,1,1)` with the hue supplied ONLY by the
+  -- SetGradient below, inside a pcall whose coloured fallback fired only on a
+  -- THROW.  When SetGradient no-ops SILENTLY instead of erroring, `ok` stays true,
+  -- the fallback never runs, and every cue renders as the white it was seeded
+  -- with — which is exactly what play-test 5 photographed (`lit 2` with three
+  -- WHITE bars).  White is not in the cue palette, so it could only ever mean
+  -- "this signal is broken", and it was indistinguishable from a real state.
+  -- RULE: never initialise a signal surface to a colour outside its own palette.
+  -- Painting the flat colour FIRST means a failed gradient degrades to a correct
+  -- solid fill; the gradient is now depth only, and pure decoration.
+  t:SetColorTexture(c[1], c[2], c[3], a)
+  pcall(function()
     local solid = CreateColor(c[1], c[2], c[3], a)
-    local soft  = CreateColor(c[1], c[2], c[3], a * 0.35)
+    local soft  = CreateColor(c[1], c[2], c[3], a * 0.45)
     if o.side == "LEFT" then
       t:SetGradient("HORIZONTAL", soft, solid)   -- solid at the icon (right) edge
     else
       t:SetGradient("HORIZONTAL", solid, soft)   -- solid at the icon (left) edge
     end
   end)
-  if not ok then t:SetColorTexture(c[1], c[2], c[3], a) end
 end
 
 -- level:      one of the score LEVELS ("NEVER"/"AVAILABLE"/"SOON"/"ROTATION"/
