@@ -717,7 +717,6 @@ function H.EmphasizeStacks(item, suffix)
     stacked[item] = { font = font, size = size, flags = flags,
                       p = p, rel = rel, relP = relP, x = x, y = y }
   end
-  local st = stacked[item]
   local JX, JY = -14, 2                     -- the junction point, icon-relative
   -- BOTH fontstrings take the SAME font, and they change together or not at all
   -- (§7.2 item 3).  Until now both read Blizzard's saved `st.font`, so they

@@ -7,7 +7,7 @@ function ns.HSV(h, s, v)
   local c = v * s
   local x = c * (1 - math.abs((h / 60) % 2 - 1))
   local m = v - c
-  local r, g, b = 0, 0, 0
+  local r, g, b
   if h < 60 then r, g, b = c, x, 0
   elseif h < 120 then r, g, b = x, c, 0
   elseif h < 180 then r, g, b = 0, c, x

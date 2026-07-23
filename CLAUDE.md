@@ -111,6 +111,7 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
   README.md
   LICENSE                         MIT
   .gitignore
+  .luacheckrc                     luacheck config (WoW-globals std) — M4.5 T1
   CDMProbe/                       <- the addon folder ghaddons installs
     CDMProbe.toc
     Core.lua                      namespace, saved vars, slash cmds, registry
@@ -156,7 +157,55 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
     HudTint.lua                   DORMANT leaf-method icon-tint machinery rescued
                                   from the deleted CRT.lua — unwired; gates a
                                   future optional solid-colour mode (notes.md §9)
+    tests/                        busted unit tests (M4.5 T2) — NOT in the .toc,
+                                  so never loaded in-game / harmless in the zip
+      mock_ns.lua                 the harness: CreateFrame stub + fake clock +
+                                  global fakes + real Util/SpecDemonology + a
+                                  fixture-settable HudState/ShardCost/napkin surface
+      spec/hudscore_spec.lua      dot-score rules (strictness, judgeable, prunes)
+      spec/hudqueue_spec.lua      sequence widget (C1, prime, drop-through, +N)
+      spec/hudnapkin_spec.lua     anticipation countdown + honesty rules
+      spec/hudburst_spec.lua      isBurstStep scoping (via B._isBurstStep seam)
 ```
+
+## Local checks (luacheck + busted) — M4.5
+
+Two rungs above the release flow's luaparser **syntax** gate, both run against the
+source tree (no game, no release). The toolchain is Lua 5.1 + luarocks (matches
+WoW's runtime); provision once with `luarocks install --local luacheck busted` and
+put `~/.luarocks/bin` on PATH.
+
+- **`luacheck CDMProbe/`** — static analysis: undefined globals, dead locals,
+  shadowing, typos. Config is **`.luacheckrc`** at this repo root: a WoW-globals
+  `read_globals` std (the Blizzard API surface the addon actually calls), our few
+  true global writes (`SLASH_CDMPROBE1/2`, `SlashCmdList`, `CDMProbeDB`,
+  `CDMProbeShards`), `unused_args=false` / `max_line_length=false`, an
+  `ignore = {"211/ADDON"}` for the idiomatic-but-unused `local ADDON, ns = ...`
+  header, and a `CDMProbe/tests/` → `+busted` override. **Doctrine: curate the
+  config or FIX the code — do not scatter inline `-- luacheck: ignore`.** A real
+  catch gets fixed; a legit API name goes in the std.
+- **`busted CDMProbe/tests/spec`** — unit tests for the pure-logic modules
+  (`HudScore`, `HudQueue`, `HudNapkin`, `HudBurst.isBurstStep`). The harness is
+  **`CDMProbe/tests/mock_ns.lua`**: a chainable `CreateFrame`/FontString/animation
+  stub, a **settable `GetTime` fake clock**, global fakes
+  (`wipe`/`InCombatLockdown`/`issecretvalue`/`C_Timer`/`Enum`/…), the **real**
+  `Util.lua` + `SpecDemonology.lua` loaded through the `local ADDON, ns = ...`
+  vararg shim, and a fixture-settable STATE surface (`ns.HudState`/`ShardCost`/
+  `BaseCooldown`/`HudChrome.GetReady`/napkin). Specs load the module under test
+  into that same `ns`. Run from this repo root:
+
+  ```bash
+  export PATH="$HOME/.luarocks/bin:$PATH"
+  luacheck CDMProbe/
+  busted CDMProbe/tests/spec
+  ```
+
+**The release flow runs luacheck automatically** (`wowkb.addon release cdmp`), as a
+SOFT gate above luaparser: it fires only for an addon that ships a `.luacheckrc`
+(so bb/ps aren't drowned in false positives) and only if `luacheck` is on PATH
+(absent ⇒ warn + continue, so a bare machine isn't wedged); a non-zero exit aborts
+the cut. `busted` is **not** wired into the release — it's a dev/pre-commit check.
+`--skip-lint` bypasses both.
 
 ## Licensing note
 

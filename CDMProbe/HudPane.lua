@@ -34,7 +34,6 @@ local P = ns.HudPane
 -- design; these are constants, not a shared contract).
 -- Neutral palette (M4.3 — the CRT green is retired).  Near-white for "live", a
 -- muted grey for "upcoming / not-yet".
-local TERM_FONT = "Fonts\\ARIALN.TTF"
 local TERM      = { 0.92, 0.94, 0.98 }
 local TERM_DIM  = { 0.45, 0.47, 0.52 }
 local function hex(c)

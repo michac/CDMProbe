@@ -71,7 +71,7 @@ local N = ns.HudNapkin
 N.SOON_LEAD = 3.0
 
 local ev = CreateFrame("Frame")
-local started = false
+local evStarted = false
 
 local function onSucceeded(_, _, spellID)
   if ns.IsSecret(spellID) then
@@ -144,8 +144,8 @@ function N.Clear(spellID)
 end
 
 function N.Start()
-  if started then return end
-  started = true
+  if evStarted then return end
+  evStarted = true
   ev:SetScript("OnEvent", function(_, _, unit, castGUID, spellID)
     -- RegisterUnitEvent already filters to the player; the pcall is because a
     -- throw in an event handler is silent and this must never take the HUD down.
@@ -155,7 +155,7 @@ function N.Start()
 end
 
 function N.Stop()
-  started = false
+  evStarted = false
   ev:UnregisterAllEvents()
   wipe(N.casts)
 end

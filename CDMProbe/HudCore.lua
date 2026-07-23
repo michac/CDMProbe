@@ -34,7 +34,6 @@ local M = ns.Hud
 -- Icon viewers get chrome; buff viewers are registered so M3b can read proc
 -- presence off item:IsShown(), but we draw nothing on them in M3a.
 local ICON_VIEWERS = { "EssentialCooldownViewer", "UtilityCooldownViewer" }
-local BUFF_VIEWERS = { "BuffBarCooldownViewer", "BuffIconCooldownViewer" }
 local ALL_VIEWERS  = { "EssentialCooldownViewer", "UtilityCooldownViewer",
                        "BuffBarCooldownViewer", "BuffIconCooldownViewer" }
 -- `hud status` tags: the first four characters collide ("Buff"/"Buff"), which

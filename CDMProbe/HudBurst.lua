@@ -62,6 +62,9 @@ local function isBurstStep(spellID)
   if burstStepSet[spellID] then return true end
   return ns.SpecInfo(spellID).burstAlign and true or false
 end
+-- Test seam (M4.5 T2): expose the file-local so hudburst_spec can assert the
+-- burst-step scoping without arming a frame.  Production never reads this.
+B._isBurstStep = isBurstStep
 
 -- Resolve an override spellID back to its BASE, so a transformed press (Ruination
 -- for HoG, Infernal Bolt for SB) still matches its authored step.  Same reverse

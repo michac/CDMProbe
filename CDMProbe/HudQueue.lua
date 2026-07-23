@@ -43,7 +43,6 @@ local Q = ns.HudQueue
 -- reads as part of the same terminal.  HudChrome keeps these file-local by
 -- design; these are constants echoed here, not a shared contract.
 -- Neutral palette (M4.3 — CRT green retired).  Near-white "live", muted grey "not".
-local TERM_FONT = "Fonts\\ARIALN.TTF"
 local TERM      = { 0.92, 0.94, 0.98 }   -- the current step (bright)
 local TERM_DIM  = { 0.45, 0.47, 0.52 }   -- header / preamble / upcoming / not-ready
 local ROW_H     = 14
