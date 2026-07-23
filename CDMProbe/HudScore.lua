@@ -315,6 +315,18 @@ function Sc.For(key, e)
     return out
   end
 
+  -- DISCRETION (feedback 2026-07-23) — a summon that is READY but should almost
+  -- always be SAVED for the Tyrant window (the Grimoires: Imp Lord / Fel Ravager,
+  -- 2-min CDs paired with Tyrant).  Show the cyan "ready, your call" treatment when
+  -- up, never a green "press on cooldown".  We're past the NEVER gate here, so it
+  -- is genuinely up; the call to hold it is the player's.
+  if info.discretion then
+    out.level = Sc.LEVELS.AVAILABLE
+    out.judgeReady = true
+    R[#R + 1] = "ready — save for Tyrant (your call)"
+    return out
+  end
+
   -- ProcArmed is asked about the BASE, not the live ID: ns.SpecProcGlow keys its
   -- rules on the base button (`target`) and detects a transform by looking up
   -- `St.override[base]`.  Passing the transformed ID would silently never match.
@@ -371,7 +383,15 @@ function Sc.For(key, e)
     -- spenders (Demonbolt, Infernal Bolt), which are proc-gated not "press to
     -- cap".  Overcap guard reused (see :387): a generator that would push past cap
     -- is NOT promoted — it would waste the yield.
-    if info.generates and not info.spends and shards
+    --
+    -- (Feedback 2026-07-23) The IB > DB > SB priority holds WHILE BUILDING too:
+    -- don't light the filler (SB) when a higher-value builder is up (Infernal Bolt
+    -- via an Art proc, or Demonbolt via a Demonic Core) — spend that first.  Before
+    -- this, SB and DB both lit in build mode; now build mode picks the one, same as
+    -- sustain.
+    local betterBuilder = infernalBoltArmed()
+      or ((St and St.SourcePresent and St.SourcePresent(ns.SpecIDs.DEMONIC_CORE)) and true or false)
+    if info.generates and not info.spends and shards and not betterBuilder
         and (shards + info.generates) <= (ns.SHARD_CAP or 5) then
       out.level = Sc.LEVELS.ROTATION
       out.candidate = false          -- a builder shouldn't nag to LATE

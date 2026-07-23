@@ -32,9 +32,11 @@ local P = ns.HudPane
 
 -- Terminal palette echoed from HudChrome/HudQueue (kept file-local there by
 -- design; these are constants, not a shared contract).
+-- Neutral palette (M4.3 — the CRT green is retired).  Near-white for "live", a
+-- muted grey for "upcoming / not-yet".
 local TERM_FONT = "Fonts\\ARIALN.TTF"
-local TERM      = { 0.29, 1.00, 0.48 }
-local TERM_DIM  = { 0.17, 0.55, 0.30 }
+local TERM      = { 0.92, 0.94, 0.98 }
+local TERM_DIM  = { 0.45, 0.47, 0.52 }
 local function hex(c)
   return string.format("%02x%02x%02x",
     math.floor(c[1] * 255 + 0.5), math.floor(c[2] * 255 + 0.5), math.floor(c[3] * 255 + 0.5))
@@ -202,13 +204,27 @@ end
 function P.RefreshPrereqs()
   if not (P.frame and P.prereqRow) then return end
   local spec = P.prereqSpec
-  if not spec or #spec == 0 then P.prereqRow:SetText(""); return end
+  if not spec or #spec == 0 then
+    P.prereqRow:SetText("")
+    if P.queue and P.queue.SetReady then P.queue:SetReady(true) end
+    return
+  end
   local parts = {}
+  local allMet = true
   for _, p in ipairs(spec) do
     local label, met = evalPrereq(p)
-    parts[#parts + 1] = (met and BRIGHT or DIM) .. label .. "|r"
+    -- Feedback 2026-07-23: the sequence only "goes" once its REQUIRED prereqs are
+    -- met (5 shards, Tyrant, Dreadstalkers).  An OPTIONAL prereq (Imp Lord) shows
+    -- its state but does NOT gate readiness.
+    if not met and not p.optional then allMet = false end
+    parts[#parts + 1] = (met and BRIGHT or DIM) .. label
+      .. (p.optional and DIM .. " (opt)" or "") .. "|r"
   end
   P.prereqRow:SetText(table.concat(parts, SEP))
+  -- Drives the strip's emphasis: dim until ready, current step brightens when the
+  -- wall is down (so a brightened [E] never says "start" while you should be
+  -- building to 5 shards).
+  if P.queue and P.queue.SetReady then P.queue:SetReady(allMet) end
 end
 
 --------------------------------------------------------------------------------
@@ -302,6 +318,7 @@ local function showPlaceholder()
   P.queue:Arm({ header = "SEQUENCE", steps = {
     { label = "step 1" }, { label = "step 2" }, { label = "step 3" } } })
   P.queue:SetPrimed(false)
+  P.queue:SetReady(true)          -- the drag placeholder shows bright, not dimmed
   P.owner = "placeholder"
   P.content:SetAlpha(1)
   P.frame:Show()

@@ -123,19 +123,22 @@ ns.Spec = {
   -- window HudScore reads them AVAILABLE "stage for Tyrant" like Dreadstalkers.
   -- They stay `optional` in the queue drain: 2-min CD = present every OTHER
   -- Tyrant, so a missing one must drop-through, not jam.
+  -- `discretion = true` (feedback 2026-07-23): when up, these read cyan "ready —
+  -- save for Tyrant (your call)", NEVER a green "press on cooldown".  They are
+  -- 2-min summons paired with Tyrant, so on-cooldown use is almost always wrong.
   [1276467] = {
     group = "summon", kind = "button", cadence = "oncd", burstAlign = true,
-    stage = true, baseCD = 120, label = "Grimoire: Fel Ravager",
+    stage = true, discretion = true, baseCD = 120, label = "Grimoire: Fel Ravager",
   },
   [S.IMP_LORD] = {
     group = "summon", kind = "button", cadence = "oncd", burstAlign = true,
-    stage = true, baseCD = 120, label = "Grimoire: Imp Lord",
+    stage = true, discretion = true, baseCD = 120, label = "Grimoire: Imp Lord",
   },
   -- 136726 is the talent ENTRY-id, kept mapped as a harmless alias for a build
   -- that surfaces it; the live tracked/cast id is S.IMP_LORD (1276452) above.
   [136726] = {
     group = "summon", kind = "button", cadence = "oncd", burstAlign = true,
-    stage = true, baseCD = 120, label = "Grimoire: Imp Lord (entry-id alias)",
+    stage = true, discretion = true, baseCD = 120, label = "Grimoire: Imp Lord (entry-id alias)",
   },
 
   -- ── Essential: core shadow damage (§3 "core" / shadow violet) ─────────────
@@ -332,7 +335,9 @@ ns.SpecBurst = {
   prereqs = {
     { spell = S.TYRANT,        label = "Tyrant", lead = 5 },
     { spell = S.DREADSTALKERS, label = "Dreadstalkers", lead = 5 },
-    { spell = S.IMP_LORD,      label = "Imp Lord", lead = 5 },
+    -- Imp Lord is an OPTIONAL prereq: nice to have in the window, but its absence
+    -- (off-Tyrant cycle) must NOT gate the sequence from lighting up as ready.
+    { spell = S.IMP_LORD,      label = "Imp Lord", lead = 5, optional = true },
     { shards = 5,              label = "5 shards" },
   },
   steps = {

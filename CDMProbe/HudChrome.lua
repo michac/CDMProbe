@@ -107,42 +107,39 @@ local STACK_SIZE   = 30     -- Wild Imp count: the one AoE readout (§0.5.8.3 #1
                             -- icon art it sits on.
 local STACK_COL    = { 1.00, 0.86, 0.35 }   -- bright gold; must beat the icon art
 
--- ── The BLEED (M4.1, §0.5.8.7) ───────────────────────────────────────────────
--- Replaces the masked-disc dot.  hue is spoken for (group), saturation (pole),
--- luminance (readiness), alpha (recede) — no free channel on the icon, so the
--- actionability signal gets its OWN mark.  M4.1's first play-test found the disc
--- too subtle, so the mark is now a horizontal GRADIENT that bleeds off the icon's
--- outer edge (a "coloured shadow") — preattentive, no line to read, and it lets
--- the reason text drop out of non-verbose rows entirely.
+-- ── The BLEED = a coloured DROP SHADOW (M4.3) ────────────────────────────────
+-- The actionability mark.  hue/sat/luminance/alpha are all spoken for on the icon,
+-- so the level signal is its OWN object.  The mental model (feedback 2026-07-23):
+-- a bright light shines on the icons from the LEFT, so each casts a soft DROP
+-- SHADOW to the RIGHT (LEFT for Utility, per H.SideFor) — except the shadow is
+-- COLOURED by the level.  So it is an icon-shaped soft square, offset toward the
+-- bleed side, drawn BEHIND the icon (BACKGROUND layer on the item frame) so the
+-- icon art sits cleanly on top and only the coloured shadow peeks out.
 --
--- COLOUR CARRIES **LEVEL**, NOT GROUP (the M3b inversion, unchanged); SPREAD +
--- INTENSITY carry it redundantly ([X1]) so it survives a dim monitor / colour-
--- blindness and is never colour-alone.
---   NEVER / AVAILABLE (held / overcap / quiet) — no bleed
---   judge-ready (Implosion off CD, gate is a secret) — cyan, narrow, steady
---   SOON     — yellow, medium, gentle alpha breathe
---   ROTATION — green, wide, steady
---   LATE     — green, wide, slow alpha breathe (brighter) — overdue
---
--- It reads as a GLOW, not paint: ADD blend mode (emitted light over the dark
--- terminal) + a soft radial mask feathering all four edges, so it blends into the
--- icon like an aura rather than a flat rectangular swipe (feedback 2026-07-23).
--- There is NO size motion — a growing bleed overflowed into neighbouring icons —
--- so LATE/SOON carry motion on ALPHA only.
-local BLEED_H_PAD  = -3          -- INSET: the bleed sits inside the icon height so
-                                 -- it doesn't tower over the icons (it feathers too)
-local BLEED_OVERLAP = 4          -- how far it laps ONTO the icon edge (glow attaches)
-local BLEED_MAX_W  = 64          -- the widest bleed (ROTATION/LATE) — sizes ROW_OFFSET
-H.ROW_OFFSET       = BLEED_MAX_W + 8  -- where HudRow anchors its (debug-only) text
+-- COLOUR CARRIES **LEVEL** (the M3b inversion, unchanged).  Earlier tries — a
+-- horizontal gradient (read as a flat swipe) and a radial-masked glow (read as an
+-- oval) — are retired for this.  Motion is ALPHA only (a growing shadow overflowed
+-- neighbours).
+--   NEVER / AVAILABLE (held / overcap / quiet) — no shadow
+--   judge-ready (Implosion off CD, gate is a secret) — cyan, steady
+--   SOON     — yellow, gentle alpha breathe
+--   ROTATION — green, steady
+--   LATE     — green, slow alpha breathe (brighter) — overdue
+local BLEED_SIZE  = 1.18   -- shadow size as a multiple of the icon (soft spread)
+local BLEED_OFF   = 0.52   -- horizontal offset toward the bleed side, × icon width
+local BLEED_DROP  = 0.12   -- downward offset, × icon height (light from upper-left)
+H.ROW_OFFSET      = 48     -- where HudRow anchors its (debug-only) text, past it
+-- The Blizzard Cooldown-Manager proc-glow atlas is a soft square — perfect shadow
+-- shape.  Tinted per level via SetVertexColor; falls back to a flat WHITE8X8
+-- square if the atlas is unavailable on this client.
+local BLEED_ATLAS = "UI-CooldownManager-VisualAlert-Glow"
 
--- c     — level hue · w — spread off the icon edge · a — peak alpha at the edge
--- pulse — a slow ALPHA breathe period (s); nil = steady.  (These are first-pass
---         glow values under ADD blend — tune here, one edit site.)
+-- c — level hue · a — alpha · pulse — slow alpha breathe period (s); nil = steady.
 local BLEED = {
-  JUDGE    = { c = { 0.27, 0.88, 1.00 }, w = 30, a = 0.55 },
-  SOON     = { c = { 1.00, 0.86, 0.15 }, w = 46, a = 0.50, pulse = 0.85 },
-  ROTATION = { c = { 0.30, 1.00, 0.48 }, w = BLEED_MAX_W, a = 0.70 },
-  LATE     = { c = { 0.42, 1.00, 0.58 }, w = BLEED_MAX_W, a = 0.82, pulse = 1.3 },
+  JUDGE    = { c = { 0.27, 0.88, 1.00 }, a = 0.75 },
+  SOON     = { c = { 1.00, 0.86, 0.15 }, a = 0.70, pulse = 0.85 },
+  ROTATION = { c = { 0.30, 1.00, 0.48 }, a = 0.90 },
+  LATE     = { c = { 0.42, 1.00, 0.58 }, a = 1.00, pulse = 1.3 },
 }
 
 -- Level -> word colour, for the DEBUG rows only (non-verbose draws no words).
@@ -169,6 +166,14 @@ local SHOW_BRACKET = false
 -- "board-quiet" recede gate) but draw nothing.  Flip back to true to restore it.
 local SHOW_GLOW = false
 local BRACKET_PAD = 4
+
+-- THE CRT AESTHETIC IS RETIRED (feedback 2026-07-23).  The scanlines + the green
+-- DEMO.SYS terminal frame + phosphor wash were "getting in the way of proper
+-- attention management", so both are OFF.  The functional chrome — the coloured
+-- drop shadow, the keybind hint, the shard rail, the summary line — stays.  Flip
+-- either back to true to restore the CRT look.
+local SHOW_SCAN     = false
+local SHOW_TERMINAL = false
 
 -- Push a colour toward/away from its own grey, holding luminance constant.
 local function saturate(r, g, b, mul)
@@ -209,9 +214,12 @@ local function ensure(item)
   for _, side in ipairs({ "TOP", "BOTTOM", "LEFT", "RIGHT" }) do
     o.edges[side] = b:CreateTexture(nil, "OVERLAY")
   end
+  -- The keybind HINT.  M4.3: moved OFF the tiny icon corner to sit HORIZONTALLY
+  -- beside the icon (on the shadow side), bigger and in the sharp mono font, so it
+  -- reads as "which key is this" at a glance.  Positioned in anchorKey once the
+  -- side is known (Attach); near-white + outline so it stays legible on the shadow.
   o.key = f:CreateFontString(nil, "OVERLAY")
-  o.key:SetFont(TERM_FONT, 10, "OUTLINE")
-  o.key:SetPoint("TOPLEFT", f, "TOPLEFT", 1, -1)
+  ns.SetFont(o.key, 14, "OUTLINE")
   o.key:SetTextColor(KEY_COL[1], KEY_COL[2], KEY_COL[3])
 
   item.__hud = o
@@ -318,95 +326,77 @@ function H.Apply(o)
 end
 
 --------------------------------------------------------------------------------
--- The bleed — §0.5.8.7, the actionability mark (M4.1)
+-- The bleed — §0.5.8.7, the actionability mark (a coloured drop shadow, M4.3)
 --------------------------------------------------------------------------------
--- A horizontal gradient texture off the icon's OUTER edge (right for Essential,
--- left for Utility, per H.SideFor), fading colour -> transparent outward.  It
--- draws on WHITE8X8 tinted by Texture:SetGradient; the gradient API shape varies
--- by client generation, so the paint is wrapped in pcall and falls back to a flat
--- solid bleed — the same defensive idiom as the old dot's mask/scale setters.  A
--- flat fallback is a cosmetic loss; a throw in a per-item paint path is the HUD
--- going dark, so this never gets to throw.
-local BLEED_MASK = "Interface\\CharacterFrame\\TempPortraitAlphaMask"  -- soft radial
+-- The shadow is a TEXTURE on the item frame at BACKGROUND (behind the icon art),
+-- not a child frame — a child frame always renders ABOVE its parent's textures, so
+-- it could never sit behind the icon.  Its own AnimationGroup drives the breathe.
 local function ensureBleed(o, item)
   if o.bleed then return o.bleed end
-  local f = CreateFrame("Frame", nil, item)
-  f:SetFrameLevel(o.frame:GetFrameLevel() + 2)
-  local t = f:CreateTexture(nil, "OVERLAY")
-  t:SetTexture("Interface\\Buttons\\WHITE8X8")
-  t:SetAllPoints(f)
-  -- GLOW, not paint (feedback 2026-07-23): ADD blend reads as emitted light over
-  -- the dark terminal, and a soft radial mask feathers all four edges so it blends
-  -- into the icon like an aura instead of a hard rectangular swipe.  Both are
-  -- best-effort — a missing texture/method degrades to a flat bleed, never a throw.
-  pcall(function() t:SetBlendMode("ADD") end)
-  pcall(function()
-    local m = f:CreateMaskTexture()
-    m:SetTexture(BLEED_MASK, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
-    m:SetAllPoints(t)
-    t:AddMaskTexture(m)
-  end)
+  local t = item:CreateTexture(nil, "BACKGROUND", nil, -8)
+  -- Soft square from Blizzard's own CDM proc-glow atlas; a flat WHITE8X8 square is
+  -- the fallback if the atlas isn't on this client (a hard-edged shadow, still a
+  -- readable coloured shape — never a throw).
+  t.usedAtlas = pcall(function() t:SetAtlas(BLEED_ATLAS, false) end)
+  if not t.usedAtlas then t:SetTexture("Interface\\Buttons\\WHITE8X8") end
 
-  -- ONE alpha pulse group (SOON / LATE breathe).  No scale group any more: size
-  -- motion overflowed into neighbouring icons and was retired.
-  local ag = f:CreateAnimationGroup()
+  -- ONE alpha breathe group (SOON / LATE).  Region alpha only, so it never fights
+  -- the recede baked into the vertex-colour alpha.
+  local ag = t:CreateAnimationGroup()
   local a = ag:CreateAnimation("Alpha")
-  a:SetFromAlpha(0.45)
+  a:SetFromAlpha(0.5)
   a:SetToAlpha(1.00)
   ag:SetLooping("BOUNCE")
 
-  f.tex, f.ag, f.anim = t, ag, a
-  f:Hide()
-  o.bleed = f
-  return f
+  t.ag, t.anim = ag, a
+  t:Hide()
+  o.bleed = t
+  return t
 end
 
--- Anchor top/bottom to the icon (INSET by BLEED_H_PAD so it never towers over the
--- icon), pinned by the icon-edge side and lapping BLEED_OVERLAP onto the icon so
--- the glow attaches; the width is set per-paint from the level spec.
+-- Size + position the shadow: an icon-sized soft square, offset toward the bleed
+-- side and slightly down (light from the upper-left).  Scales with the live icon
+-- so it tracks whatever size the player set the CDM to in Edit Mode.
 local function anchorBleed(o)
-  local f = o.bleed
-  if not f then return end
-  f:ClearAllPoints()
-  if o.side == "LEFT" then
-    f:SetPoint("TOPRIGHT", o.item, "TOPLEFT", BLEED_OVERLAP, BLEED_H_PAD)
-    f:SetPoint("BOTTOMRIGHT", o.item, "BOTTOMLEFT", BLEED_OVERLAP, -BLEED_H_PAD)
-  else
-    f:SetPoint("TOPLEFT", o.item, "TOPRIGHT", -BLEED_OVERLAP, BLEED_H_PAD)
-    f:SetPoint("BOTTOMLEFT", o.item, "BOTTOMRIGHT", -BLEED_OVERLAP, -BLEED_H_PAD)
-  end
-  f.anchoredSide = o.side
+  local t, item = o.bleed, o.item
+  if not (t and item) then return end
+  local w = (ns.HasMethod(item, "GetWidth") and item:GetWidth()) or 32
+  local h = (ns.HasMethod(item, "GetHeight") and item:GetHeight()) or 32
+  t:ClearAllPoints()
+  t:SetSize(w * BLEED_SIZE, h * BLEED_SIZE)
+  local dx = (o.side == "LEFT") and -(w * BLEED_OFF) or (w * BLEED_OFF)
+  t:SetPoint("CENTER", item, "CENTER", dx, -h * BLEED_DROP)
+  t.anchoredSide = o.side
 end
 
--- Repaint at the current level x recede.  Recede is baked into the gradient
--- alpha, never the frame alpha — the frame's alpha belongs to the pulse, and
--- letting the two share a channel is how a receding board would kill the motion.
+-- The keybind hint sits just off the icon on the shadow side, vertically centred.
+local KEY_GAP = 5
+local function anchorKey(o)
+  local k = o.key
+  if not k then return end
+  k:ClearAllPoints()
+  if o.side == "LEFT" then
+    k:SetPoint("RIGHT", o.item, "LEFT", -KEY_GAP, 0)
+    k:SetJustifyH("RIGHT")
+  else
+    k:SetPoint("LEFT", o.item, "RIGHT", KEY_GAP, 0)
+    k:SetJustifyH("LEFT")
+  end
+end
+
+-- Repaint at the current level x recede.  Recede is baked into the VERTEX-colour
+-- alpha (atlas) or the texture-colour alpha (fallback), never the region alpha —
+-- region alpha belongs to the breathe, and sharing the channel would kill it.
 function H.paintBleed(o)
-  local f = o.bleed
+  local t = o.bleed
   local spec = o.bleedLevel and BLEED[o.bleedLevel]
-  if not (f and spec) then return end
-  if f.anchoredSide ~= o.side then anchorBleed(o) end
-  f:SetWidth(spec.w)
-  local c = spec.c
-  local a = spec.a * recede
-  local t = f.tex
-  local ok = pcall(function()
-    -- White base, gradient tints it.  Solid at the icon edge -> transparent
-    -- outward; the SOLID end is whichever side the icon is on.  Re-assert ADD:
-    -- SetColorTexture can reset the blend mode on some client builds.
-    t:SetColorTexture(1, 1, 1, 1)
-    t:SetBlendMode("ADD")
-    local solid = CreateColor(c[1], c[2], c[3], a)
-    local clear = CreateColor(c[1], c[2], c[3], 0)
-    if o.side == "LEFT" then
-      t:SetGradient("HORIZONTAL", clear, solid)  -- icon on the RIGHT
-    else
-      t:SetGradient("HORIZONTAL", solid, clear)  -- icon on the LEFT
-    end
-  end)
-  if not ok then
-    -- Flat solid fallback: a rename degrades to "less pretty", never a throw.
-    t:SetColorTexture(c[1], c[2], c[3], a * 0.55)
+  if not (t and spec) then return end
+  if t.anchoredSide ~= o.side then anchorBleed(o) end
+  local c, a = spec.c, spec.a * recede
+  if t.usedAtlas then
+    t:SetVertexColor(c[1], c[2], c[3], a)
+  else
+    t:SetColorTexture(c[1], c[2], c[3], a)
   end
 end
 
@@ -426,13 +416,9 @@ function H.SetDot(item, viewer, level, judgeReady)
   elseif level == "AVAILABLE" and judgeReady then bkey = "JUDGE"
   end
   local spec = bkey and BLEED[bkey]
-  -- Item 7 (feedback 2026-07-23): the keybind HINT stays, tinted to the current
-  -- bleed colour so the corner key and its glow read as one — near-white when the
-  -- icon carries no call.
-  if o.key then
-    local kc = spec and spec.c or KEY_COL
-    o.key:SetTextColor(kc[1], kc[2], kc[3])
-  end
+  -- The keybind hint is NOT tinted to the level any more (M4.3): it now sits ON the
+  -- coloured shadow beside the icon, so it stays high-contrast near-white + outline
+  -- for readability rather than matching (and disappearing into) the shadow hue.
   if not spec then
     o.bleedLevel = nil
     if o.bleed then o.bleed.ag:Stop(); o.bleed:Hide() end
@@ -737,6 +723,7 @@ function H.Attach(item, spellID, viewer)
   -- item:GetSpellID() reports the override, which is on no action bar (v0.7.0).
   local key = ns.HudBinds.GetForItem(item, spellID)
   o.key:SetText(key or "")           -- unbound -> blank, never a placeholder
+  anchorKey(o)                        -- beside the icon on the shadow side (M4.3)
   o.frame:Show()
   return key ~= nil
 end
@@ -783,6 +770,7 @@ local function ensureScan(viewer)
 end
 
 function H.FlowScan(viewer)
+  if not SHOW_SCAN then if viewer.__hudScan then viewer.__hudScan:Hide() end return end
   local f = ensureScan(viewer)
   local h = math.floor((ns.HasMethod(viewer, "GetHeight") and viewer:GetHeight()) or 0)
   local n = math.max(0, math.min(SCAN_MAX, math.floor(h / SCAN_STEP)))
@@ -877,6 +865,7 @@ local function buildTerminal(viewer)
 end
 
 function H.ShowTerminal(viewer)
+  if not SHOW_TERMINAL then return end   -- CRT frame retired (M4.3)
   if not viewer then return end
   terminal = buildTerminal(viewer)
   terminal:Show()

@@ -42,9 +42,10 @@ local Q = ns.HudQueue
 -- Terminal palette + font, matched to HudChrome's DEMO.SYS chrome so the queue
 -- reads as part of the same terminal.  HudChrome keeps these file-local by
 -- design; these are constants echoed here, not a shared contract.
+-- Neutral palette (M4.3 — CRT green retired).  Near-white "live", muted grey "not".
 local TERM_FONT = "Fonts\\ARIALN.TTF"
-local TERM      = { 0.29, 1.00, 0.48 }   -- the current step (bright)
-local TERM_DIM  = { 0.17, 0.55, 0.30 }   -- header / preamble / upcoming
+local TERM      = { 0.92, 0.94, 0.98 }   -- the current step (bright)
+local TERM_DIM  = { 0.45, 0.47, 0.52 }   -- header / preamble / upcoming / not-ready
 local ROW_H     = 14
 local WIDTH     = 320                     -- generous; the strip self-centres
 -- Draw at most this many steps in the horizontal strip; a longer script shows
@@ -162,10 +163,12 @@ local function renderHorizontal(inst)
         parts[#parts + 1] = DIM .. "+" .. remaining .. "|r"
         break
       end
-      -- The current step is bright; upcoming dim.  Notes ("t~3s"/"AoE") are
-      -- dropped — they made the strip too long and overlapped other UI.  A count
-      -- draws as repeated cells ([R]-[R]), so "two presses left" reads at a glance.
-      local col = (i == inst.cursor) and BRIGHT or DIM
+      -- The current step brightens ONLY when the wall is down (inst.ready); until
+      -- prereqs are met the whole strip stays dim, so a brightened [E] never reads
+      -- as "start now" while you should be building to 5 shards (feedback
+      -- 2026-07-23).  Notes ("t~3s"/"AoE") are dropped — too long.  A count draws
+      -- as repeated cells ([R]-[R]), so "two presses left" reads at a glance.
+      local col = (inst.ready and i == inst.cursor) and BRIGHT or DIM
       local cell = col .. cellText(s) .. "|r"
       for _ = 1, (s.count or 1) do parts[#parts + 1] = cell end
       shown = shown + 1
@@ -235,6 +238,9 @@ function QueueMeta:Arm(spec)
   -- Re-arm always starts UN-primed; a consumer that wants start-on-first-key
   -- (the M4 desync fix) opts in with SetPrimed(true) right after Arm.
   self.primed = false
+  -- ...and NOT-ready, so the strip opens de-emphasised until the consumer's
+  -- prereq wall reports in via SetReady (M4.3).
+  self.ready  = false
   render(self)
   self.frame:Show()
 end
@@ -245,6 +251,16 @@ end
 -- and silently consume the summons ahead of it.  See Advance.
 function QueueMeta:SetPrimed(v)
   self.primed = v and true or false
+end
+
+-- READY (M4.3): the consumer sets this from its prereq wall.  While false the strip
+-- stays fully dim (de-emphasised — "keep building"); when true the current step
+-- brightens ("go").  Re-renders only on a change.
+function QueueMeta:SetReady(v)
+  local nv = v and true or false
+  if self.ready == nv then return end
+  self.ready = nv
+  if self.armed then render(self) end
 end
 
 -- JUICE (feedback 2026-07-23): a pressed step doesn't just vanish — its key
