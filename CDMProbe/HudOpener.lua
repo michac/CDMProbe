@@ -1,11 +1,14 @@
--- HudOpener.lua — the pre-pull OPENER, first consumer of HudQueue.  M3c-c2.
+-- HudOpener.lua — the pre-pull OPENER, first consumer of the SEQUENCE PANE.
+-- M3c-c2, re-pointed onto HudPane in M4.
 --
 -- WHAT IT OWNS.  The Demonology opener (ns.SpecOpener): when to ARM it (out of
 -- combat — the §0.5.8.2(a) pre-pull affordance), how to ADVANCE it (our own
 -- casts, resolved to the BASE identity so a transformed press still matches its
 -- step), and when to DISSOLVE it (the first Tyrant window closes, or the script
--- drains).  HudQueue draws; this decides.  M4's burst window is the second
--- consumer and plugs into HudQueue the same way — a sibling of this file.
+-- drains).  HudPane draws (a movable, over-the-character pane hosting the strip);
+-- this decides.  M4's burst window (HudBurst) is the second consumer and arms the
+-- SAME pane the same way — a sibling of this file; `owner` tags keep the two from
+-- treading on each other's arm.
 --
 -- INFORM, DON'T INSTRUCT (§0.5.8.7 §0).  The opener is the ONLY instructional
 -- widget in the project and is on notice: it shows the SHAPE of the opening as a
@@ -26,11 +29,7 @@ local O = ns.HudOpener
 -- cast (guidance-model.md §0.5.8.2(a): "the queue dissolves when the first Tyrant
 -- window closes").  A plain elapsed-time compare, no secret read.
 local TYRANT_WINDOW = 15
--- The opener strip sits ABOVE the panel — clear of the DEMO.SYS terminal header,
--- which hangs at viewer +9 (HudChrome buildTerminal).
-local GAP           = 24
 
-O.inst     = nil     -- the HudQueue instance (memoised on the viewer)
 O.tyrantAt = nil     -- GetTime() of the Tyrant cast, for the dissolve clock
 
 -- Is the opener enabled?  Any truthy, non-"off" setting counts (the DB stored
@@ -65,7 +64,8 @@ end
 local function armSpec()
   local src = ns.SpecOpener
   if not src then return nil end
-  local out = { header = src.header, preamble = src.preamble, steps = {} }
+  local out = { header = src.header, preamble = src.preamble,
+                prereqs = src.prereqs, steps = {} }
   for i, s in ipairs(src.steps or {}) do
     local key = ns.HudBinds and ns.HudBinds.Get(s.spell)
     if not key and s.alt and ns.HudBinds then key = ns.HudBinds.Get(s.alt) end
@@ -87,45 +87,47 @@ end
 function O.Arm()
   if not enabled() then O.Dissolve() return end
   if InCombatLockdown() then return end
-  local viewer = ns.Hud and ns.Hud.IconViewer and ns.Hud.IconViewer()
-  if not viewer then return end
-  O.inst = ns.HudQueue.Ensure(viewer, "opener", GAP, "horizontal")
-  if not O.inst then return end
+  if not ns.HudPane then return end
   O.tyrantAt = nil
   local spec = armSpec()
   if not spec then return end
-  O.inst:Arm(spec)
+  -- HudPane arms the shared strip PRIMED (start-on-first-key) — the desync fix —
+  -- and tags the arm "opener" so the burst window can't advance it and vice versa.
+  ns.HudPane.Arm(spec, spec.prereqs, "opener")
   if ns.HudLog then ns.HudLog.Note("queue", "opener armed") end
 end
 
--- A SUCCEEDED cast.  Advances the queue and, on a Tyrant cast, starts the
--- dissolve clock.  Called from HudState's SUCCEEDED branch.
+-- A SUCCEEDED cast.  Advances the strip and, on a Tyrant cast, starts the
+-- dissolve clock.  Called from HudState's SUCCEEDED branch.  Guarded on OWNERSHIP:
+-- if the burst window has re-armed the pane, the opener no longer touches it.
 function O.OnCast(spellID)
-  if not O.inst or not O.inst.armed then return end
+  if not (ns.HudPane and ns.HudPane.OwnedBy("opener")) then return end
   local base = baseOfCast(spellID)
   local TYR = ns.SpecIDs and ns.SpecIDs.TYRANT
   if base == TYR then O.tyrantAt = GetTime() end
-  if O.inst:Advance(base) then
+  if ns.HudPane.Advance(base) then
     if ns.HudLog then
-      local info = O.inst:Info()
+      local info = ns.HudPane.Info()
       ns.HudLog.Note("queue", "advanced " .. (ns.SpellName(base) or tostring(base))
         .. " -> " .. (info.current or "done"))
     end
   end
-  if O.inst:IsEmpty() then O.Dissolve() end
+  if ns.HudPane.IsEmpty() then O.Dissolve() end
 end
 
 -- The dissolve clock, checked on S.Recompute's tail (no new ticker) — the first
--- Tyrant window closing is the handoff to sustain.
+-- Tyrant window closing is the handoff to sustain.  Also keeps the prereqs row
+-- current while the pane sits primed pre-pull (shards/readiness drift OOC).
 function O.Tick()
-  if not O.inst or not O.inst.armed then return end
+  if not (ns.HudPane and ns.HudPane.OwnedBy("opener")) then return end
+  ns.HudPane.RefreshPrereqs()
   if O.tyrantAt and (GetTime() - O.tyrantAt) >= TYRANT_WINDOW then O.Dissolve() end
 end
 
 function O.Dissolve()
-  if O.inst and O.inst.armed then
+  if ns.HudPane and ns.HudPane.OwnedBy("opener") then
     if ns.HudLog then ns.HudLog.Note("queue", "opener dissolved") end
-    O.inst:Dissolve()
+    ns.HudPane.Dissolve("opener")
   end
   O.tyrantAt = nil
 end
@@ -146,10 +148,11 @@ end
 --------------------------------------------------------------------------------
 function O.StatusText()
   if not enabled() then return "|cff808080off|r  (|cffffffff/cdmp hud opener on|r to enable)" end
-  if O.inst and O.inst.armed then
-    local info = O.inst:Info()
-    return string.format("|cff88ff88on|r — armed: %s (%d/%d)%s",
-      info.current or "?", info.cursor, info.total,
+  if ns.HudPane and ns.HudPane.OwnedBy("opener") then
+    local info = ns.HudPane.Info()
+    return string.format("|cff88ff88on|r — armed: %s (%d/%d)%s%s",
+      info.current or "?", info.cursor or 0, info.total or 0,
+      info.primed and "  |cffffd100primed|r" or "",
       O.tyrantAt and "  |cffffd100Tyrant window open|r" or "")
   end
   return "|cff88ff88on|r — idle (arms out of combat)"

@@ -32,6 +32,10 @@
 --                how §0.5.8.6 blocking error #2 got shipped the first time:
 --                someone re-derives the lane from burstAlign and Grimoire (which
 --                is burst-aligned but is NOT a go-gate) sneaks back into it.
+--   stage      — (M4) HOLD this inside the BURST window so it lands fresh IN the
+--                window instead of firing on cooldown just before it.  Its own bit
+--                (not "goGate and not Tyrant") so the hold can never catch Tyrant,
+--                the very thing the window is waiting for.  Dreadstalkers only.
 --   primary    — the one spender the shard economy points at (HoG)
 --   judgeable  — DEFAULT TRUE.  False means the ability's TRUE gate is a Secret
 --                Value we cannot read, so we must never claim it's the right
@@ -98,9 +102,14 @@ ns.Spec = {
     group = "summon", kind = "button", spends = "shards", cadence = "oncd",
     burstAlign = true, goGate = true, baseCD = 60, label = "Summon Demonic Tyrant",
   },
+  -- `stage = true` (M4): inside the BURST window HudScore reads this AVAILABLE
+  -- "stage for Tyrant" instead of greenlighting it on cooldown, so it lands FRESH
+  -- in the window — rotation.md #5: a Dreadstalkers cast too early expires before
+  -- Tyrant. Keyed on this bit (not "goGate and not Tyrant") so Tyrant is never held.
   [S.DREADSTALKERS] = {
     group = "summon", kind = "button", spends = "shards", cadence = "oncd",
-    burstAlign = true, goGate = true, baseCD = 20, label = "Call Dreadstalkers",
+    burstAlign = true, goGate = true, stage = true, baseCD = 20,
+    label = "Call Dreadstalkers",
   },
   -- Grimoire is burst-ALIGNED but is NOT part of the go-gate (see `goGate` above).
   [1276467] = {
@@ -264,9 +273,18 @@ ns.SpecStacks = {
 -- advance-tracked.  `alt` lets one step match either of two abilities (the first
 -- in-combat spend is Demonbolt if a Core seeded, else Shadow Bolt).  `optional`
 -- steps (Imp Lord "if up", Implosion "AoE only") drop without stalling the queue.
+-- `prereqs` (M4) — the pre-pull WALL-DOWN state the sequence pane shows above the
+-- strip, each lit when met.  `spell` prereqs check readiness (ready edge, or the
+-- napkin within `lead` seconds); `shards` checks the live count.  For the opener
+-- these are the hard pre-pull conditions, so `lead` defaults to 0 (ready NOW).
 ns.SpecOpener = {
   header   = "OPENER",
   preamble = "pre-stack: HoG -> DB/SB (seed a Core)",
+  prereqs = {
+    { spell = S.TYRANT,        label = "Tyrant" },
+    { spell = S.DREADSTALKERS, label = "Dreadstalkers" },
+    { shards = 5,              label = "5 shards" },
+  },
   steps = {
     { spell = S.DREADSTALKERS,             label = "Dreadstalkers" },
     { spell = 136726,                      label = "Imp Lord", optional = true, note = "if up" },
@@ -275,6 +293,26 @@ ns.SpecOpener = {
     { spell = S.HAND_OF_GULDAN,            label = "HoG", count = 2 },
     { spell = S.IMPLOSION,                 label = "Implosion", optional = true, note = "AoE" },
     { spell = S.SHADOW_BOLT,               label = "SB", count = 3, note = "rebuild" },
+  },
+}
+
+-- The BURST window (M4) — consumed by HudBurst, arming the SAME sequence pane when
+-- HudState.Mode flips BURST (a Tyrant window opening mid-fight).  The burn order
+-- for the window: Tyrant, dump shards into HoG, spend banked Cores, Implosion on
+-- AoE.  `prereqs` use `lead = 5` (= HudState HOLD_LEAD) so "Tyrant" lights while
+-- it is still coming up, matching when the window actually opens.
+ns.SpecBurst = {
+  header   = "BURST",
+  preamble = "Tyrant window — dump into demons",
+  prereqs = {
+    { spell = S.TYRANT, label = "Tyrant", lead = 5 },
+    { shards = 5,       label = "5 shards" },
+  },
+  steps = {
+    { spell = S.TYRANT,         label = "Tyrant" },
+    { spell = S.HAND_OF_GULDAN, label = "HoG", count = 2 },
+    { spell = S.DEMONBOLT,      label = "Demonbolt", note = "cores" },
+    { spell = S.IMPLOSION,      label = "Implosion", optional = true, note = "AoE" },
   },
 }
 

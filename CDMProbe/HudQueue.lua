@@ -70,13 +70,21 @@ QueueMeta.__index = QueueMeta
 --------------------------------------------------------------------------------
 
 local function buildFrame(viewer, inst)
-  local f = CreateFrame("Frame", nil, viewer)
-  f:SetFrameLevel((ns.HasMethod(viewer, "GetFrameLevel") and viewer:GetFrameLevel() or 1) + 12)
+  -- M4 — an optional HOST frame.  With no host the strip anchors ABOVE the CDM
+  -- viewer (the M3c-c2 opener).  With a host (HudPane) the strip mounts INSIDE
+  -- that frame instead, so the same widget can live in a movable, UIParent-
+  -- anchored pane over the character.  The widget itself stays viewer-agnostic.
+  local parent = inst.host or viewer
+  local f = CreateFrame("Frame", nil, parent)
+  f:SetFrameLevel((ns.HasMethod(parent, "GetFrameLevel") and parent:GetFrameLevel() or 1) + 12)
   -- ONE centre point + an explicit width: the clipping hazard (HudChrome
   -- buildRail / notes.md §9).  Two horizontal points would pin the width to the
   -- ~28px icon column and clip every row.
   f:SetSize(WIDTH, ROW_H * (inst.orient == "horizontal" and 2 or 12))
-  if inst.orient == "horizontal" then
+  if inst.host then
+    -- Hosted: sit at the BOTTOM of the pane; the pane draws its prereqs row above.
+    f:SetPoint("BOTTOM", inst.host, "BOTTOM", 0, 2)
+  elseif inst.orient == "horizontal" then
     -- ABOVE the panel, grown upward, centred on the icon column.
     f:SetPoint("BOTTOM", viewer, "TOP", 0, inst.drop)
   else
@@ -213,8 +221,19 @@ function QueueMeta:Arm(spec)
   end
   self.cursor = 1
   self.armed  = true
+  -- Re-arm always starts UN-primed; a consumer that wants start-on-first-key
+  -- (the M4 desync fix) opts in with SetPrimed(true) right after Arm.
+  self.primed = false
   render(self)
   self.frame:Show()
+end
+
+-- PRIMED (M4).  While primed the cursor sits at step 1 and only a press matching
+-- step 1 un-primes and begins the drain — every other press is ignored, so a
+-- pre-pull cast of a LATER step (Shadow Bolt) can no longer drop-through-match
+-- and silently consume the summons ahead of it.  See Advance.
+function QueueMeta:SetPrimed(v)
+  self.primed = v and true or false
 end
 
 -- A press landed.  Returns true if it advanced the queue (matched a step),
@@ -222,6 +241,18 @@ end
 -- consumes every earlier un-pressed one.
 function QueueMeta:Advance(spellID)
   if not self.armed or type(spellID) ~= "number" then return false end
+  -- PRIMED (M4): the queue waits at step 1 until the FIRST sequence key lands.
+  -- Only a press matching step 1's spell/alt un-primes; any other press is
+  -- ignored (no drop-through while primed) — the desync fix, so a pre-pull SB to
+  -- cap shards no longer matches the later SB step and eats the summons ahead of
+  -- it.  Once un-primed the normal drop-through drain below resumes.
+  if self.primed then
+    local s = self.steps[self.cursor]
+    if not (s and not s.consumed and (s.spell == spellID or s.alt == spellID)) then
+      return false
+    end
+    self.primed = false
+  end
   for k = self.cursor, #self.steps do
     local s = self.steps[k]
     if not s.consumed and (s.spell == spellID or s.alt == spellID) then
@@ -251,8 +282,8 @@ end
 -- readout stays legible.
 function QueueMeta:Info()
   local cur = self.steps[self.cursor]
-  return { armed = self.armed, cursor = self.cursor, total = #self.steps,
-           current = cur and (cur.label or cur.key) }
+  return { armed = self.armed, primed = self.primed, cursor = self.cursor,
+           total = #self.steps, current = cur and (cur.label or cur.key) }
 end
 
 --------------------------------------------------------------------------------
@@ -263,13 +294,15 @@ end
 -- and is not rebuilt on every RefreshLayout — exactly like HudChrome's __hudRail.
 -- `drop` is the gap between the viewer edge and the widget; `orient` is
 -- "horizontal" (a strip above the panel) or "vertical" (a list below it).
-function Q.Ensure(viewer, id, drop, orient)
+-- `host` (M4, optional) mounts the strip INSIDE that frame instead of above the
+-- viewer — how HudPane hosts the shared sequence strip.
+function Q.Ensure(viewer, id, drop, orient, host)
   if not viewer then return nil end
   viewer.__hudQueue = viewer.__hudQueue or {}
   local inst = viewer.__hudQueue[id]
   if inst then return inst end
   inst = setmetatable({ steps = {}, rows = {}, cursor = 1, drop = drop or 8,
-                        orient = orient or "horizontal" }, QueueMeta)
+                        orient = orient or "horizontal", host = host }, QueueMeta)
   inst.frame = buildFrame(viewer, inst)
   viewer.__hudQueue[id] = inst
   return inst

@@ -15,8 +15,10 @@ ns.version = (C_AddOns and C_AddOns.GetAddOnMetadata and C_AddOns.GetAddOnMetada
 local DEFAULTS = {
   skinOn = false,
   -- The real HUD's settings (HudCore fills missing sub-keys defensively too, so
-  -- a db written by an older build picks up keys added later).
-  hud = { on = false, opener = "off" },
+  -- a db written by an older build picks up keys added later).  `sequence` is the
+  -- M4 pane's saved position (over the character by default); copied fresh here so
+  -- HudPane never shares the module-level default table.
+  hud = { on = false, opener = "off", sequence = { point = "CENTER", x = 0, y = 120 } },
   reports = {},          -- persisted `/cdmp probe` output, read off disk
   -- M3e — the pull recorder's ring of the last N closed pulls.  STRUCTURED, not
   -- report text: `CDMProbeDB.pulls[3].hist` reads straight off disk, and nothing

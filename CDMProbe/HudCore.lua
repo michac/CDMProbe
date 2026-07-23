@@ -69,6 +69,12 @@ local function ensureDB()
   for k, v in pairs(HUD_DEFAULTS) do
     if ns.db.hud[k] == nil then ns.db.hud[k] = v end
   end
+  -- M4 — the sequence pane's saved position.  Back-filled as a FRESH table (never
+  -- a shared module default) so a drag can rewrite it safely; HudPane also reads
+  -- it defensively.  Kept out of HUD_DEFAULTS because that loop shares references.
+  if type(ns.db.hud.sequence) ~= "table" then
+    ns.db.hud.sequence = { point = "CENTER", x = 0, y = 120 }
+  end
   return ns.db.hud
 end
 
@@ -364,6 +370,8 @@ function ns.SetHud(on)
     ns.HudChrome.HideTerminal()
     ns.HudChrome.HideRail()
     if ns.HudOpener then ns.HudOpener.Hide() end
+    if ns.HudBurst then ns.HudBurst.Hide() end
+    if ns.HudPane then ns.HudPane.Hide() end
     for _, entry in pairs(M.items) do
       pcall(ns.HudChrome.Detach, entry.item)
     end
@@ -397,6 +405,10 @@ local function printStatus()
     db.rail ~= false and "|cff88ff88on|r" or "|cffff8080off|r")
   ns.Printf("  opener (M3c-c2): %s",
     ns.HudOpener and ns.HudOpener.StatusText() or "|cff808080module missing|r")
+  ns.Printf("  burst (M4): %s",
+    ns.HudBurst and ns.HudBurst.StatusText() or "|cff808080module missing|r")
+  ns.Printf("  sequence pane (M4): %s",
+    ns.HudPane and ns.HudPane.StatusText() or "|cff808080module missing|r")
   ns.Printf("  bind fires: RefreshLayout=%d  DATA_LOADED=%d  ENTERING_WORLD=%d  -> rebinds=%d  (|cffffd100no ticker running|r)",
     M.fires.layout, M.fires.dataLoaded, M.fires.enterWorld, M.fires.binds)
   ns.Printf("  hooks installed: %s", M.hooked and "|cff88ff88yes|r" or "|cffff4040no (viewers absent at install time)|r")
@@ -511,7 +523,7 @@ end
 -- toggling the whole HUD.  Every new subcommand goes ABOVE the bare-toggle tail,
 -- and the help string above is the only place a user learns it exists.
 ns.RegisterCommand("hud",
-  "the real spec HUD (dot score + why). 'hud log' = the last recorded pull (histogram + peak set + events; 'hud log all' for the ring); 'hud status' = the readout in chat; 'hud binds' = every slot/key per spell; 'hud debug' = verbose rows; 'hud rows' = toggle the rows entirely; 'hud rail' = toggle the shard rail + mode chrome; 'hud opener on|off' = the pre-pull opener strip (keybinds, above the panel; default off).",
+  "the real spec HUD (dot score + why). 'hud log' = the last recorded pull (histogram + peak set + events; 'hud log all' for the ring); 'hud status' = the readout in chat; 'hud binds' = every slot/key per spell; 'hud debug' = verbose rows; 'hud rows' = toggle the rows entirely; 'hud rail' = toggle the shard rail + mode chrome; 'hud opener on|off' = the pre-pull opener strip (now in the movable sequence pane; default off, shares the BURST window); 'hud pane lock|unlock' = position the over-the-character sequence pane.",
   function(rest)
     rest = (rest or ""):lower()
     if rest:find("status") then return printStatus() end
@@ -554,6 +566,18 @@ ns.RegisterCommand("hud",
       if M.on and ns.HudOpener then pcall(ns.HudOpener.Arm) end
       return ns.Printf("HUD opener: %s",
         ns.HudOpener and ns.HudOpener.StatusText() or tostring(db.opener))
+    end
+    -- M4 — the sequence pane's lock/unlock, the ONLY positioning path (it does not
+    -- ride Edit Mode — over-the-character placement is the point).  `unlock` shows
+    -- it draggable (a placeholder if idle); `lock` makes it click-through + hides
+    -- it when idle.  Above the bare-toggle tail like every other subcommand.
+    if rest:find("pane") then
+      if not ns.HudPane then return ns.Print("HUD: pane module missing.") end
+      local arg = rest:match("pane%s+(%S+)")
+      if arg == "lock" then ns.HudPane.SetLocked(true)
+      elseif arg == "unlock" then ns.HudPane.SetLocked(false)
+      else ns.HudPane.SetLocked(not ns.HudPane.locked) end
+      return ns.Printf("HUD sequence pane: %s", ns.HudPane.StatusText())
     end
     ns.SetHud(not ensureDB().on)
   end)

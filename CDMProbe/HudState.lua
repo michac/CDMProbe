@@ -108,6 +108,11 @@ local S = ns.HudState
 -- repeated, so the rail's mode and the board's quiet can never drift apart.
 local SPEND_AT     = 3
 local LOW_SHARDS   = SPEND_AT   -- "board quiet" only below the SPEND threshold
+-- M4 — the BURST lead.  How early (in seconds) Tyrant coming up flips the mode to
+-- BURST, so the capping rule starts HOLDING HoG before the window rather than at
+-- it.  DISTINCT from N.SOON_LEAD (=3, the dot's anticipation lead) by design
+-- (§0.5.8.6 correction 1: NOT §0.5.1's stale ~15s, which force-overcaps).
+local HOLD_LEAD    = 5.0
 local RECEDE_DELAY = 0.5    -- debounce; long enough not to strobe between GCDs
 local RECEDE_MULT  = 0.25   -- LOUD PASS: match HudChrome RECEDE_MIN (was 0.45)
 local POLL_PERIOD  = 0.1    -- ~10 Hz level backstop (a boolean read, no secret)
@@ -251,11 +256,10 @@ end
 --            reading "now dump".  Being early is never WRONG ABOUT WHAT YOU CAN
 --            PRESS, which is the §0.5.8.2(c) test the instructional cues fail.
 --
--- ⚠ BURST is a NAMED VACANCY, not an omission.  M4 inserts its branch between
--- PREP and SPEND:  `if tyrant_napkin <= HOLD_LEAD and board_staged -> "BURST"`,
--- with HOLD_LEAD ~= 5s (§0.5.8.6 correction 1 — NOT §0.5.1's stale ~15s, which
--- force-overcaps).  Leaving the slot here means M4 adds a branch instead of
--- rewriting the ladder.
+-- BURST sits BETWEEN PREP and SPEND (added by M4): `if tyrant ready-or-within-
+-- HOLD_LEAD -> "BURST"`, HOLD_LEAD ~= 5s (§0.5.8.6 correction 1 — NOT §0.5.1's
+-- stale ~15s, which force-overcaps).  Keyed on TYRANT ALONE — see S.Mode below
+-- for why Dreadstalkers is an output of the window, not part of its trigger.
 -- The manual single/AoE toggle.  `v` is truthy for AoE.  Recomputes so the
 -- board reflects the flip immediately, and logs it so a pull's events show WHEN
 -- you switched — an Implosion that lit is only sensible against the mode you
@@ -269,15 +273,37 @@ function S.SetAoE(v)
   return v
 end
 
+-- Is a go-gate summon READY (ground truth) or about to be (best-guess estimate)?
+-- Readiness off the SAME edge store the dot uses (S.readyAt, set by an observed
+-- Available alert); the napkin fills the "soon" lead when it's on cooldown.  An
+-- observed ready edge always wins — that is what keeps a wrong estimate safe.
+local function readyOrSoon(spellID, lead)
+  if spellID == nil then return false end
+  if S.readyAt[spellID] then return true end
+  local r = ns.HudNapkin and ns.HudNapkin.Remaining(spellID)
+  return r ~= nil and r <= (lead or HOLD_LEAD)
+end
+
 function S.Mode()
   local projected, isProjected = S.ProjectedShards()
   if projected == nil then return nil, nil, false end
   if not InCombatLockdown() then return "PREP", projected, isProjected end
-  -- [M4] BURST goes here.
+  -- [M4] BURST — the Tyrant window, keyed on TYRANT ALONE (Tyrant up or within
+  -- HOLD_LEAD).  Dreadstalkers is deliberately NOT in the trigger any more: M4
+  -- made it an OUTPUT of BURST (its dot reads "stage for Tyrant"), so folding it
+  -- into the trigger would be circular — a staged-and-held Dreadstalkers would
+  -- keep the window from ever opening.  Sits BETWEEN PREP and SPEND: the build-to-
+  -- cap rule and the Dreadstalkers stage-hold both read this one mode.  Best-guess
+  -- on the napkin clock (the §7.3 raid-readability assumption); safe because it
+  -- only ever HOLDS, never presses, and a native ready alert is ground truth.
+  if readyOrSoon(ns.SpecIDs and ns.SpecIDs.TYRANT, HOLD_LEAD) then
+    return "BURST", projected, isProjected
+  end
   if projected >= SPEND_AT then return "SPEND", projected, isProjected end
   return "GENERATE", projected, isProjected
 end
 S.SPEND_AT = SPEND_AT
+S.HOLD_LEAD = HOLD_LEAD
 
 -- Everything the rail draws, computed in ONE place so HudChrome stays a painter.
 -- `fill` is the smoothed figure: WHOLE shards from the gate every score already
@@ -326,6 +352,10 @@ function S.PaintRail()
       S.lastMode = key
     end
   end
+  -- M4 — the burst window is the sequence pane's second consumer, driven off the
+  -- mode.  Above the `rail = false` early-out for the same reason the log is: the
+  -- mode is STATE, not chrome, so turning the rail off must not turn burst off.
+  if ns.HudBurst then pcall(ns.HudBurst.OnMode, info.mode) end
   if ns.db and ns.db.hud and ns.db.hud.rail == false then return end
   pcall(ns.HudChrome.PaintRail, info)
 end
@@ -647,6 +677,7 @@ function S.Recompute()
   -- M3c-c2 — the opener's dissolve clock (first Tyrant window close).  On the
   -- same tail, no new ticker; a cheap elapsed-time compare against the Tyrant cast.
   if ns.HudOpener then ns.HudOpener.Tick() end
+  if ns.HudBurst then ns.HudBurst.Tick() end
   -- M3e — the SAMPLE, on the same tail and for the same reason: this is the one
   -- place that sees every input.  Sample() is one increment; the reason strings
   -- are built ONLY when it reports a new peak, which is rare by construction.
@@ -931,6 +962,9 @@ ev:SetScript("OnEvent", function(_, event, a1, a2, a3)
       -- again.  It is also the free fix for "should be up, unconfirmed": a
       -- drifted estimate is replaced by a real number the instant combat ends.
       pcall(S.SeedFromReads)
+      -- M4 — combat is over, so any open burst window is closed.  Dissolve it
+      -- FIRST, before the opener re-arms the shared pane below.
+      if ns.HudBurst then pcall(ns.HudBurst.OnCombatEnd) end
       -- M3c-c2 — we are back in PREP; re-arm the opener for the NEXT pull.
       if ns.HudOpener then pcall(ns.HudOpener.OnCombatEnd) end
     end
@@ -969,8 +1003,11 @@ ev:SetScript("OnEvent", function(_, event, a1, a2, a3)
     -- M3c-c2 — a SUCCEEDED cast advances the opener queue (STOP/INTERRUPTED do
     -- not: the press never landed).  a3 is the spellID; the consumer resolves it
     -- back to the base identity so a transformed press still matches its step.
-    if event == "UNIT_SPELLCAST_SUCCEEDED" and ns.HudOpener then
-      pcall(ns.HudOpener.OnCast, a3)
+    if event == "UNIT_SPELLCAST_SUCCEEDED" then
+      if ns.HudOpener then pcall(ns.HudOpener.OnCast, a3) end
+      -- M4 — the burst window is the second consumer of the same sequence pane;
+      -- ownership tags (HudPane) keep only the armed one advancing.
+      if ns.HudBurst then pcall(ns.HudBurst.OnCast, a3) end
     end
     -- The projection is retired by ANY end-of-cast, however it ended.  A cast
     -- that was interrupted spent nothing and a cast that landed has already

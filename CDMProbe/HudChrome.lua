@@ -944,13 +944,17 @@ local RAIL_COL = {
   PREP     = { 0.36, 0.66, 0.82 },   -- calm slate-cyan: visibly not GENERATE
   GENERATE = { 0.690, 0.420, 1.000 },-- soul purple
   SPEND    = { 1.000, 0.541, 0.239 },-- orange
+  -- M4 — BURST windup (Tyrant coming up, hold/cap).  A MINIMAL entry so the rail
+  -- doesn't misrender the new mode as UNKNOWN-grey (which would falsely claim
+  -- shards are unreadable); the fuller designed board tint (#10) stays deferred.
+  BURST    = { 0.98, 0.68, 0.22 },   -- deep amber: charged, about to unload
   CAP      = { 0.961, 0.773, 0.259 },-- gold
   UNKNOWN  = { 0.50, 0.50, 0.56 },   -- grey: a state, never a guess
 }
 local RAIL_EMPTY = { 0.10, 0.09, 0.13 }
 -- [X1]: the mode must be legible with hue ignored entirely.
 local RAIL_GLYPH = { PREP = "[.]", GENERATE = "[+]", SPEND = "[-]",
-                     CAP = "[!]", UNKNOWN = "[?]" }
+                     BURST = "[*]", CAP = "[!]", UNKNOWN = "[?]" }
 
 local rail
 local railStats = { edges = 0, glitters = 0, suppressed = 0, lastGlitter = 0 }

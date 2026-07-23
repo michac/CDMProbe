@@ -335,10 +335,54 @@ function Sc.For(key, e)
   -- 2. In SPEND mode a shard GENERATOR is counterproductive — you are meant to be
   --    dumping shards, not making more.  Catches Demonbolt (+2) and Shadow Bolt
   --    (+1); the primary spender (HoG) is exempt, and the burst/opener "bank it"
-  --    exception is M4, not built.
+  --    exception is rule 3 below (M4).
   if mode == "SPEND" and info.generates and not info.primary then
     out.level = Sc.LEVELS.NEVER
     R[#R + 1] = "spend mode — dump shards first"
+    return out
+  end
+  -- 3. [M4] BUILD TO CAP FOR THE TYRANT WINDOW — the inverse of the sustain loop.
+  --    In PREP/BURST the correct play is to build shards toward cap (5, not the
+  --    sustain threshold of 3) so you ENTER the window with a full bar.  The
+  --    spender (HoG) is held only BELOW cap; AT cap it falls through to the normal
+  --    gated-primary ROTATION below and greenlights — spend so you don't overcap,
+  --    or sustain to delay the burst (your call: §0.5.8.7 informs, never
+  --    instructs).  Net effect = the spend threshold rises from 3 to 5 inside the
+  --    window.  Fenced to the safe direction: it only ever HOLDS HoG (below cap)
+  --    and only promotes a builder that would not overcap, so a wrong BURST guess
+  --    wastes at most a GCD, never an instruction to press something unpressable.
+  if mode == "PREP" or mode == "BURST" then
+    -- Hold the primary spender (HoG) BELOW cap so shards build to 5; at cap fall
+    -- through so the gated ROTATION greenlights it (never overcap).  `shards` guard
+    -- means an unreadable count never forces a hold — the normal gate handles it.
+    if info.primary and shards and shards < (ns.SHARD_CAP or 5) then
+      out.level = Sc.LEVELS.AVAILABLE
+      R[#R + 1] = "build to cap for Tyrant"
+      return out
+    end
+    -- Promote the PURE BUILDER (Shadow Bolt: generates, no proc/spend of its own)
+    -- until near cap.  `not info.spends` isolates it from the reactive core/art
+    -- spenders (Demonbolt, Infernal Bolt), which are proc-gated not "press to
+    -- cap".  Overcap guard reused (see :387): a generator that would push past cap
+    -- is NOT promoted — it would waste the yield.
+    if info.generates and not info.spends and shards
+        and (shards + info.generates) <= (ns.SHARD_CAP or 5) then
+      out.level = Sc.LEVELS.ROTATION
+      out.candidate = false          -- a builder shouldn't nag to LATE
+      R[#R + 1] = "cap for Tyrant"
+      return out
+    end
+  end
+  -- 4. [M4] STAGE FOR TYRANT — hold a go-gate summon flagged `stage` inside the
+  --    BURST window so it lands FRESH in the window (rotation.md #5: a
+  --    Dreadstalkers cast too early expires before Tyrant lands).  Keyed on the
+  --    DATA BIT, never "goGate and not Tyrant", so it can never accidentally hold
+  --    Tyrant itself.  AVAILABLE, not NEVER — it's pressable; we're choosing to
+  --    wait, and the player still commits (§0.5.8.7).  Only in BURST: pre-pull the
+  --    opener pane owns Dreadstalkers' place in the sequence, not the dot.
+  if mode == "BURST" and info.stage then
+    out.level = Sc.LEVELS.AVAILABLE
+    R[#R + 1] = "stage for Tyrant"
     return out
   end
 

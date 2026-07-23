@@ -13,6 +13,7 @@ Probe.lua
 Resource.lua
 SpecDemonology.lua
 HudQueue.lua
+HudPane.lua
 HudTint.lua
 HudBinds.lua
 HudChrome.lua
@@ -21,5 +22,6 @@ HudScore.lua
 HudLog.lua
 HudState.lua
 HudOpener.lua
+HudBurst.lua
 HudRow.lua
 HudCore.lua
