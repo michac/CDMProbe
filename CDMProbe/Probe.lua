@@ -617,6 +617,15 @@ ns.RegisterCommand("probe",
     sectionStackWidth(snap)
     sectionBinds()
 
+    -- M4.6 — SECTION E, the cue colour watchdog.  Rides the probe rather than
+    -- living only behind `/cdmp hud cuewatch` so the evidence for the
+    -- intermittent-white report lands ON DISK with the rest of the capture and
+    -- can be asserted by `wowkb.cdmp` instead of read off a chat scrollback.
+    if ns.HudCueWatch then
+      snap.cueWatch = ns.HudCueWatch.Snapshot()
+      pcall(ns.HudCueWatch.Report)
+    end
+
     ns.db.probe = ns.db.probe or {}
     ns.db.probe[combat and "combat" or "ooc"] = snap
 

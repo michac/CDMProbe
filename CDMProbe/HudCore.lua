@@ -60,19 +60,38 @@ M.IsIconViewer = isIconViewer
 -- `rail` is DEFAULT-ON (M3c-c1): §0.5.2 makes shard-cap the one cue that
 -- survives every accessibility/mute ceiling, so the surface that carries it is
 -- not an opt-in.  ensureDB() back-fills it, so no migration is needed.
+-- `cuewatch` is DEFAULT-ON for M4.6 (see the HUD-enable path): the defect it
+-- hunts is intermittent, and an intermittent defect only gets caught by an
+-- instrument that was already running when it happened.
 local HUD_DEFAULTS = { on = false, opener = "off", rows = true, verbose = false,
-                       rail = true }
+                       rail = true, cuewatch = true }
+
+-- M4.6 §4.1 — the pane's default position moved BELOW the character.  ⚠ This was
+-- a SECOND COPY of that default: HudPane owns `DEFAULT_POS`, and this back-fill
+-- ran FIRST, so changing HudPane alone silently did nothing — the db was already
+-- populated with the old y=120 by the time the pane read it.  One fact, one home:
+-- this now defers to HudPane and only back-fills when the module is absent.
+local LEGACY_PANE_Y = 120        -- the pre-M4.6 over-the-head default
 
 local function ensureDB()
   ns.db.hud = ns.db.hud or {}
   for k, v in pairs(HUD_DEFAULTS) do
     if ns.db.hud[k] == nil then ns.db.hud[k] = v end
   end
-  -- M4 — the sequence pane's saved position.  Back-filled as a FRESH table (never
-  -- a shared module default) so a drag can rewrite it safely; HudPane also reads
-  -- it defensively.  Kept out of HUD_DEFAULTS because that loop shares references.
+  -- Back-filled as a FRESH table (never a shared module default) so a drag can
+  -- rewrite it safely; HudPane also reads it defensively.  Kept out of
+  -- HUD_DEFAULTS because that loop shares references.
+  local dp = ns.HudPane and ns.HudPane.DEFAULT_POS
   if type(ns.db.hud.sequence) ~= "table" then
-    ns.db.hud.sequence = { point = "CENTER", x = 0, y = 120 }
+    ns.db.hud.sequence = { point = dp and dp.point or "CENTER",
+                           x = dp and dp.x or 0, y = dp and dp.y or -170 }
+  elseif dp and ns.db.hud.sequence.point == "CENTER"
+     and ns.db.hud.sequence.x == 0 and ns.db.hud.sequence.y == LEGACY_PANE_Y then
+    -- MIGRATION.  Anyone who ran M4-M4.5 already has the old default persisted,
+    -- so the new default would never reach them and the pane would appear not to
+    -- have moved at all.  Rewrite ONLY the exact untouched legacy value — a
+    -- player who dragged it anywhere, including near here, keeps their placement.
+    ns.db.hud.sequence = { point = dp.point, x = dp.x, y = dp.y }
   end
   return ns.db.hud
 end
@@ -357,6 +376,12 @@ function ns.SetHud(on)
     ns.HudState.Start()
     ns.HudRow.verbose = db.verbose and true or false
     ns.HudRow.Set(db.rows ~= false)
+    -- M4.6 — the cue watchdog runs BY DEFAULT this release.  An intermittent
+    -- defect you have to remember to instrument is one you will not catch: the
+    -- white cue was reported across several play-tests precisely because nothing
+    -- was watching when it happened.  Cheap (4Hz over our own textures, no game
+    -- reads); `/cdmp hud cuewatch off` opts out, and the db key persists.
+    if ns.HudCueWatch and db.cuewatch ~= false then ns.HudCueWatch.Start() end
     ns.Print("HUD |cff88ff88ON|r — native icons, group brackets, keybinds, and the |cff88ff88dot score|r "
       .. "(level + why) beside each icon. |cffffffff/cdmp hud status|r for the readout, "
       .. "|cffffffff/cdmp hud debug|r for verbose rows.")
@@ -365,6 +390,7 @@ function ns.SetHud(on)
     ev:UnregisterAllEvents()
     ns.HudState.Stop()
     ns.HudRow.Hide()
+    if ns.HudCueWatch then ns.HudCueWatch.Stop() end
     ns.HudBinds.Stop()
     ns.HudChrome.HideTerminal()
     ns.HudChrome.HideRail()
@@ -522,7 +548,7 @@ end
 -- toggling the whole HUD.  Every new subcommand goes ABOVE the bare-toggle tail,
 -- and the help string above is the only place a user learns it exists.
 ns.RegisterCommand("hud",
-  "the real spec HUD (dot score + why). 'hud log' = the last recorded pull (histogram + peak set + events; 'hud log all' for the ring); 'hud status' = the readout in chat; 'hud binds' = every slot/key per spell; 'hud debug' = verbose rows; 'hud rows' = toggle the rows entirely; 'hud rail' = toggle the shard rail + mode chrome; 'hud opener on|off' = the pre-pull opener strip (now in the movable sequence pane; default off, shares the BURST window); 'hud pane lock|unlock' = position the over-the-character sequence pane.",
+  "the real spec HUD (dot score + why). 'hud log' = the last recorded pull (histogram + peak set + events; 'hud log all' for the ring); 'hud status' = the readout in chat; 'hud binds' = every slot/key per spell; 'hud debug' = verbose rows; 'hud rows' = toggle the rows entirely; 'hud cuewatch [on|off|clear]' = the M4.6 cue-colour watchdog (is the hue reaching the texture?); 'hud rail' = toggle the shard rail + mode chrome; 'hud opener on|off' = the pre-pull opener strip (now in the movable sequence pane; default off, shares the BURST window); 'hud pane lock|unlock' = position the over-the-character sequence pane.",
   function(rest)
     rest = (rest or ""):lower()
     if rest:find("status") then return printStatus() end
@@ -531,6 +557,27 @@ ns.RegisterCommand("hud",
     -- TOGGLES THE HUD, which is a very confusing way to learn you typo'd.
     if rest:find("log") then return ns.HudLog.Print(rest:find("all") ~= nil) end
     if rest:find("bind") then return printBinds() end
+    -- M4.6 — the cue colour watchdog.  `cuewatch` reports; `cuewatch on|off`
+    -- toggles the sampler; `cuewatch clear` resets.  Above the bare-toggle tail
+    -- and BEFORE the "rows"/"rail" matches, since substring dispatch is
+    -- order-sensitive and anything unmatched toggles the whole HUD.
+    if rest:find("cuewatch") then
+      local W = ns.HudCueWatch
+      if not W then return ns.Print("HUD: cue watchdog module missing.") end
+      local arg = rest:match("cuewatch%s+(%S+)")
+      local dbw = ensureDB()
+      if arg == "on" then
+        dbw.cuewatch = true
+        W.Start()
+        return ns.Print("cue watchdog |cff88ff88ON|r — play a pull, then /cdmp hud cuewatch.")
+      elseif arg == "off" then
+        dbw.cuewatch = false
+        W.Stop() return ns.Print("cue watchdog |cffff8080OFF|r.")
+      elseif arg == "clear" then
+        W.Clear() return ns.Print("cue watchdog counters cleared.")
+      end
+      return W.Report()
+    end
     if rest:find("dump") then return ns.HudRow.Dump() end
     if rest:find("debug") or rest:find("verbose") then
       return ns.HudRow.SetVerbose(not ns.HudRow.verbose)

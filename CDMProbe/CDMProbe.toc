@@ -18,6 +18,7 @@ HudFloat.lua
 HudTint.lua
 HudBinds.lua
 HudChrome.lua
+HudCueWatch.lua
 HudNapkin.lua
 HudScore.lua
 HudLog.lua

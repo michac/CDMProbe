@@ -91,7 +91,11 @@ P.hooks      = { onCorrect = nil, onMiss = nil, onComplete = nil }
 -- and all of which move.  Below the character the band is quiet, still central,
 -- and reads on the same glance as the personal resource display.
 -- Read defensively so a db written by an older build (no `sequence` key) works.
+-- Exposed on the module: HudCore's ensureDB back-fill must defer to THIS value
+-- rather than keeping its own copy (M4.6 — two copies is exactly how the first
+-- attempt at this move silently did nothing).
 local DEFAULT_POS = { point = "CENTER", x = 0, y = -170 }
+P.DEFAULT_POS = DEFAULT_POS
 local function savedPos()
   local p = ns.db and ns.db.hud and ns.db.hud.sequence
   if type(p) ~= "table" then p = DEFAULT_POS end

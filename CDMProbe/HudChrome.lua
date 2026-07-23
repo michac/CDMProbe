@@ -503,6 +503,14 @@ function H.SetCue(item, viewer, level, judgeReady, emphasis)
   f:Show()
 end
 
+-- The palette, exposed READ-ONLY for the cue watchdog (HudCueWatch, M4.6).  The
+-- watchdog must compare against the SAME table paintCue paints from — a second
+-- copy of the hues would drift and start reporting phantom divergences.
+function H.CueColor(level)
+  local spec = level and CUE[level]
+  return spec and spec.c or nil
+end
+
 function H.GetCue(item)
   local o = item and item.__hud
   return o and o.cueLevel or nil
