@@ -20,6 +20,12 @@ local DEFAULTS = {
   -- HudPane never shares the module-level default table.
   hud = { on = false, opener = "off", sequence = { point = "CENTER", x = 0, y = 120 } },
   reports = {},          -- persisted `/cdmp probe` output, read off disk
+  -- M4.5 T3 — the SAME probe observations as a STRUCTURED table, keyed by combat
+  -- state exactly like `reports`.  `reports` stays the human read; this is the
+  -- machine input for `wowkb.cdmp`, which must not text-parse a report this
+  -- codebase re-words freely.  Both are rendered from one in-memory observation
+  -- set per section (Probe.lua), so they cannot drift.
+  probe = {},
   -- M3e — the pull recorder's ring of the last N closed pulls.  STRUCTURED, not
   -- report text: `CDMProbeDB.pulls[3].hist` reads straight off disk, and nothing
   -- is printed to chat at pull end (ns.Print always writes to DEFAULT_CHAT_FRAME,

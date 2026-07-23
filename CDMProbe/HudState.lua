@@ -84,8 +84,8 @@ ns.HudState = {
   readySource    = {},    -- registry key -> "edge" | "seed"
   -- Did the last seeding pass actually get anything?  REPORTED, never assumed —
   -- the OOC read has only been measured open-world, and if it also goes secret
-  -- in some other out-of-combat context (an instance lobby, a raid between
-  -- pulls) seeding silently does less.  That has to show up here rather than be
+  -- in some other out-of-combat context (an instance lobby, between pulls)
+  -- seeding silently does less.  That has to show up here rather than be
   -- inferred later from a shrug.  Same standing risk the napkin carries.
   seed           = { passes = 0, blocked = 0, seeded = 0, ready = 0,
                      unreadable = 0, readable = nil, at = nil },
@@ -294,7 +294,7 @@ function S.Mode()
   -- into the trigger would be circular — a staged-and-held Dreadstalkers would
   -- keep the window from ever opening.  Sits BETWEEN PREP and SPEND: the build-to-
   -- cap rule and the Dreadstalkers stage-hold both read this one mode.  Best-guess
-  -- on the napkin clock (the §7.3 raid-readability assumption); safe because it
+  -- on the napkin clock (the §7.3 cast-readability assumption); safe because it
   -- only ever HOLDS, never presses, and a native ready alert is ground truth.
   if readyOrSoon(ns.SpecIDs and ns.SpecIDs.TYRANT, HOLD_LEAD) then
     return "BURST", projected, isProjected
@@ -1182,9 +1182,10 @@ function S.PrintStatus()
   ns.Printf("   target mode (/cdmp single|multi): %s  |cff808080(scaffolding — no Demo dot depends on it)|r",
     S.aoe and "|cffbef264MULTI (AoE)|r" or "|cff88ccffSINGLE|r")
   -- Is the whole anticipation feature live?  Reported, never assumed: this is
-  -- the milestones.md §7 standing assumption made visible.  CHECK IT IN A RAID —
-  -- the dummy and the delve already say yes, and a raid is the untested context
-  -- where the biggest win would silently go dark.
+  -- the milestones.md §7 assumption made visible.  The dummy and the delve both
+  -- say yes and we treat it as settled — this line exists so that if it is ever
+  -- wrong somewhere, you SEE it here instead of wondering why the biggest win
+  -- quietly stopped happening.
   ns.HudNapkin.PrintStatus()
   local counts, lit = {}, {}
   for key, sc in pairs(S.score) do

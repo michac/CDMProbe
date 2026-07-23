@@ -29,13 +29,13 @@
 --      that would make the dot lie.  Haste-scaled recharge and CDR make the
 --      estimate run long as often as short; the doctrine from notes.md §1 is
 --      round down, fire early, and yield to the observed edge.
---   3. READABILITY IS CHECKED, NOT ASSUMED.  milestones.md §7 carries a STANDING
---      ASSUMPTION that UNIT_SPELLCAST_SUCCEEDED's spellID is readable in all
---      combat contexts.  It is confirmed in a delve and at an open-world dummy
---      and has NEVER been confirmed in a raid.  If it reads secret, this module
---      records that and `hud status` reports "napkin unavailable" rather than
---      silently tracking nothing.  A feature that goes dark in the content it
---      matters most in should be visible, not inferred later from a shrug.
+--   3. READABILITY IS CHECKED, NOT ASSUMED.  milestones.md §7 assumes
+--      UNIT_SPELLCAST_SUCCEEDED's spellID is readable in all combat contexts —
+--      confirmed in a delve and at an open-world dummy, and taken as settled.
+--      The check stays anyway, because the cost of being wrong is a feature that
+--      silently tracks nothing: if it ever reads secret, this module records that
+--      and `hud status` reports "napkin unavailable".  Reported, not inferred
+--      later from a shrug.
 local ADDON, ns = ...
 
 --------------------------------------------------------------------------------
@@ -58,7 +58,7 @@ ns.HudNapkin = {
   casts    = {},     -- spellID -> { started, length, source = "cast"|"read" }
   readable = nil,    -- nil = no player cast seen yet; true/false = spellID legible
   seen     = 0,      -- SUCCEEDED events with a readable spellID
-  secret   = 0,      -- ...and with a secret one (the raid-context risk, counted)
+  secret   = 0,      -- ...and with a secret one (the go-dark risk, counted)
   tracked  = 0,      -- ...of those, how many had a base cooldown worth tracking
   cleared  = 0,      -- napkins retired by an observed Available edge (ground truth)
   seeded   = 0,      -- M3d — records written from a real client read, not arithmetic

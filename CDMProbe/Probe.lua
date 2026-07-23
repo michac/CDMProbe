@@ -19,7 +19,22 @@
 --      under CDMProbeDB.reports["probe_ooc"] / ["probe_combat"].
 -- Step 3 is not optional and is the one people forget: without a reload the file
 -- on disk still holds the PREVIOUS session's text, which looks exactly like a
--- probe that silently did nothing.
+-- probe that silently did nothing.  `/cdmp probe guide` tells you, IN GAME,
+-- which observations that loop is still missing.
+--
+-- TWO OUTPUTS, ONE OBSERVATION SET (M4.5 T3).  Every probe run writes both:
+--   * CDMProbeDB.reports[...] — the TEXT blob above, for a human.
+--   * CDMProbeDB.probe.ooc / .combat — the SAME facts as a structured table,
+--     for `uv run python -m wowkb.cdmp`, which asserts them against
+--     projects/cooldown-hud/probe-baseline.json.
+-- The reader must never text-parse the report (this codebase re-words it
+-- freely), so each section computes its observation as a VALUE first and then
+-- renders it twice — once as a chat line, once into the snapshot.  Read that as
+-- a rule: NEVER read the game a second time to fill the table.
+--
+-- The division of labour that falls out (m4.5-t3-plan.md):
+--   COLLECT a new observation -> addon change + release.
+--   ASSERT / interpret / re-verify -> local tooling, no release.
 local ADDON, ns = ...
 
 ns.Probe = {}
@@ -104,6 +119,19 @@ end
 -- two copies of a secret guard is exactly one copy too many.
 local secretTable = ns.IsSecretTable
 
+-- STASHABLE form of an observed value (M4.5 T3).  Everything in the structured
+-- snapshot ends up in SavedVariables, so a Secret Value must never reach it —
+-- serializing one would at best write garbage and at worst taint the writer.
+-- Secrets degrade to the STRING "<secret>", which is itself the finding the
+-- reader wants ("this read secret here"), and anything not a scalar drops to nil
+-- rather than persisting a live frame/table reference.
+local function stash(v)
+  if ns.IsSecret(v) then return "<secret>" end
+  local t = type(v)
+  if t == "number" or t == "boolean" or t == "string" then return v end
+  return nil
+end
+
 -- Every tracked icon-viewer spell, whether or not the HUD is running.  Reading
 -- the viewers directly (rather than ns.Hud.items) keeps the probe useful with
 -- the HUD off, which is the state a fresh install is in.
@@ -141,9 +169,10 @@ local function cdFields(spellID, label)
   ns.Printf("  %s: duration=%s startTime=%s", label, dur, start)
 end
 
-local function sectionSecrets()
+local function sectionSecrets(snap)
   ns.Heading("Secret map")
-  if not ns.SecretAPI() then
+  snap.secretAPI = ns.SecretAPI() and true or false
+  if not snap.secretAPI then
     ns.Print("  issecretvalue() absent — Secret Values not present on this build; everything is readable.")
     return
   end
@@ -177,31 +206,45 @@ end
 -- Printed per tracked spell rather than for a sample of three, because "readable
 -- for some spells" is a real possible answer (the GCD is whitelisted) and a
 -- three-row sample can't distinguish it from "readable for all".
-local function sectionCooldownReadability()
+local function sectionCooldownReadability(snap)
   ns.Heading("A. Cooldown readability — the M3d gate  (compare OOC vs in-combat)")
+  local reads = {}
+  snap.reads = reads
   if not (C_Spell and C_Spell.GetSpellCooldown) then
     ns.Print("  |cffff4040C_Spell.GetSpellCooldown absent|r")
     return
   end
   local readable, unreadable = 0, 0
   for _, s in ipairs(trackedSpells()) do
+    -- OBSERVE ONCE, into a value.  The text line and the stashed table below are
+    -- both rendered from `obs` — that is the no-drift rule (m4.5-t3-plan.md
+    -- "Open questions"): one observation set, two renderers, never two reads.
+    local obs
     local ok, info = pcall(C_Spell.GetSpellCooldown, s.id)
-    local verdict
     if not ok or type(info) ~= "table" then
-      verdict = "|cffff4040<call failed>|r"; unreadable = unreadable + 1
+      obs = { readable = false, why = "call failed" }
     elseif secretTable(info) then
-      verdict = "|cffff4040<secret table>|r"; unreadable = unreadable + 1
+      obs = { readable = false, why = "secret table" }
     else
       local d, st = info.duration, info.startTime
       if ns.IsSecret(d) or ns.IsSecret(st) then
-        verdict = "|cffff4040<secret fields>|r"; unreadable = unreadable + 1
+        obs = { readable = false, why = "secret fields" }
       else
-        readable = readable + 1
-        -- If this line ever prints real numbers, M3d is ON: duration==0 means
-        -- ready, and startTime+duration-now seeds the napkin directly.
-        verdict = string.format("|cff88ff88duration=%s startTime=%s|r",
-          ns.Describe(d), ns.Describe(st))
+        -- If this reads real numbers, M3d is ON: duration==0 means ready, and
+        -- startTime+duration-now seeds the napkin directly.
+        obs = { readable = true, duration = stash(d), startTime = stash(st) }
       end
+    end
+    reads[s.id] = obs
+
+    local verdict
+    if obs.readable then
+      readable = readable + 1
+      verdict = string.format("|cff88ff88duration=%s startTime=%s|r",
+        ns.Describe(obs.duration), ns.Describe(obs.startTime))
+    else
+      unreadable = unreadable + 1
+      verdict = string.format("|cffff4040<%s>|r", obs.why)
     end
     ns.Printf("   %-28s %s", (ns.SpellName(s.id) or tostring(s.id)):sub(1, 28), verdict)
   end
@@ -220,8 +263,32 @@ end
 -- If divergence appears with an event count of 0, the override event is NOT the
 -- mechanism for that button and item 6 must poll identity instead of trusting
 -- the event.  That is precisely the Grimoire case to watch for.
-local function sectionOverrides()
+-- base spellID -> live spellID for every tracked button that is transformed RIGHT
+-- NOW.  Factored out because `probe guide` asks the same question this section
+-- does, and two copies of "is anything transformed" would eventually answer it
+-- two different ways.
+local function divergenceNow()
+  local out = {}
+  for _, s in ipairs(trackedSpells()) do
+    local live = s.live
+    if type(live) == "number" and not ns.IsSecret(live) and live ~= s.id then
+      out[s.id] = live
+    end
+  end
+  return out
+end
+
+local function sectionOverrides(snap)
   ns.Heading("B. Spell overrides / transforms")
+  -- The two independent reads, each captured as a value before anything prints.
+  local pairsSeen = {}
+  for _, o in ipairs(P.overrides) do
+    pairsSeen[#pairsSeen + 1] = { base = stash(o.base), over = stash(o.over), at = stash(o.at) }
+  end
+  snap.overrides = { count = P.overrideCount, pairs = pairsSeen }
+  local divergence = divergenceNow()
+  snap.divergence = divergence
+
   ns.Printf("  COOLDOWN_VIEWER_SPELL_OVERRIDE_UPDATED fired: |cffffd100%d|r  (passive, since load)", P.overrideCount)
   for _, o in ipairs(P.overrides) do
     ns.Printf("    base=%s -> override=%s  (%s / %s)",
@@ -230,8 +297,8 @@ local function sectionOverrides()
   end
   local diverged = 0
   for _, s in ipairs(trackedSpells()) do
-    local live = s.live
-    if type(live) == "number" and not ns.IsSecret(live) and live ~= s.id then
+    local live = divergence[s.id]
+    if live then
       diverged = diverged + 1
       ns.Printf("    |cffffd100LIVE DIVERGENCE|r %s base=%d -> live=%d (%s)  [%s]",
         ns.SpellName(s.id) or "?", s.id, live, ns.SpellName(live) or "?", s.viewer)
@@ -244,22 +311,26 @@ local function sectionOverrides()
 end
 
 --------------------------------------------------------------------------------
--- SECTION C: cast readability per phase  (§7.2 item 7, §7 raid assumption)
+-- SECTION C: cast readability per phase  (§7.2 item 7, §7 cast assumption)
 --------------------------------------------------------------------------------
 -- SUCCEEDED carries the napkin (shipped).  START carries the spend-side
 -- anticipation (M3c item 7) and has NEVER been counted separately — the status
 -- block only ever reported SUCCEEDED.  A phase that reads secret while the other
--- doesn't is the single most consequential thing this probe can find in a raid.
-local function sectionCasts()
+-- doesn't would be invisible in aggregate, hence the per-phase split.
+local function sectionCasts(snap)
   ns.Heading("C. Player-cast spellID readability, per phase")
+  local casts = {}
+  snap.casts = casts
   for _, phase in ipairs({ "START", "SUCCEEDED", "STOP", "INTERRUPTED" }) do
     local b = P.casts[phase]
+    local obs = { readable = b.readable, secret = b.secret }
+    casts[phase] = obs
     local verdict
-    if b.readable + b.secret == 0 then verdict = "|cff808080no events yet|r"
-    elseif b.secret == 0 then verdict = "|cff88ff88fully readable|r"
-    elseif b.readable == 0 then verdict = "|cffff4040ALL SECRET — feature dark here|r"
+    if obs.readable + obs.secret == 0 then verdict = "|cff808080no events yet|r"
+    elseif obs.secret == 0 then verdict = "|cff88ff88fully readable|r"
+    elseif obs.readable == 0 then verdict = "|cffff4040ALL SECRET — feature dark here|r"
     else verdict = "|cffffd100MIXED — investigate|r" end
-    ns.Printf("   %-12s readable=%-4d secret=%-4d  %s", phase, b.readable, b.secret, verdict)
+    ns.Printf("   %-12s readable=%-4d secret=%-4d  %s", phase, obs.readable, obs.secret, verdict)
   end
   if #P.lastCasts > 0 then
     local out = {}
@@ -285,33 +356,67 @@ end
 -- review: a width derived from a secret may still taint on comparison, and
 -- Blizzard may well consider it a leak to be closed.  Record the fact, don't
 -- spend it.
-local function sectionStackWidth()
-  ns.Heading("D. Imp-count side channel (probe only — do not build on it yet)")
+-- The live Applications read, factored out for the same reason divergenceNow()
+-- is: `probe guide`'s imp goal asks exactly this.  Returns nil when the aura
+-- isn't tracked/active right now, `{ noFontString = true }` when the item exists
+-- without its FontString, else an obs table whose fields may be the STRING
+-- "<secret>" — which is itself the finding this section exists to record.
+-- ⚠ THE ANSWER IS ALREADY "CLOSED" (2026-07-21): GetStringWidth() and GetText()
+-- BOTH ERROR on this FontString, so there is no side channel to the digit count.
+-- This section therefore exists to RE-TEST that verdict every patch, which is why
+-- it records HOW each read failed rather than just failing quietly:
+--   * `errored`  — the pcall itself threw (today's answer, and the one the
+--                  baseline asserts).
+--   * "<secret>" — the call returned, carrying a Secret Value.
+-- Those are different worlds and collapsing them would hide the very flip
+-- (Blizzard opening a leak) this is here to catch.
+local function readField(obs, key, fn)
+  local ok = pcall(function() obs[key] = stash(fn()) end)
+  if not ok then
+    obs[key] = nil
+    obs[key .. "Errored"] = true
+    return
+  end
+  obs[key .. "Readable"] = (obs[key] ~= nil and obs[key] ~= "<secret>")
+end
+
+local function readImps()
   local wild = ns.SpecIDs and ns.SpecIDs.WILD_IMP
-  local found = false
   for _, name in ipairs({ "BuffIconCooldownViewer", "BuffBarCooldownViewer" }) do
     local viewer = ns.GetViewer(name)
     if viewer then
       for _, item in ipairs(ns.GetItemFrames(viewer)) do
-        local base = ns.ItemBaseSpellID(item)
-        if base == wild then
-          found = true
+        if ns.ItemBaseSpellID(item) == wild then
           local fs = item.Applications
-          if not fs then
-            ns.Print("  Wild Imp item has no Applications FontString right now")
-          else
-            local w, txt = "?", "?"
-            pcall(function() w = ns.Describe(fs:GetStringWidth()) end)
-            pcall(function() txt = ns.Describe(fs:GetText()) end)
-            ns.Printf("  Applications: GetStringWidth()=%s  GetText()=%s  shown=%s",
-              w, txt, tostring(item:IsShown()))
-          end
+          if not fs then return { noFontString = true } end
+          local obs = {}
+          readField(obs, "width", function() return fs:GetStringWidth() end)
+          readField(obs, "text", function() return fs:GetText() end)
+          pcall(function() obs.shown = item:IsShown() and true or false end)
+          return obs
         end
       end
     end
   end
-  if not found then
+  return nil
+end
+
+local function describeField(obs, key)
+  if obs[key .. "Errored"] then return "|cffff4040<errored>|r" end
+  return ns.Describe(obs[key])
+end
+
+local function sectionStackWidth(snap)
+  ns.Heading("D. Imp-count side channel (probe only — do not build on it yet)")
+  local obs = readImps()
+  if not obs then
     ns.Print("  Wild Imp aura not currently tracked/active — summon imps and re-run")
+  elseif obs.noFontString then
+    ns.Print("  Wild Imp item has no Applications FontString right now")
+  else
+    snap.imps = obs
+    ns.Printf("  Applications: GetStringWidth()=%s  GetText()=%s  shown=%s",
+      describeField(obs, "width"), describeField(obs, "text"), tostring(obs.shown))
   end
 end
 
@@ -365,35 +470,155 @@ local function sectionBinds()
 end
 
 --------------------------------------------------------------------------------
+-- `probe guide` — coverage, on demand  (M4.5 T3 / A2)
+--------------------------------------------------------------------------------
+-- PULL-BASED by design (Option 2): no frame, no ticker, no auto-refresh.  You
+-- re-type it whenever you want to know what is still missing.
+--
+-- WHAT IT BUYS IS TIMING.  Every goal below is already answerable from the
+-- capture — but only an hour later, from `wowkb.cdmp check`, when you are logged
+-- out and the missing observation costs another session.  Asking in-game means
+-- you learn the capture is incomplete while you are still standing at the dummy
+-- and able to fix it.
+--
+-- HONEST LIMIT: this DETECTS and NUDGES, it cannot CREATE state.  It can't force
+-- a Demonic Core proc or summon your imps on demand.  It makes the gap visible;
+-- you close it.
+--
+-- The list is deliberately small and lives here rather than being mirrored from
+-- probe-baseline.json — a handful of goals is not worth a second source of
+-- truth.  If it ever outgrows a handful, drive it from the baseline instead.
+local function snapshot(key)
+  local p = ns.db and ns.db.probe
+  if type(p) ~= "table" or type(p[key]) ~= "table" then return nil end
+  return p[key]
+end
+
+local function hasReads(snap)
+  return snap ~= nil and type(snap.reads) == "table" and next(snap.reads) ~= nil
+end
+
+local GOALS = {
+  { label = "OOC cooldown reads captured",
+    nudge = "run |cffffffff/cdmp probe|r out of combat",
+    met   = function() return hasReads(snapshot("ooc")) end },
+
+  { label = "SUCCEEDED seen readable",
+    nudge = "cast anything — the napkin/anticipation engine rides on this",
+    met   = function() return P.casts.SUCCEEDED.readable > 0 end },
+
+  { label = "a transform observed",
+    nudge = "arm a Demonic Art / let a Grimoire hit cooldown",
+    met   = function()
+      if P.overrideCount > 0 then return true end
+      if next(divergenceNow()) ~= nil then return true end
+      for _, k in ipairs({ "ooc", "combat" }) do
+        local s = snapshot(k)
+        if s and type(s.divergence) == "table" and next(s.divergence) ~= nil then return true end
+      end
+      return false
+    end },
+
+  -- NOT "imp count >=2 seen".  The side channel is CLOSED — both reads error —
+  -- so a goal asking for a readable count could never go green and `coverage
+  -- complete` would be unreachable forever.  What is still worth asking each
+  -- patch is whether the capture EXERCISED the channel at all, because an
+  -- un-exercised Section D leaves the "still closed?" assumption unre-tested.
+  { label = "imp aura observed (re-tests the closed side channel)",
+    nudge = "summon imps (Hand of Gul'dan), then re-run",
+    met   = function()
+      if readImps() ~= nil then return true end
+      for _, k in ipairs({ "ooc", "combat" }) do
+        local s = snapshot(k)
+        if s and type(s.imps) == "table" then return true end
+      end
+      return false
+    end },
+
+  { label = "in-combat probe taken",
+    nudge = "pull a dummy, then |cffffffff/cdmp probe|r again",
+    met   = function() return hasReads(snapshot("combat")) end },
+}
+
+local function printGuide()
+  ns.Heading("probe coverage — what this capture still needs")
+  local left = 0
+  for _, g in ipairs(GOALS) do
+    local ok = false
+    local called, res = pcall(g.met)
+    if called then ok = res and true or false end
+    if ok then
+      ns.Printf("  |cff88ff88[x]|r %s", g.label)
+    else
+      left = left + 1
+      ns.Printf("  |cff808080[ ]|r %s   |cffffd100<- %s|r", g.label, g.nudge)
+    end
+  end
+  if left == 0 then
+    ns.Print("  |cff88ff88coverage complete|r — |cffffffff/reload|r, then |cffffffffuv run python -m wowkb.cdmp check|r")
+  else
+    ns.Printf("  -> |cffffd100%d goal%s left|r; re-run |cffffffff/cdmp probe guide|r to re-check, then |cffffffff/reload|r",
+      left, left == 1 and "" or "s")
+  end
+  ns.Print("  |cff808080(start a session with `/cdmp probe clear` so these read THIS session)|r")
+end
+
+--------------------------------------------------------------------------------
 -- The command
 --------------------------------------------------------------------------------
 ns.RegisterCommand("probe",
-  "run EVERY probe and save the report to disk (run once OOC, once in combat, then /reload)",
+  "run EVERY probe and save the report to disk (run once OOC, once in combat, then /reload). `probe guide` = what coverage is still missing; `probe clear` = reset for a new session",
   function(rest)
     rest = (rest or ""):lower()
+    if rest:find("guide") then
+      return printGuide()
+    end
     if rest:find("clear") or rest:find("reset") then
       for _, b in pairs(P.casts) do b.readable, b.secret = 0, 0 end
       wipe(P.overrides); wipe(P.lastCasts)
       P.overrideCount, P.dataLoaded = 0, 0
       P.glow.show, P.glow.hide = 0, 0
-      return ns.Print("passive probe counters cleared.")
+      -- The stored SNAPSHOTS go too, and that is the point of calling this at
+      -- the start of a session: `probe guide`'s "in-combat probe taken" goal is
+      -- a test of THIS session's coverage, and a snapshot left on disk from last
+      -- week would tick it green while the capture you are about to hand the
+      -- reader has no combat half at all.
+      if ns.db then ns.db.probe = {} end
+      return ns.Print("passive probe counters + stored snapshots cleared.")
     end
 
+    local combat = InCombatLockdown() and true or false
     ns.BeginCapture()
     ns.Heading(string.format("CDMProbe v%s — full probe   (in combat: %s)",
-      ns.version, tostring(InCombatLockdown())))
+      ns.version, tostring(combat)))
     local inst = "?"
     pcall(function() local _, t = IsInInstance(); inst = tostring(t) end)
     ns.Printf("  instance type: %s   |   HUD: %s",
       inst, (ns.Hud and ns.Hud.on) and "|cff88ff88on|r" or "off")
 
+    -- M4.5 T3 — the structured half.  Each section below fills its own slice of
+    -- `snap` from the SAME value it prints its text line from, so the report a
+    -- human reads and the table `wowkb.cdmp` checks can never disagree.
+    local snap = {
+      at         = date("%Y-%m-%d %H:%M:%S"),
+      capturedAt = GetTime(),
+      version    = ns.version,
+      combat     = combat,
+      instance   = inst,
+      interface  = "?",
+    }
+    pcall(function() snap.interface = tostring(select(4, GetBuildInfo())) end)
+
     ns.DumpViewers()
-    sectionSecrets()
-    sectionCooldownReadability()
-    sectionOverrides()
-    sectionCasts()
-    sectionStackWidth()
+    sectionSecrets(snap)
+    sectionCooldownReadability(snap)
+    sectionOverrides(snap)
+    sectionCasts(snap)
+    sectionStackWidth(snap)
     sectionBinds()
+
+    ns.db.probe = ns.db.probe or {}
+    ns.db.probe[combat and "combat" or "ooc"] = snap
 
     -- The HUD's own state/score/napkin readout, so ONE report has everything.
     if ns.Hud and ns.Hud.on then
@@ -411,7 +636,7 @@ ns.RegisterCommand("probe",
       ns.Print("(HUD off — enable it with /cdmp hud for the state + score block, and NOTHING IS BEING RECORDED)")
     end
 
-    ns.EndCapture("probe_" .. (InCombatLockdown() and "combat" or "ooc"))
+    ns.EndCapture("probe_" .. (combat and "combat" or "ooc"))
     ns.Print("|cffffd100now /reload|r — SavedVariables only flush on reload/logout.")
   end)
 

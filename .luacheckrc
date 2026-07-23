@@ -29,7 +29,7 @@ stds.wow = {
     "GetBindingKey", "GetBindingText", "SecureButton_GetModifiedAttribute",
     "GetCVar", "GetCVarBool", "InterfaceOptions_AddCategory",
     "STANDARD_TEXT_FONT", "SOUNDKIT", "PlaySound", "date",
-    "IsInInstance", "IsPlayerSpell", "IsSpellKnown",
+    "IsInInstance", "IsPlayerSpell", "IsSpellKnown", "GetBuildInfo",
     -- Power / unit reads -------------------------------------------------------
     "UnitPower", "UnitPowerMax", "UnitExists", "UnitGUID", "UnitClass",
     "GetSpecialization", "GetSpecializationInfo",

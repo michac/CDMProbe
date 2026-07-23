@@ -42,7 +42,8 @@ Design context + status live in the parent workspace at
   **A** cooldown readability per tracked spell (the M3d gate), **B** overrides and
   live base-vs-live divergence, **C** per-phase cast readability, **D** the
   imp-count side-channel probe, plus the HUD's own state/score/napkin block.
-  `probe clear` resets the passive counters.
+  `probe clear` resets the passive counters **and the stored snapshots** — run it
+  at the start of a session so coverage reads as *this* session's.
   **The loop:** `/cdmp probe` out of combat → pull → `/cdmp probe` in combat →
   **`/reload`** → reports are at
   `…/_retail_/WTF/Account/<ACCT>/SavedVariables/CDMProbe.lua` under
@@ -50,6 +51,25 @@ Design context + status live in the parent workspace at
   ⚠ The `/reload` is **not optional** — SavedVariables only flush on
   reload/logout, so skipping it leaves last session's text on disk, which looks
   exactly like a probe that silently did nothing.
+  - **Two outputs, one observation set (v0.25.0, M4.5 T3).** Every probe run also
+    writes the same facts as a **structured table** at `CDMProbeDB.probe.ooc` /
+    `.combat` — the machine input for `wowkb.cdmp`, which must never text-parse a
+    report this codebase re-words freely. Each section computes its observation as
+    a **value** first and renders it twice (chat line + snapshot), so the two can't
+    drift. **Rule: never read the game a second time to fill the table.** A field
+    that would carry a Secret Value is stashed as the string `"<secret>"`; a read
+    that *errors* is flagged `<field>Errored` — different worlds, kept distinct.
+  - **`probe guide`** — a **pull-based** coverage checklist (no frame, no
+    auto-refresh; re-type it to re-check). Ticks each goal — OOC reads captured,
+    SUCCEEDED seen readable, a transform observed, imp aura observed, in-combat
+    probe taken — names what's missing and nudges, and reports "coverage complete"
+    only when all are met. **What it buys is timing:** you learn the capture is
+    incomplete while still at the dummy, not an hour later from `wowkb.cdmp check`.
+    It *detects and nudges*; it cannot *create* state (no proc, no imps on demand).
+  - **The division of labour** (`docs/m4.5-t3-plan.md`): **collect** a new
+    observation → addon change + release; **assert / interpret / re-verify** →
+    local tooling, no release. That is why the expectations live in
+    `projects/cooldown-hud/probe-baseline.json`, not in shipped Lua.
 - `hud` — **the real HUD (M3+).** Binds per item to the **live** CDM layout by
   `cooldownID` off the `RefreshLayout` hook (+ `COOLDOWN_VIEWER_DATA_LOADED` /
   `PLAYER_ENTERING_WORLD`) — no ticker. Blizzard's icons stay **native and
@@ -199,6 +219,22 @@ put `~/.luarocks/bin` on PATH.
   luacheck CDMProbe/
   busted CDMProbe/tests/spec
   ```
+
+The **third rung is `wowkb.cdmp`** (M4.5 T3) — the one that reaches what neither
+luacheck nor busted can: the *live* Secret-Value / override / cast-readability
+paths. It runs **in the parent workspace, not here**, against a real capture:
+
+```bash
+cd ~/code/fun/wow/tools
+uv run python -m wowkb.cdmp check     # assert the capture vs probe-baseline.json
+uv run python -m wowkb.cdmp show      # pretty-print it
+uv run python -m wowkb.cdmp diff      # ooc vs combat — the M3d seam
+```
+
+`check` exits non-zero on any high-severity failure. Because the assertions live
+in `projects/cooldown-hud/probe-baseline.json` (local JSON) rather than in shipped
+Lua, **retuning or adding one needs no release** — only *collecting a new
+observation* does.
 
 **The release flow runs luacheck automatically** (`wowkb.addon release cdmp`), as a
 SOFT gate above luaparser: it fires only for an addon that ships a `.luacheckrc`
