@@ -107,45 +107,49 @@ local STACK_SIZE   = 30     -- Wild Imp count: the one AoE readout (§0.5.8.3 #1
                             -- icon art it sits on.
 local STACK_COL    = { 1.00, 0.86, 0.35 }   -- bright gold; must beat the icon art
 
--- ── The DOT (M3c-a, §0.5.8.7) ────────────────────────────────────────────────
--- A NEW OBJECT, which is the whole point: hue is spoken for (group), saturation
--- is spoken for (pole), luminance is spoken for (readiness), alpha is spoken for
--- (recede).  There was no free channel left, so actionability gets its own mark.
+-- ── The BLEED (M4.1, §0.5.8.7) ───────────────────────────────────────────────
+-- Replaces the masked-disc dot.  hue is spoken for (group), saturation (pole),
+-- luminance (readiness), alpha (recede) — no free channel on the icon, so the
+-- actionability signal gets its OWN mark.  M4.1's first play-test found the disc
+-- too subtle, so the mark is now a horizontal GRADIENT that bleeds off the icon's
+-- outer edge (a "coloured shadow") — preattentive, no line to read, and it lets
+-- the reason text drop out of non-verbose rows entirely.
 --
--- COLOUR HERE CARRIES **LEVEL**, NOT GROUP.  Group is already on the bracket;
--- level is the information.  That inversion is deliberate and is the single
--- biggest departure from M3b.
-local DOT_GAP   = 8         -- icon edge -> dot
-local DOT_BOX   = 16        -- the dot frame's box (the disc sizes inside it)
-local ROW_GAP   = 6         -- dot -> text
-H.ROW_OFFSET    = DOT_GAP + DOT_BOX + ROW_GAP   -- where HudRow anchors its text
+-- COLOUR CARRIES **LEVEL**, NOT GROUP (the M3b inversion, unchanged); SPREAD +
+-- INTENSITY carry it redundantly ([X1]) so it survives a dim monitor / colour-
+-- blindness and is never colour-alone.
+--   NEVER / AVAILABLE (held / overcap / quiet) — no bleed
+--   judge-ready (Implosion off CD, gate is a secret) — cyan, narrow, steady
+--   SOON     — yellow, medium, gentle alpha pulse
+--   ROTATION — green, wide, steady
+--   LATE     — green, wide, slow size pulse
+local BLEED_H_PAD = 5            -- bleed overshoots the icon height top+bottom
+local BLEED_MAX_W = 72           -- the widest bleed (ROTATION/LATE) — sizes ROW_OFFSET
+H.ROW_OFFSET      = BLEED_MAX_W + 8   -- where HudRow anchors its (debug-only) text
 
--- size   — disc diameter
--- draw   — false: no dot at all (the level is still scored, just not marked)
--- sizePulse — bounce the DIAMETER (grow/shrink), period in seconds; nil = static
--- pulse  — alpha bounce period; nil = no alpha motion
---
--- ⚠ v0.16.2 FLAT-COLOUR TEST (user call, 2026-07-21).  The graded
--- hollow/alpha/luminance scheme read backwards in game — AVAILABLE looked
--- brighter and more urgent than ROTATION/LATE, SOON was hard to spot.  So this
--- is a deliberately BLUNT palette: every drawn dot is SOLID and full-alpha, and
--- the only channels carrying meaning are HUE and, for LATE, SIZE MOTION.
---   NEVER     black    — can't press it (tiny, nearly invisible on the terminal)
---   AVAILABLE none      — could, but we're not calling it: no dot
---   ROTATION  green     — press this now (steady, bright)
---   SOON      yellow    — anticipation: coming up (gentle pulse to catch the eye)
---   LATE      green + SIZE PULSE — overdue; same colour as ROTATION but it
---             grows and shrinks so "you're ignoring it" reads without a new hue
--- Hollow is retired here; the B4 estimate marker rides on the row text (`~est`)
--- for the duration of this test.
-local DOT = {
-  NEVER     = { c = { 0.05, 0.05, 0.06 }, a = 1.00, size = 7,  draw = true },
-  AVAILABLE = { c = { 0.29, 1.00, 0.48 }, a = 1.00, size = 12, draw = false },
-  SOON      = { c = { 1.00, 0.86, 0.15 }, a = 1.00, size = 13, draw = true, pulse = 0.75 },
-  ROTATION  = { c = { 0.24, 1.00, 0.42 }, a = 1.00, size = 15, draw = true },
-  LATE      = { c = { 0.24, 1.00, 0.42 }, a = 1.00, size = 15, draw = true, sizePulse = 0.55, pulseMin = 0.62, pulseMax = 1.30 },
+-- c        — the level hue
+-- w        — spread: how far the bleed reaches off the icon edge, in px
+-- a        — peak alpha at the icon edge (fades to 0 outward)
+-- pulse    — alpha bounce period, seconds (SOON) ; nil = steady
+-- sizePulse— width bounce period (LATE) ; nil = static.  pulseMin/Max scale it.
+local BLEED = {
+  JUDGE    = { c = { 0.27, 0.88, 1.00 }, w = 26, a = 0.60 },
+  SOON     = { c = { 1.00, 0.86, 0.15 }, w = 46, a = 0.55, pulse = 0.85 },
+  ROTATION = { c = { 0.24, 1.00, 0.42 }, w = BLEED_MAX_W, a = 0.80 },
+  LATE     = { c = { 0.24, 1.00, 0.42 }, w = BLEED_MAX_W, a = 0.80,
+               sizePulse = 1.1, pulseMin = 0.86, pulseMax = 1.16 },
 }
-H.DOT_COLORS = DOT
+
+-- Level -> word colour, for the DEBUG rows only (non-verbose draws no words).
+-- Derived from the bleed hues so the word and the bleed teach each other; keeps
+-- the H.DOT_COLORS name HudRow.levelTag already reads.
+H.DOT_COLORS = {
+  NEVER     = { c = { 0.55, 0.55, 0.60 } },
+  AVAILABLE = { c = { 0.29, 1.00, 0.48 } },
+  SOON      = { c = BLEED.SOON.c },
+  ROTATION  = { c = BLEED.ROTATION.c },
+  LATE      = { c = BLEED.LATE.c },
+}
 
 -- The group-hue BRACKET around each icon.  Turned OFF for the v0.16.2 test: it
 -- grew and shrank with the row text width (which is loudest on the LONGEST,
@@ -159,7 +163,6 @@ local SHOW_BRACKET = false
 -- strength — read by `hud status` and the verbose row, and by HudState's
 -- "board-quiet" recede gate) but draw nothing.  Flip back to true to restore it.
 local SHOW_GLOW = false
-local DOT_MASK = "Interface\\CharacterFrame\\TempPortraitAlphaMask"
 local BRACKET_PAD = 4
 
 -- Push a colour toward/away from its own grey, holding luminance constant.
@@ -306,122 +309,130 @@ function H.Apply(o)
   end
   o.key:SetAlpha(recede)
   if o.glow then H.paintGlow(o) end
-  if o.dotLevel then H.paintDot(o) end
+  if o.bleedLevel then H.paintBleed(o) end
 end
 
 --------------------------------------------------------------------------------
--- The dot — §0.5.8.7, the actionability mark
+-- The bleed — §0.5.8.7, the actionability mark (M4.1)
 --------------------------------------------------------------------------------
--- Circular via WHITE8X8 + a TempPortraitAlphaMask MaskTexture, falling back to a
--- plain square if the mask fails — the same defensive idiom as HudRow's
--- applyFont.  A square dot is a cosmetic loss; a Lua error in a per-item paint
--- path is the HUD going dark, so this never gets to throw.
-local function ensureDot(o, item)
-  if o.dot then return o.dot end
+-- A horizontal gradient texture off the icon's OUTER edge (right for Essential,
+-- left for Utility, per H.SideFor), fading colour -> transparent outward.  It
+-- draws on WHITE8X8 tinted by Texture:SetGradient; the gradient API shape varies
+-- by client generation, so the paint is wrapped in pcall and falls back to a flat
+-- solid bleed — the same defensive idiom as the old dot's mask/scale setters.  A
+-- flat fallback is a cosmetic loss; a throw in a per-item paint path is the HUD
+-- going dark, so this never gets to throw.
+local function ensureBleed(o, item)
+  if o.bleed then return o.bleed end
   local f = CreateFrame("Frame", nil, item)
-  f:SetSize(DOT_BOX, DOT_BOX)
-  f:SetFrameLevel(o.frame:GetFrameLevel() + 3)
-
-  local outer = f:CreateTexture(nil, "OVERLAY")
-  outer:SetPoint("CENTER")
-  outer:SetTexture("Interface\\Buttons\\WHITE8X8")
-  -- The inner disc is what turns a solid dot into a RING: it punches a dark hole
-  -- rather than being a second colour, so the ring reads at any size.
-  local inner = f:CreateTexture(nil, "OVERLAY", nil, 1)
-  inner:SetPoint("CENTER")
-  inner:SetTexture("Interface\\Buttons\\WHITE8X8")
-
-  f.round = pcall(function()
-    for _, t in ipairs({ outer, inner }) do
-      local m = f:CreateMaskTexture()
-      m:SetTexture(DOT_MASK, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
-      m:SetAllPoints(t)
-      t:AddMaskTexture(m)
-    end
-  end)
+  f:SetFrameLevel(o.frame:GetFrameLevel() + 2)
+  local t = f:CreateTexture(nil, "OVERLAY")
+  t:SetTexture("Interface\\Buttons\\WHITE8X8")
+  t:SetAllPoints(f)
 
   -- Two independent pulse groups: an ALPHA bounce (SOON) and a SCALE bounce
-  -- (LATE's grow/shrink).  Kept separate so a level picks exactly one and the
-  -- other never fights it.  Scale animates the whole dot frame about its centre.
+  -- (LATE's slow grow/shrink).  Kept separate so a level picks exactly one and
+  -- the other never fights it.  The scale origin is set at the icon edge in
+  -- anchorBleed so the bleed grows OUTWARD, not from its centre.
   local ag = f:CreateAnimationGroup()
   local a = ag:CreateAnimation("Alpha")
-  a:SetFromAlpha(0.55)
+  a:SetFromAlpha(0.45)
   a:SetToAlpha(1.00)
   ag:SetLooping("BOUNCE")
 
   local sg = f:CreateAnimationGroup()
   local sc = sg:CreateAnimation("Scale")
-  -- Method names differ across API generations; set from/to defensively so a
-  -- rename degrades to "no pulse" rather than a thrown error in a paint path.
-  pcall(function() sc:SetOrigin("CENTER", 0, 0) end)
   sg:SetLooping("BOUNCE")
 
-  f.ag, f.anim = ag, a
+  f.tex, f.ag, f.anim = t, ag, a
   f.sg, f.scaleAnim = sg, sc
-  f.outer, f.inner = outer, inner
   f:Hide()
-  o.dot = f
+  o.bleed = f
   return f
 end
 
-local function anchorDot(o)
-  local f = o.dot
+-- Anchor top/bottom to the icon (so the bleed is the icon's height + overshoot),
+-- pinned by the icon-edge side; the width is set per-paint from the level spec.
+local function anchorBleed(o)
+  local f = o.bleed
   if not f then return end
   f:ClearAllPoints()
   if o.side == "LEFT" then
-    f:SetPoint("RIGHT", o.item, "LEFT", -DOT_GAP, 0)
+    f:SetPoint("TOPRIGHT", o.item, "TOPLEFT", 2, BLEED_H_PAD)
+    f:SetPoint("BOTTOMRIGHT", o.item, "BOTTOMLEFT", 2, -BLEED_H_PAD)
   else
-    f:SetPoint("LEFT", o.item, "RIGHT", DOT_GAP, 0)
+    f:SetPoint("TOPLEFT", o.item, "TOPRIGHT", -2, BLEED_H_PAD)
+    f:SetPoint("BOTTOMLEFT", o.item, "BOTTOMRIGHT", -2, -BLEED_H_PAD)
   end
+  -- Grow outward from the icon edge (the pinned side), never from the centre.
+  pcall(function() f.scaleAnim:SetOrigin(o.side == "LEFT" and "RIGHT" or "LEFT", 0, 0) end)
   f.anchoredSide = o.side
 end
 
--- Repaint at the current level x recede.  Recede is baked into the TEXTURE
+-- Repaint at the current level x recede.  Recede is baked into the gradient
 -- alpha, never the frame alpha — the frame's alpha belongs to the pulse, and
 -- letting the two share a channel is how a receding board would kill the motion.
-function H.paintDot(o)
-  local f = o.dot
-  local spec = DOT[o.dotLevel]
+function H.paintBleed(o)
+  local f = o.bleed
+  local spec = o.bleedLevel and BLEED[o.bleedLevel]
   if not (f and spec) then return end
-  if f.anchoredSide ~= o.side then anchorDot(o) end
+  if f.anchoredSide ~= o.side then anchorBleed(o) end
+  f:SetWidth(spec.w)
+  local c = spec.c
   local a = spec.a * recede
-  f.outer:SetSize(spec.size, spec.size)
-  f.outer:SetColorTexture(spec.c[1], spec.c[2], spec.c[3], a)
-  -- v0.16.2 test: all dots solid.  The ring/hollow estimate marker is retired
-  -- for now (it rides on the row's `~est` text); nothing draws the inner disc.
-  f.inner:Hide()
+  local t = f.tex
+  local ok = pcall(function()
+    -- White base, gradient tints it.  Solid at the icon edge -> transparent
+    -- outward; the SOLID end is whichever side the icon is on.
+    t:SetColorTexture(1, 1, 1, 1)
+    local solid = CreateColor(c[1], c[2], c[3], a)
+    local clear = CreateColor(c[1], c[2], c[3], 0)
+    if o.side == "LEFT" then
+      t:SetGradient("HORIZONTAL", clear, solid)  -- icon on the RIGHT
+    else
+      t:SetGradient("HORIZONTAL", solid, clear)  -- icon on the LEFT
+    end
+  end)
+  if not ok then
+    -- Flat solid fallback: a rename degrades to "less pretty", never a throw.
+    t:SetColorTexture(c[1], c[2], c[3], a * 0.55)
+  end
 end
 
--- level:  one of the DOT keys, or nil to clear the dot entirely.
--- hollow: force the ring treatment regardless of the level's own default — the
---         confidence marker for a dot derived from an estimate (B4).
-function H.SetDot(item, viewer, level, hollow)
+-- level:      one of the score LEVELS ("NEVER"/"AVAILABLE"/"SOON"/"ROTATION"/
+--             "LATE"), or nil to clear the bleed entirely.
+-- judgeReady: true when a judgeable=false ability is otherwise up (Implosion off
+--             cooldown) — the one AVAILABLE that lights (cyan "ready, your call").
+-- NEVER and plain AVAILABLE draw NOTHING; the board only ever bleeds a call.
+function H.SetDot(item, viewer, level, judgeReady)
   local o = item and item.__hud
   if not o then return end
   if viewer then o.side = H.SideFor(viewer) end
-  -- `draw = false` (AVAILABLE) is scored but UNMARKED — treated exactly like no
-  -- dot, so the board only ever shows the levels that carry a call.
-  local spec = level and DOT[level]
-  if not spec or spec.draw == false then
-    o.dotLevel = nil
-    o.dotHollow = false
-    if o.dot then o.dot.ag:Stop(); o.dot.sg:Stop(); o.dot:SetScale(1); o.dot:Hide() end
+  local bkey
+  if level == "SOON" then bkey = "SOON"
+  elseif level == "ROTATION" then bkey = "ROTATION"
+  elseif level == "LATE" then bkey = "LATE"
+  elseif level == "AVAILABLE" and judgeReady then bkey = "JUDGE"
+  end
+  local spec = bkey and BLEED[bkey]
+  if not spec then
+    o.bleedLevel = nil
+    if o.bleed then o.bleed.ag:Stop(); o.bleed.sg:Stop(); o.bleed:SetScale(1); o.bleed:Hide() end
     return
   end
-  local f = ensureDot(o, item)
-  local changed = (o.dotLevel ~= level)
-  o.dotLevel = level
-  o.dotHollow = hollow and true or false
-  H.paintDot(o)
+  local f = ensureBleed(o, item)
+  local changed = (o.bleedLevel ~= bkey)
+  o.bleedLevel = bkey
+  H.paintBleed(o)
   if changed then
     f.ag:Stop(); f.sg:Stop()
     f:SetAlpha(1); f:SetScale(1)
     if spec.sizePulse then
-      -- Grow/shrink about the centre — LATE's "you're ignoring this" motion.
+      -- Widen/narrow about the icon edge — LATE's "you're ignoring this" motion.
       -- The Scale-animation from/to setters were renamed across API generations
-      -- (SetScaleFrom/To ← SetFromScale/To ← plain SetScale), so try them in
+      -- (SetScaleFrom/To <- SetFromScale/To <- plain SetScale), so try them in
       -- order and fall back to a bare SetScale bounce (1.0 -> max -> 1.0).
-      local lo, hi = spec.pulseMin or 0.7, spec.pulseMax or 1.3
+      local lo, hi = spec.pulseMin or 0.85, spec.pulseMax or 1.15
       local sc = f.scaleAnim
       local ok = pcall(function()
         if sc.SetScaleFrom then sc:SetScaleFrom(lo, lo); sc:SetScaleTo(hi, hi)
@@ -440,7 +451,7 @@ end
 
 function H.GetDot(item)
   local o = item and item.__hud
-  return o and o.dotLevel or nil
+  return o and o.bleedLevel or nil
 end
 
 -- The row reports how wide its text came out, and the bracket grows to include
@@ -799,7 +810,7 @@ end
 -- Ported from the M1 prototype (CRT.lua:193-259).  Keep the COMPACT
 -- single-centre-anchor labels: notes.md §9 — a wide banner anchored with two
 -- horizontal points fixes its width to the ~28px column and clips.
-local terminal, blinkTicker
+local terminal
 
 local function rule(parent, anchorTo, ptA, ptB, offY)
   local t = parent:CreateTexture(nil, "OVERLAY")
@@ -852,14 +863,8 @@ local function buildTerminal(viewer)
   vrule("L"); vrule("R")
 
   keep(rule(f, viewer, "BOTTOMLEFT", "BOTTOMRIGHT", -4), 0.8)
-  local ft = f:CreateFontString(nil, "OVERLAY")
-  ft:SetFont(TERM_FONT, 10, "OUTLINE")
-  ft:SetPoint("TOP", viewer, "BOTTOM", 0, -6)
-  ft:SetJustifyH("CENTER")
-  ft:SetTextColor(TERM_MID[1], TERM_MID[2], TERM_MID[3])
-  ft:SetText("C:\\>_")
-  f.footer = ft
-  f.cursorOn = true
+  -- The `C:\>_` blinking footer was retired in the M4.1 feedback pass: it was
+  -- noise, and its blink ticker was the only recurring timer in the chrome.
 
   receders[f] = true
   f:SetAlpha(recede)
@@ -867,28 +872,13 @@ local function buildTerminal(viewer)
   return f
 end
 
-local function setBlink(on)
-  if on then
-    if blinkTicker then return end
-    blinkTicker = C_Timer.NewTicker(0.53, function()
-      if not terminal or not terminal.footer then return end
-      terminal.cursorOn = not terminal.cursorOn
-      terminal.footer:SetText("C:\\>" .. (terminal.cursorOn and "_" or " "))
-    end)
-  elseif blinkTicker then
-    blinkTicker:Cancel(); blinkTicker = nil
-  end
-end
-
 function H.ShowTerminal(viewer)
   if not viewer then return end
   terminal = buildTerminal(viewer)
   terminal:Show()
-  setBlink(true)
 end
 
 function H.HideTerminal()
-  setBlink(false)
   if terminal then terminal:Hide() end
 end
 
@@ -926,9 +916,9 @@ end
 -- bottom-aligned, as tall as the bottom 3 icons — so the fill rises past SB/DB
 -- (empty) toward HoG (full) as the player re-orders those three to the bottom.
 local RAIL_GAP      = 3     -- gap between shard segments
-local RAIL_SEG_W    = 20    -- the rail's WIDTH, now that it stands vertical
+local RAIL_SEG_W    = 12    -- the rail's WIDTH (M4.1: 20 -> 12, slimmer)
 local RAIL_LEFT_GAP = 6     -- gap between the rail's right edge and the icon column
-local RAIL_ICONS    = 3     -- how many icons tall the rail spans
+local RAIL_ICONS    = 3     -- fallback span (icons tall) if the viewer can't be measured
 local RAIL_DEF_ICON = 34    -- fallback icon pitch if the panel can't be measured
 local RAIL_SPARKS = 10
 -- [X2] — WCAG's three-flashes-in-one-second guidance.  The prototype's
@@ -952,9 +942,6 @@ local RAIL_COL = {
   UNKNOWN  = { 0.50, 0.50, 0.56 },   -- grey: a state, never a guess
 }
 local RAIL_EMPTY = { 0.10, 0.09, 0.13 }
--- [X1]: the mode must be legible with hue ignored entirely.
-local RAIL_GLYPH = { PREP = "[.]", GENERATE = "[+]", SPEND = "[-]",
-                     BURST = "[*]", CAP = "[!]", UNKNOWN = "[?]" }
 
 local rail
 local railStats = { edges = 0, glitters = 0, suppressed = 0, lastGlitter = 0 }
@@ -996,10 +983,13 @@ local function buildRail(viewer)
   if viewer.__hudRail then return viewer.__hudRail end
   local cap = ns.SHARD_CAP or 5      -- never a literal 5; the spec table owns it
 
-  -- As tall as the bottom RAIL_ICONS icons: from the bottom icon's bottom to the
-  -- Nth icon's top = (N-1) pitches + one icon height.
+  -- FULL-HEIGHT (M4.1): span the WHOLE icon column, measured off the viewer, so
+  -- the rail stands as tall as the stack the player laid out in Edit Mode.  Falls
+  -- back to the bottom-RAIL_ICONS estimate ((N-1) pitches + one icon height) when
+  -- the viewer isn't laid out yet and GetHeight reads 0.
   local iconH, pitch = iconMetrics(viewer)
-  local span = (RAIL_ICONS - 1) * pitch + iconH
+  local span = (ns.HasMethod(viewer, "GetHeight") and viewer:GetHeight()) or 0
+  if not span or span < 1 then span = (RAIL_ICONS - 1) * pitch + iconH end
   local segH = (span - (cap - 1) * RAIL_GAP) / cap
 
   local f = CreateFrame("Frame", nil, viewer)
@@ -1026,9 +1016,9 @@ local function buildRail(viewer)
     -- Fill rises from the segment's bottom; its HEIGHT is set per-frame in PaintRail.
     fill:SetPoint("BOTTOM", seg, "BOTTOM", 0, 0)
     fill:SetSize(RAIL_SEG_W, segH)
-    -- THE GHOST HEAD renders HOLLOW — outline, no fill — which is the same
-    -- confidence marker the dots use (H.paintDot: hollow = estimate).  Four
-    -- edges rather than a fill, so "incoming" can never be mistaken for "held".
+    -- THE GHOST HEAD renders HOLLOW — outline, no fill — an ESTIMATE confidence
+    -- marker (an in-flight cast that would ADD shards).  Four edges rather than a
+    -- fill, so "incoming" can never be mistaken for "held".
     seg.ghost = {}
     for _, side in ipairs({ "TOP", "BOTTOM", "LEFT", "RIGHT" }) do
       seg.ghost[side] = seg:CreateTexture(nil, "ARTWORK", nil, 2)
@@ -1043,14 +1033,12 @@ local function buildRail(viewer)
     f.segs[i] = seg
   end
 
-  -- The redundant mode label sits just BELOW the rail (centred on its narrow
-  -- column; a one-point FontString never clips).
-  f.label = f:CreateFontString(nil, "OVERLAY")
-  f.label:SetFont(TERM_FONT, 10, "OUTLINE")
-  f.label:SetPoint("TOP", f, "BOTTOM", 0, -2)
-  f.label:SetJustifyH("CENTER")
+  -- The redundant mode LABEL ("[.] PREP 3/5") was retired in the M4.1 feedback
+  -- pass: unreadable on the narrow column, and the mode still reads via the rail
+  -- fill hue + the DEMO.SYS terminal tint (SetTerminalMode).  The shard count
+  -- still shows on the HudRow summary line.
 
-  -- ⚠ RECEDE vs. ANIMATION (H.paintDot's header states the rule): recede is
+  -- ⚠ RECEDE vs. ANIMATION (H.paintBleed's header states the rule): recede is
   -- baked into TEXTURE alpha, never frame alpha, because frame alpha belongs to
   -- the animation.  The rail as a whole DOES take frame alpha — it joins the
   -- board's common fate — so the cap flash and sparks live on a SIBLING frame,
@@ -1132,7 +1120,6 @@ local function paintTerminal()
   if not f then return end
   if f.header then f.header:SetTextColor(modeTint(TERM, termMode)) end
   if f.sub    then f.sub:SetTextColor(modeTint(TERM_DIM, termMode)) end
-  if f.footer then f.footer:SetTextColor(modeTint(TERM_MID, termMode)) end
   for _, t in ipairs(f.rules or {}) do
     local r, g, b = modeTint(TERM_MID, termMode)
     t:SetColorTexture(r, g, b, t.__a or 0.8)
@@ -1197,24 +1184,8 @@ function H.PaintRail(info)
     end
   end
 
-  -- The redundant label ([X1], §0.5.4:429) — required, not decorative.  Read it
-  -- with hue ignored and the mode is still unambiguous.
-  local glyph = RAIL_GLYPH[key] or "[?]"
-  local text
-  if mode == nil then
-    text = glyph .. " SHARDS UNKNOWN — unreadable here"
-  elseif capped then
-    text = string.format("%s SPEND — CAP (%d/%d)  act or waste", glyph, live, cap)
-  else
-    text = string.format("%s %s  %d/%d", glyph, mode, live, cap)
-    if info.isProjected then
-      -- floor'd, not passed raw: ProjectedShards can carry a fractional figure
-      -- through the clamp, and "%d" on a float is version-dependent.
-      text = text .. string.format("  ->%d", math.floor(info.projected))
-    end
-  end
-  f.label:SetText(text)
-  f.label:SetTextColor(col[1], col[2], col[3])
+  -- The mode label was retired (M4.1); mode reads via the fill hue + terminal
+  -- tint (SetTerminalMode, at the tail).  `col`/`key` still drive the fills above.
 
   -- The cap EDGE, once.  Counted whether or not the glitter was allowed to play,
   -- so `hud status` can show the throttle doing its job rather than implying the

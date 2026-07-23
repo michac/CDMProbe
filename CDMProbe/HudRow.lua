@@ -113,6 +113,15 @@ end
 -- VERBOSE:  ...plus name · group/pole · cd · cost · presence · override
 local function lineFor(key, e)
   local info, known = ns.SpecInfo(e.baseSpellID or e.spellID)
+
+  -- M4.1 — NON-VERBOSE + a scored icon draws NO reason text: the bleed off the
+  -- icon edge is the whole signal now (this reverses M3c-a's words-first default,
+  -- on purpose — the fix for illegible colour is a legible visual, not permanent
+  -- words).  Return nil so the row hides and its bracket collapses.  `hud debug`
+  -- restores the full reasoned rows below unchanged (the correctness view), and
+  -- the buff-viewer PRESENT rows + the `lit` summary line are untouched.
+  if ns.Hud.IsIconViewer(e.viewer) and not D.verbose then return nil end
+
   local parts = {}
 
   local bind = ns.HudBinds.GetForItem(e.item, e.spellID)

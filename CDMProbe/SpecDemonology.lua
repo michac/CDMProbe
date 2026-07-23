@@ -79,6 +79,12 @@ ns.SpecIDs = {
   DEMONBOLT     = 264178,
   SHADOW_BOLT   = 686,
   IMPLOSION     = 196277,
+  -- Grimoire: Imp Lord.  The CAST spellID is 1276452 (talents.json:1919), NOT the
+  -- talent tree ENTRY-id 136726 the code used to reference (talents.json:1917).
+  -- Under 136726 ns.Spec didn't know the live button -> neutral "your call" ->
+  -- always AVAILABLE, and no keybind resolved so the sequence strip printed the
+  -- NAME.  One id fixes both reports; 136726 stays a harmless alias below.
+  IMP_LORD      = 1276452,
   -- Buff viewers (M3b proc presence via the TriggerAlertEvent aura edges;
   -- item:IsShown() is only the best-effort LEVEL backstop — see HudState.lua):
   DEMONIC_CORE   = 264173,   -- BuffBar
@@ -111,14 +117,25 @@ ns.Spec = {
     burstAlign = true, goGate = true, stage = true, baseCD = 20,
     label = "Call Dreadstalkers",
   },
-  -- Grimoire is burst-ALIGNED but is NOT part of the go-gate (see `goGate` above).
+  -- The Grimoire summons are burst-ALIGNED but NOT part of the go-gate (see
+  -- `goGate` above).  `stage = true` (M4.1): both are 2-min summons paired with
+  -- Tyrant (diabolist-sequences.md — out BEFORE Tyrant), so inside the BURST
+  -- window HudScore reads them AVAILABLE "stage for Tyrant" like Dreadstalkers.
+  -- They stay `optional` in the queue drain: 2-min CD = present every OTHER
+  -- Tyrant, so a missing one must drop-through, not jam.
   [1276467] = {
     group = "summon", kind = "button", cadence = "oncd", burstAlign = true,
-    baseCD = 120, label = "Grimoire: Fel Ravager",
+    stage = true, baseCD = 120, label = "Grimoire: Fel Ravager",
   },
+  [S.IMP_LORD] = {
+    group = "summon", kind = "button", cadence = "oncd", burstAlign = true,
+    stage = true, baseCD = 120, label = "Grimoire: Imp Lord",
+  },
+  -- 136726 is the talent ENTRY-id, kept mapped as a harmless alias for a build
+  -- that surfaces it; the live tracked/cast id is S.IMP_LORD (1276452) above.
   [136726] = {
     group = "summon", kind = "button", cadence = "oncd", burstAlign = true,
-    baseCD = 120, label = "Grimoire: Imp Lord",
+    stage = true, baseCD = 120, label = "Grimoire: Imp Lord (entry-id alias)",
   },
 
   -- ── Essential: core shadow damage (§3 "core" / shadow violet) ─────────────
@@ -287,12 +304,16 @@ ns.SpecOpener = {
   },
   steps = {
     { spell = S.DREADSTALKERS,             label = "Dreadstalkers" },
-    { spell = 136726,                      label = "Imp Lord", optional = true, note = "if up" },
+    -- Imp Lord: correct id now, so the keybind resolves and readiness is knowable
+    -- (M4.1 drops the old "if up" note that implied we couldn't tell).  Still
+    -- `optional` so its absence drops through without jamming the queue.
+    { spell = S.IMP_LORD,                  label = "Imp Lord", optional = true },
     { spell = S.TYRANT,                    label = "Tyrant", note = "t~3s" },
     { spell = S.SHADOW_BOLT, alt = S.DEMONBOLT, label = "SB / DB" },
     { spell = S.HAND_OF_GULDAN,            label = "HoG", count = 2 },
     { spell = S.IMPLOSION,                 label = "Implosion", optional = true, note = "AoE" },
-    { spell = S.SHADOW_BOLT,               label = "SB", count = 3, note = "rebuild" },
+    -- (The old trailing "SB x3 rebuild" step was dropped in M4.1: a scripted
+    -- filler tail is thrown out by the first proc, so it only misinformed.)
   },
 }
 
@@ -301,14 +322,22 @@ ns.SpecOpener = {
 -- for the window: Tyrant, dump shards into HoG, spend banked Cores, Implosion on
 -- AoE.  `prereqs` use `lead = 5` (= HudState HOLD_LEAD) so "Tyrant" lights while
 -- it is still coming up, matching when the window actually opens.
+-- M4.1 — the sequence now PREPENDS the staged summons (Dreadstalkers + Imp Lord)
+-- to mirror the opener and diabolist-sequences.md: they land out BEFORE Tyrant, so
+-- the strip shows them as the windup, then Tyrant, then the burn (HoG HoG -> cores
+-- -> Implosion).  Imp Lord is `optional` (2-min CD = off-Tyrant cycles drop it).
 ns.SpecBurst = {
   header   = "BURST",
-  preamble = "Tyrant window — dump into demons",
+  preamble = "Tyrant window — stage demons, then dump",
   prereqs = {
-    { spell = S.TYRANT, label = "Tyrant", lead = 5 },
-    { shards = 5,       label = "5 shards" },
+    { spell = S.TYRANT,        label = "Tyrant", lead = 5 },
+    { spell = S.DREADSTALKERS, label = "Dreadstalkers", lead = 5 },
+    { spell = S.IMP_LORD,      label = "Imp Lord", lead = 5 },
+    { shards = 5,              label = "5 shards" },
   },
   steps = {
+    { spell = S.DREADSTALKERS,  label = "Dreadstalkers" },
+    { spell = S.IMP_LORD,       label = "Imp Lord", optional = true },
     { spell = S.TYRANT,         label = "Tyrant" },
     { spell = S.HAND_OF_GULDAN, label = "HoG", count = 2 },
     { spell = S.DEMONBOLT,      label = "Demonbolt", note = "cores" },

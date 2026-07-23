@@ -93,7 +93,9 @@ local function buildFrame(viewer, inst)
   -- Never EnableMouse: clicks pass through to the secure items beneath.
 
   local hd = f:CreateFontString(nil, "OVERLAY")
-  hd:SetFont(TERM_FONT, 9, "OUTLINE")
+  -- M4.1: JetBrains Mono (ns.SetFont — the HudRow font the player finds sharp)
+  -- and bigger (header 9 -> 12, strip 12 -> 16) so the strip is legible at 1440p+.
+  ns.SetFont(hd, 12, "OUTLINE")
   hd:SetJustifyH("CENTER")
   hd:SetTextColor(TERM_DIM[1], TERM_DIM[2], TERM_DIM[3])
   f.header = hd
@@ -102,7 +104,7 @@ local function buildFrame(viewer, inst)
     -- The strip: one FontString carrying per-step inline colour, at the BOTTOM of
     -- the frame (nearest the panel); the header sits above it.
     local strip = f:CreateFontString(nil, "OVERLAY")
-    strip:SetFont(TERM_FONT, 12, "OUTLINE")
+    ns.SetFont(strip, 16, "OUTLINE")
     strip:SetJustifyH("CENTER")
     strip:SetPoint("BOTTOM", f, "BOTTOM", 0, 0)
     f.strip = strip
@@ -122,7 +124,7 @@ local function rowAt(inst, i)
   local r = inst.rows[i]
   if r then return r end
   r = inst.frame:CreateFontString(nil, "OVERLAY")
-  r:SetFont(TERM_FONT, 9, "OUTLINE")
+  ns.SetFont(r, 12, "OUTLINE")
   r:SetJustifyH("CENTER")
   r:SetPoint("TOP", (i == 1) and inst.frame.header or inst.rows[i - 1], "BOTTOM", 0, -2)
   inst.rows[i] = r

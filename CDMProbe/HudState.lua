@@ -642,17 +642,15 @@ function S.Recompute()
           litKeys[lit] = key
         end
         S.score[key] = sc
-        -- B4 — a dot promoted BECAUSE OF a projection renders HOLLOW.  Same
-        -- confidence marker the napkin's SOON already uses, same rule: an
-        -- ESTIMATE MUST NEVER LOOK LIKE AN OBSERVATION.  Only the promoted
-        -- levels are marked — NEVER/AVAILABLE claim nothing to soften.
-        local hollow = sc.projected and
-          (sc.level == ns.HudScore.LEVELS.ROTATION or sc.level == ns.HudScore.LEVELS.LATE)
+        -- M4.1 — the 4th arg is now `judgeReady` (was the B4 hollow flag, retired
+        -- with the disc): a judgeable=false ability that is otherwise up (Implosion
+        -- off cooldown) lights the bleed cyan "ready, your call".  The B4 estimate
+        -- marker now rides the debug row's `~est` text only.
         -- SOON is a treatment on NEVER, never a level of its own: it brightens
         -- and counts down but claims nothing about pressability.
         pcall(ns.HudChrome.SetDot, e.item, e.viewer,
           (sc.soon and sc.level == ns.HudScore.LEVELS.NEVER) and "SOON" or sc.level,
-          hollow)
+          sc.judgeReady)
       else
         -- Losing a dot is a transition too, and a LOUD one: it is what an
         -- unrecognised override looks like (HudScore returns nil rather than

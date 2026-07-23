@@ -305,6 +305,12 @@ function Sc.For(key, e)
 
   if info.judgeable == false then
     out.level = Sc.LEVELS.AVAILABLE
+    -- M4.1 — JUDGE-READY.  We reached here past the NEVER gate, so cdReady and
+    -- gateMet both hold: the ability is OTHERWISE up (Implosion off cooldown) and
+    -- only its true gate (imp count) is secret.  This lights the bleed cyan
+    -- "ready, your call" instead of drawing nothing — the one AVAILABLE that
+    -- shows.  Plain AVAILABLE (utility, held HoG, overcap) stays dark.
+    out.judgeReady = true
     R[#R + 1] = info.secretGate or "gate is a secret value — your call"
     return out
   end

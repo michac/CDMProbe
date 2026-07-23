@@ -101,9 +101,9 @@ function P.Ensure()
   content:SetAllPoints(f)
   P.content = content
 
-  -- Prereqs row at the TOP.
+  -- Prereqs row at the TOP.  M4.1: JetBrains Mono (ns.SetFont) at 13 (was 10).
   local pr = content:CreateFontString(nil, "OVERLAY")
-  pr:SetFont(TERM_FONT, 10, "OUTLINE")
+  ns.SetFont(pr, 13, "OUTLINE")
   pr:SetJustifyH("CENTER")
   pr:SetPoint("TOP", content, "TOP", 0, -2)
   P.prereqRow = pr
