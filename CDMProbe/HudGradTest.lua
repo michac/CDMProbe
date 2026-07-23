@@ -154,3 +154,16 @@ function G.Report()
   ns.Print("  |cff808080⚠ This cannot see whether the gradient RENDERS — there is no pixel")
   ns.Print("  readback.  It establishes how the calls interact, nothing more.|r")
 end
+
+-- TOP-LEVEL command, not a `hud` subcommand.  v0.28.0 registered it only under
+-- `/cdmp hud gradtest`, which is the wrong home twice over: it was documented as
+-- `/cdmp gradtest` (so the documented form reported "unknown command"), and it
+-- has nothing to do with the HUD — it probes a Blizzard texture API on a scratch
+-- frame and needs no viewer, no HUD, no combat and no pull.  It belongs beside
+-- `probe`.  The `hud gradtest` alias stays registered so the form that shipped
+-- keeps working.
+ns.RegisterCommand("gradtest",
+  "does Texture:SetGradient actually do anything on this client? "
+  .. "Runs an ordered scratch-texture experiment and reports the GetVertexColor "
+  .. "readback after each step. No HUD, no combat, no pull required.",
+  function() ns.HudGradTest.Report() end)
