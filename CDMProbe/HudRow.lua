@@ -125,7 +125,7 @@ local function lineFor(key, e)
   -- burst window is open, the go-signal is sitting there yellow, and the single
   -- thing standing between you and pressing it is the shard count.  It is a
   -- call-out, not a reason line, so it is checked BEFORE the non-verbose return.
-  if ns.HudBurst and ns.HudBurst.NeedShards()
+  if ns.HudState and ns.HudState.tyrantShardHold
      and ns.SpecIDs and (e.baseSpellID or e.spellID) == ns.SpecIDs.TYRANT then
     return AMBER .. "SHARDS!|r"
   end

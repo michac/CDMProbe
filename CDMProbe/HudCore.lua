@@ -319,6 +319,23 @@ function M.RefreshKeybinds()
       end
     end
   end
+  -- M4.6c — RE-ARM THE SEQUENCE STRIP TOO.  This is why "[Imp Lord]" keeps coming
+  -- back in place of its key: the strip resolves each step's keybind ONCE, at arm
+  -- time, and the opener arms from rebind()'s tail — which can land BEFORE the
+  -- debounced (0.5s) action-bar scan has filled B.map.  The chrome recovers,
+  -- because that is exactly what this function does for it; the strip never did,
+  -- so it kept a stale nil and fell back to the step's label forever.  Two
+  -- consumers of one cache, only one of them refreshed.
+  --
+  -- The probe capture is unambiguous about the cache being fine LATER: OOC it
+  -- reports `Grimoire: Imp Lord (1276452) -> chrome shows sE` off slot 62, at the
+  -- same moment the strip was showing the word.  So this is a refresh gap, not a
+  -- lookup gap — B.Get and the alias table were never the problem.
+  --
+  -- Re-arming is safe and cheap: the opener refuses itself in combat, and arming
+  -- rebuilds the same spec with fresh keys (the queue copies steps, so an armed
+  -- strip is replaced wholesale rather than mutated underneath).
+  if ns.HudOpener and not InCombatLockdown() then pcall(ns.HudOpener.Arm) end
 end
 
 --------------------------------------------------------------------------------
@@ -548,7 +565,7 @@ end
 -- toggling the whole HUD.  Every new subcommand goes ABOVE the bare-toggle tail,
 -- and the help string above is the only place a user learns it exists.
 ns.RegisterCommand("hud",
-  "the real spec HUD (dot score + why). 'hud log' = the last recorded pull (histogram + peak set + events; 'hud log all' for the ring); 'hud status' = the readout in chat; 'hud binds' = every slot/key per spell; 'hud debug' = verbose rows; 'hud rows' = toggle the rows entirely; 'hud cuewatch [on|off|clear]' = the M4.6 cue-colour watchdog (is the hue reaching the texture?); 'hud rail' = toggle the shard rail + mode chrome; 'hud opener on|off' = the pre-pull opener strip (now in the movable sequence pane; default off, shares the BURST window); 'hud pane lock|unlock' = position the over-the-character sequence pane.",
+  "the real spec HUD (dot score + why). 'hud log' = the last recorded pull (histogram + peak set + events; 'hud log all' for the ring); 'hud status' = the readout in chat; 'hud binds' = every slot/key per spell; 'hud debug' = verbose rows; 'hud rows' = toggle the rows entirely; 'hud cuewatch [on|off|clear]' = the M4.6 cue-colour watchdog (is the hue reaching the texture?); 'hud rail' = toggle the shard rail + mode chrome; 'hud opener on|off' = the pre-pull opener strip (now in the movable sequence pane; default off, shares the BURST window); 'hud pane lock|unlock|reset' = position the sequence pane ('reset' returns it to the shipped default, below the character); 'hud gradtest' = does SetGradient do anything on this client?",
   function(rest)
     rest = (rest or ""):lower()
     if rest:find("status") then return printStatus() end
@@ -561,6 +578,10 @@ ns.RegisterCommand("hud",
     -- toggles the sampler; `cuewatch clear` resets.  Above the bare-toggle tail
     -- and BEFORE the "rows"/"rail" matches, since substring dispatch is
     -- order-sensitive and anything unmatched toggles the whole HUD.
+    if rest:find("gradtest") then
+      if not ns.HudGradTest then return ns.Print("HUD: gradtest module missing.") end
+      return ns.HudGradTest.Report()
+    end
     if rest:find("cuewatch") then
       local W = ns.HudCueWatch
       if not W then return ns.Print("HUD: cue watchdog module missing.") end
@@ -620,6 +641,22 @@ ns.RegisterCommand("hud",
     if rest:find("pane") then
       if not ns.HudPane then return ns.Print("HUD: pane module missing.") end
       local arg = rest:match("pane%s+(%S+)")
+      -- M4.6c — `pane reset`.  A SAVED POSITION DELIBERATELY WINS over a changed
+      -- default (play-test 6: "Honestly that's the preference, for it to stay if
+      -- I've moved it"), so the M4.6 move to below-the-character never reaches
+      -- anyone who has dragged the pane — correct, but it left no way back to the
+      -- shipped default short of editing SavedVariables.  This is that way.
+      if arg == "reset" then
+        local dp = ns.HudPane.DEFAULT_POS
+        ns.db.hud = ns.db.hud or {}
+        ns.db.hud.sequence = { point = dp.point, x = dp.x, y = dp.y }
+        if ns.HudPane.frame then
+          ns.HudPane.frame:ClearAllPoints()
+          ns.HudPane.frame:SetPoint(dp.point, UIParent, dp.point, dp.x, dp.y)
+        end
+        return ns.Print("sequence pane moved back to the shipped default "
+          .. "(below the character).")
+      end
       if arg == "lock" then ns.HudPane.SetLocked(true)
       elseif arg == "unlock" then ns.HudPane.SetLocked(false)
       else ns.HudPane.SetLocked(not ns.HudPane.locked) end

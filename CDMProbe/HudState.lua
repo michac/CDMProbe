@@ -695,6 +695,17 @@ function S.Recompute()
           local held = S.shards
           local full = (type(held) == "number") and held >= (ns.SHARD_CAP or 5)
           if not full then paintKey = "SOON" end
+          -- ⚠ ONE CAUSE, ONE EXPLANATION.  Play-test 6: "Tyrant pulses yellow out
+          -- of combat before first pull, but doesn't say SHARDS! to explain why
+          -- it's not green."  v0.26.0 gated the SHARDS! call-out on the BURST
+          -- WINDOW being armed, which out of combat it never is (the opener owns
+          -- the pane there) — so the yellow appeared with nothing explaining it.
+          -- The flag now rides the SAME condition that forced the yellow, so the
+          -- cue and its reason can never disagree.  An unexplained downgrade is
+          -- exactly the "oracle, not auditable" failure §0.5.8.7 forbids.
+          S.tyrantShardHold = not full
+        elseif live and ns.SpecIDs and live == ns.SpecIDs.TYRANT then
+          S.tyrantShardHold = false
         end
         pcall(ns.HudChrome.SetCue, e.item, e.viewer,
           suppressed and nil or paintKey, sc.judgeReady, sc.emphasis)

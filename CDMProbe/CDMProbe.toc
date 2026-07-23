@@ -19,6 +19,7 @@ HudTint.lua
 HudBinds.lua
 HudChrome.lua
 HudCueWatch.lua
+HudGradTest.lua
 HudNapkin.lua
 HudScore.lua
 HudLog.lua

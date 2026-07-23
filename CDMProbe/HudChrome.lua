@@ -375,26 +375,34 @@ local function ensureCue(o, item)
 end
 
 -- Pin the FILL inside an icon-sized box beside the icon.  The box is square and
--- matches the icon's dimensions; the fill grows from its BOTTOM edge upward, so
--- the level reads like a meter.  Anchoring to the icon's own corners is what keeps
--- it aligned by construction (the M4.3 misalignment was a CENTER-offset square
--- guessing the size — do not reintroduce that).
+-- matches the icon's dimensions; the fill spans the box's FULL HEIGHT and grows
+-- HORIZONTALLY from the icon edge OUTWARD.  Anchoring to the icon's own corners is
+-- what keeps it aligned by construction (the M4.3 misalignment was a CENTER-offset
+-- square guessing the size — do not reintroduce that).
 --
--- SIDE stays per-viewer (H.SideFor), not hard-right: the box mirrors to the icon's
--- OUTER edge so it never lands between two icon columns.
+-- ⚠ v0.26.0 shipped this as a BOTTOM-UP meter and that was a misread of the ask
+-- (play-test 6: "filling from the bottom up instead of from its anchor point
+-- across").  The anchor is the ICON EDGE and the fill runs ACROSS the box away
+-- from it — so the lit area always touches the icon it is about, and priority
+-- reads as how far the colour reaches out, not how tall a column is.
+--
+-- SIDE is per-viewer (H.SideFor): Essential cues RIGHT, Utility cues LEFT — the
+-- box always sits on the icon's OUTER edge so it never lands between two columns.
 local function anchorCue(o)
   local t, item = o.cue, o.item
   if not (t and item) then return end
   local w = (ns.HasMethod(item, "GetWidth") and item:GetWidth()) or 0
   if w <= 0 then w = 28 end               -- pre-layout fallback; re-anchored later
   t:ClearAllPoints()
-  -- Bottom-anchored, so SetHeight() in paintCue grows the fill upward.
+  -- BOTH vertical corners on the icon side: full icon height, by construction.
+  -- Width is set per-paint, so the free edge is the one that moves.
   if o.side == "LEFT" then
+    t:SetPoint("TOPRIGHT", item, "TOPLEFT", 0, 0)
     t:SetPoint("BOTTOMRIGHT", item, "BOTTOMLEFT", 0, 0)
   else
+    t:SetPoint("TOPLEFT", item, "TOPRIGHT", 0, 0)
     t:SetPoint("BOTTOMLEFT", item, "BOTTOMRIGHT", 0, 0)
   end
-  t:SetWidth(w)
   t.boxW = w
   t.anchoredSide = o.side
 end
@@ -428,12 +436,15 @@ function H.paintCue(o)
   local spec = o.cueLevel and CUE[o.cueLevel]
   if not (t and spec) then return end
   if t.anchoredSide ~= o.side or not t.boxW then anchorCue(o) end
+  -- Re-read the box width each paint: the icon can resize on an Edit Mode scale
+  -- change, and a stale boxW would silently shrink every cue on the board.
   local item = o.item
-  local boxH = (item and ns.HasMethod(item, "GetHeight") and item:GetHeight()) or 0
-  if boxH <= 0 then boxH = t.boxW or 28 end
-  -- §4.4 — FILL is the priority axis.  Burst emphasis fills the box outright.
+  local w = (item and ns.HasMethod(item, "GetWidth") and item:GetWidth()) or 0
+  if w > 0 then t.boxW = w end
+  -- §4.4 — FILL is the priority axis, measured ACROSS the box from the icon edge.
+  -- Burst emphasis fills it outright.
   local frac = (o.emphasis == "burst") and CUE_BURST_FILL or (spec.fill or CUE_FILL.JUDGE)
-  t:SetHeight(math.max(2, boxH * frac))
+  t:SetWidth(math.max(2, (t.boxW or 28) * frac))
 
   local c = spec.c
   local a = spec.a * recede

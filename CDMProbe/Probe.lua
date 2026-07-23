@@ -625,6 +625,14 @@ ns.RegisterCommand("probe",
       snap.cueWatch = ns.HudCueWatch.Snapshot()
       pcall(ns.HudCueWatch.Report)
     end
+    -- M4.6c — SECTION F: how SetGradient behaves on THIS client.  Cheap, needs no
+    -- combat and no timing, so it rides every capture: the answer decides the
+    -- cue's paint order and has been assumed rather than measured three times now.
+    if ns.HudGradTest then
+      local okG, res = pcall(ns.HudGradTest.Run)
+      if okG then snap.gradTest = res end
+      pcall(ns.HudGradTest.Report)
+    end
 
     ns.db.probe = ns.db.probe or {}
     ns.db.probe[combat and "combat" or "ooc"] = snap
