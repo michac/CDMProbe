@@ -19,10 +19,13 @@ custom addon can actually do on top of Blizzard's built-in **Cooldown Manager**
 so we can *see at a target dummy* what updates, what's readable, and how the skin
 looks. It now also carries **the real HUD** (`/cdmp hud`, M3+). The v1 direction
 is a **terminal / CRT-flavoured overlay that leaves Blizzard's icons native and
-untouched** and builds all value-add in the chrome around them; the green-phosphor
-icon-tint era (`/cdmp crt`) was **retired in v0.6.0** — its tint machinery survives
-dormant in `HudTint.lua`. The older "no-icons, solid color block" experiments
-(`/cdmp skin`, `/cdmp resource`) are kept as reference, not the direction.
+untouched** and builds all value-add in the chrome around them. Three earlier
+directions were retired and their code **deleted in W4a (2026-07-24)**: the
+green-phosphor icon-tint era (`/cdmp crt`, retired v0.6.0; the dormant tint
+machinery in `HudTint.lua`) and the "no-icons, solid color block" experiments
+(`/cdmp skin`, `/cdmp resource`; `Skin.lua` + `Resource.lua`). They survive only
+in git history (`git log`/`git show`) — recover from there if a solid-colour or
+resource-centric mode is ever revived.
 
 Target spec for v1 experiments: **Demonology Warlock**.
 
@@ -116,12 +119,10 @@ Design context + status live in the parent workspace at
     dissolved on the first Tyrant window close. **Default off** — it's the only
     instructional widget. Built on the reusable `HudQueue` widget that M4's
     burst-window queue will reuse. (1b is not shipped — see the milestone docs.)
-- `skin` — *(reference, retired direction)* hide icons on Essential+Utility, paint
-  solid color blocks + labels, keep Blizzard's secure cooldown swipe.
-- `resource` — *(reference, retired direction)* resource-centric skin: group-color
-  blocks + 4-letter labels, recolored BuffBar duration bars, and a Soul Shard rail
-  we own (fill, generate→spend→cap recolor, cap flash + spark + earcon).
 - `reset` — turn every experiment off.
+
+*(The `skin` and `resource` commands — retired solid-colour-block / resource-centric
+directions — were deleted in W4a, 2026-07-24. Recover from git history if revived.)*
 
 ## File layout
 
@@ -138,11 +139,8 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
     Util.lua                      color, spell-name, Secret-Values-aware describe
     Viewers.lua                   locate viewers, enumerate items,
                                   ns.DumpViewers() (a `probe` section)
-    Skin.lua                      color-block skin experiment (retired direction)
     Probe.lua                     THE probe: passive recorders + `/cdmp probe`
                                   (one report, saved to SavedVariables), `reset`
-    Resource.lua                  resource-centric skin: group-color blocks +
-                                  duration bars + soul-shard rail (`resource`)
     SpecDemonology.lua            per-spec data: the SIGNAL BUCKET per spellID
                                   (group / kind / spends / generates / cadence /
                                   burstAlign / goGate / primary / judgeable).
@@ -174,9 +172,6 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   now a verbose flag on the same row builder.
     HudBinds.lua                  action-bar scan -> keybind per spellID (cached,
                                   out-of-combat only)
-    HudTint.lua                   DORMANT leaf-method icon-tint machinery rescued
-                                  from the deleted CRT.lua — unwired; gates a
-                                  future optional solid-colour mode (notes.md §9)
     tests/                        busted unit tests (M4.5 T2) — NOT in the .toc,
                                   so never loaded in-game / harmless in the zip
       mock_ns.lua                 the harness: CreateFrame stub + fake clock +

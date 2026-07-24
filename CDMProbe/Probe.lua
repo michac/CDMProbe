@@ -658,15 +658,13 @@ ns.RegisterCommand("probe",
   end)
 
 --------------------------------------------------------------------------------
--- Base `reset` + `OnLogin` (were in the deleted Probes.lua; other modules wrap
--- both, so the base definitions have to exist before Skin/Resource/HudCore load)
+-- Base `reset` + `OnLogin` (were in the deleted Probes.lua; HudCore wraps both,
+-- so the base definitions have to exist before HudCore loads)
 --------------------------------------------------------------------------------
 ns.RegisterCommand("reset", "turn every experiment off", function()
-  if ns.db.skinOn and ns.SetSkin then ns.SetSkin(false) end
   ns.Print("all experiments off.")
 end)
 
 function ns.OnLogin()
-  if ns.RestoreSkin then ns.RestoreSkin() end
   P.StartRecording()
 end

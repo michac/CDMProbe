@@ -13,7 +13,6 @@ ns.version = (C_AddOns and C_AddOns.GetAddOnMetadata and C_AddOns.GetAddOnMetada
 -- commands that owned them (see Probe.lua's header).  Stale keys in an existing
 -- CDMProbeDB are harmless — nothing reads them — so there is no migration.
 local DEFAULTS = {
-  skinOn = false,
   -- The real HUD's settings (HudCore fills missing sub-keys defensively too, so
   -- a db written by an older build picks up keys added later).  `sequence` is the
   -- M4 pane's saved position (over the character by default); copied fresh here so

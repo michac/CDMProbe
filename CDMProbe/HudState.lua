@@ -35,8 +35,9 @@
 -- be `item.Cooldown:HookScript("OnCooldownDone", ...)`.)  Given the choke point,
 -- we don't need it.
 --
--- Item methods are Mixin()-copied onto EACH frame, so — exactly as in HudTint —
--- the hook goes on the item INSTANCE, guarded once per frame.
+-- Item methods are Mixin()-copied onto EACH frame, so a hook on the shared mixin
+-- table would not reach already-created frames — the hook goes on the item
+-- INSTANCE, guarded once per frame.
 --
 --------------------------------------------------------------------------------
 -- Layered presence, honestly reported

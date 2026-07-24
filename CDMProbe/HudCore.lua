@@ -382,9 +382,6 @@ function ns.SetHud(on)
   db.on = on and true or false
   M.on = db.on
   if M.on then
-    -- The retired experiments write to item.Icon; don't fight them.
-    if ns.db.skinOn and ns.SetSkin then ns.SetSkin(false) end
-    if ns.db.resourceOn and ns.SetResource then ns.SetResource(false) end
     ns.HudBinds.Start()
     installHooks()
     ev:RegisterEvent("COOLDOWN_VIEWER_DATA_LOADED")
@@ -687,9 +684,9 @@ ns.RegisterCommand("aoe", "toggle target mode single<->multi (bare toggle for a 
   reportAoE()
 end)
 
--- Fold into /cdmp reset (wrap the chain Probes.lua + Resource.lua built).
+-- Fold into /cdmp reset (wrap the base Probe.lua reset).
 local prevReset = ns.commands.reset and ns.commands.reset.fn
-ns.RegisterCommand("reset", "turn every experiment off (unskin, hide bars/rail, resource + hud off, log off)", function(rest)
+ns.RegisterCommand("reset", "turn every experiment off (HUD + probe/log off)", function(rest)
   if ns.db.hud and ns.db.hud.on then ns.SetHud(false) end
   if prevReset then prevReset(rest) end
 end)

@@ -8,14 +8,11 @@
 Core.lua
 Util.lua
 Viewers.lua
-Skin.lua
 Probe.lua
-Resource.lua
 SpecDemonology.lua
 HudQueue.lua
 HudPane.lua
 HudFloat.lua
-HudTint.lua
 HudBinds.lua
 HudChrome.lua
 HudCueWatch.lua
