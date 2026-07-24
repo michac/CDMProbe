@@ -219,7 +219,13 @@ local function readAura(live, base, hasAura, selfAura)
   end
   for _, id in ipairs({ live, base }) do
     if readable(id) then
-      local ok, aura = pcall(C_UnitAuras.GetPlayerAuraBySpellID, "player", id)
+      -- ⚠ ONE ARGUMENT (v0.29.2 fix).  C_UnitAuras.GetPlayerAuraBySpellID(spellID)
+      -- takes the spellID ONLY — the unit is implied by the name.  v0.29.0-.1 passed
+      -- ("player", id), so it searched for an aura whose spellID was the STRING
+      -- "player" — always nil, never an error, so every proc silently read inactive
+      -- (readable=true, active=false across every pulse).  Verified against every
+      -- Blizzard call site in wow-ui-source @ 4383ced.
+      local ok, aura = pcall(C_UnitAuras.GetPlayerAuraBySpellID, id)
       if not ok then return { readable = false } end
       if type(aura) == "table" then return { readable = true, active = true } end
     end
