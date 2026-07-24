@@ -198,9 +198,22 @@ local function readCharge(live, hasCharges)
 end
 
 -- aura{active, readable}.  Spec-agnostic: we ask the client whether the PLAYER has
--- the entry's own aura up, nothing about what it MEANS.  Secret in combat -> absence.
-local function readAura(live, base, hasAura)
-  if not hasAura then return { readable = true, active = false } end
+-- the entry's own aura up, nothing about what it MEANS.
+--
+-- ⚠ GATE ON EITHER FLAG (v0.30.0 fix).  The CDM marks the two aura roles apart:
+--   * `selfAura` — the entry IS a self-buff to watch.  Demonic Core (264173) is one
+--     (cooldownID 777, selfAura=true, hasAura=FALSE), as are Tyrant/Dominion/Wild Imp.
+--     These are exactly the procs the pipeline cares about.
+--   * `hasAura`  — a cast that also applies an aura (Healthstone, pet buffs).
+-- v0.29.0 read only `hasAura`, so every proc aura was hard-coded inactive and never
+-- observed.  Read whenever EITHER is set.
+--
+-- Presence, not contents, is the signal: a RETURNED aura table (secret or not) means
+-- the buff is up.  We never index it, so a secret aura still reads as active — only a
+-- thrown call is `readable=false`.  (Measured readable in combat this build, but the
+-- guard stays: absence of a read is not evidence of absence of the buff.)
+local function readAura(live, base, hasAura, selfAura)
+  if not (hasAura or selfAura) then return { readable = true, active = false } end
   if not (C_UnitAuras and C_UnitAuras.GetPlayerAuraBySpellID) then
     return { readable = false }
   end
@@ -208,9 +221,7 @@ local function readAura(live, base, hasAura)
     if readable(id) then
       local ok, aura = pcall(C_UnitAuras.GetPlayerAuraBySpellID, "player", id)
       if not ok then return { readable = false } end
-      if type(aura) == "table" and not ns.IsSecretTable(aura) then
-        return { readable = true, active = true }
-      end
+      if type(aura) == "table" then return { readable = true, active = true } end
     end
   end
   return { readable = true, active = false }
@@ -303,9 +314,11 @@ eframe:SetScript("OnEvent", function(_, event, a1, a2, a3)
   elseif event == "PLAYER_REGEN_ENABLED" then
     pushEvent({ kind = "combat_end", at = GetTime() })
     markCapture("combat")
-  elseif event == "UNIT_POWER_UPDATE" then
-    if a1 == "player" then markCapture("power") end
   end
+  -- Power changes are NOT an event trigger — they fire far too often in a pull and
+  -- flooded the ring (v0.29.0: 30 of 40 slots were power captures, evicting procs
+  -- and the OOC baseline).  The poll's change-detection folds power into its
+  -- signature instead, so a shard step still records but as a rate-limited 'change'.
 end)
 
 --------------------------------------------------------------------------------
@@ -324,6 +337,7 @@ function St.Build(drain)
     local base = info and readable(info.spellID) and info.spellID or nil
     local live = liveSpellID(info) or base
     local hasAura = info and info.hasAura and true or false
+    local selfAura = info and info.selfAura and true or false
     local hasCharges = info and info.charges and true or false
 
     -- Build the inverse identity index as we go (B3).
@@ -346,7 +360,7 @@ function St.Build(drain)
       overrideSpellID = info and ns.Stash(readable(info.overrideSpellID) and info.overrideSpellID or nil) or nil,
       overrideTooltipSpellID = info and ns.Stash(readable(info.overrideTooltipSpellID) and info.overrideTooltipSpellID or nil) or nil,
       linkedSpellIDs = linked,
-      selfAura   = info and (info.selfAura and true or false) or nil,
+      selfAura   = selfAura,
       hasAura    = hasAura,
       charges    = hasCharges,
       isKnown    = info and (info.isKnown and true or false) or nil,
@@ -354,7 +368,7 @@ function St.Build(drain)
       -- live facts (secrecy first-class)
       cd     = readCd(live, base),
       charge = readCharge(live, hasCharges),
-      aura   = readAura(live, base, hasAura),
+      aura   = readAura(live, base, hasAura, selfAura),
       -- mostly-static, OOC-resolved off the BASE id (finding-3)
       keybind = (base and ns.HudBinds and ns.HudBinds.Get and ns.HudBinds.Get(base)) or nil,
     }
@@ -391,9 +405,12 @@ local OOC_SAMPLE  = 5.0        -- periodic out-of-combat sample, for baseline co
 -- A cheap running hash of the salient facts, arithmetic only.  In combat the live
 -- cd read short-circuits to nil (constant), so combat pulses ride the event flags;
 -- out of combat cd/aura movement shows up here directly.
+-- Returns (hash, auraOn): a cheap change signature plus the count of active auras
+-- (so the poll can label a proc distinctly from a plain change).
 local function signature()
   local h = InCombatLockdown() and 1 or 0
-  for cooldownID, categoryName in pairs(enumerate()) do
+  local auraOn = 0
+  for cooldownID in pairs(enumerate()) do
     local info = cooldownInfo(cooldownID)
     local base = info and readable(info.spellID) and info.spellID or nil
     local live = liveSpellID(info) or base
@@ -401,36 +418,44 @@ local function signature()
     local cdbit = (isReady == nil) and 0 or (isReady and 1 or 2)
     local rem = (type(remaining) == "number") and math.floor(remaining) or 0
     local aur = 0
-    if info and info.hasAura then
-      local a = readAura(live, base, true)
-      aur = (a.readable and a.active) and 1 or 0
+    if info and (info.hasAura or info.selfAura) then
+      local a = readAura(live, base, info.hasAura, info.selfAura)
+      if a.readable and a.active then aur = 1; auraOn = auraOn + 1 end
     end
     local ov = readable(St.override[base]) and St.override[base] or 0
     -- Mix cooldownID + facts into the hash (mod keeps it a Lua number, not a string).
     h = (h * 131 + cooldownID + cdbit * 7 + rem * 13 + aur * 3 + ov) % 2147483647
   end
-  return h
+  -- Fold every readable power into the hash so a shard step is a 'change' — spec-
+  -- agnostically, mixing whatever powers the character has (no opinion on which).
+  for value in pairs(POWER_NAME) do
+    local okV, val = pcall(UnitPower, "player", value)
+    if okV and type(val) == "number" and not ns.IsSecret(val) then
+      h = (h * 131 + value * 17 + val) % 2147483647
+    end
+  end
+  return h, auraOn
 end
 
 local pollTicker
 local lastSig = nil
+local lastAuraOn = 0
 local lastSample = 0
 
 local function poll()
   if not St.on then return end
   local now = GetTime()
   local due = captureReason
+  local sig, auraOn = signature()
   if not due then
-    local sig = signature()
     if sig ~= lastSig then
-      lastSig = sig
-      due = "change"
+      -- an aura coming UP is a proc — a distinct, protected moment in the ring
+      due = (auraOn > lastAuraOn) and "proc" or "change"
     elseif (now - lastSample) >= OOC_SAMPLE and not InCombatLockdown() then
       due = "sample"
     end
-  else
-    lastSig = signature()      -- resync the baseline so the event isn't re-detected
   end
+  lastSig, lastAuraOn = sig, auraOn   -- resync so an owed event isn't re-detected
   if due then
     captureReason = nil
     lastSample = now
@@ -471,7 +496,20 @@ function St.Capture(reason)
   sl.byReason[pulse.reason] = (sl.byReason[pulse.reason] or 0) + 1
   local p = sl.pulses
   p[#p + 1] = pulse
-  while #p > RING do table.remove(p, 1) end
+  -- DIVERSITY-PRESERVING eviction: when full, drop the OLDEST pulse of the MOST
+  -- common reason in the ring, not simply the oldest.  A pull streams dozens of
+  -- shard-step 'change' captures; a plain FIFO lets them evict the rare moments the
+  -- corpus needs (a proc, a transform, the OOC baseline — the v0.29.0 flip-flop).
+  -- Trimming the most-over-represented reason keeps the ring diverse under spam.
+  while #p > RING do
+    local counts = {}
+    for i = 1, #p do counts[p[i].reason] = (counts[p[i].reason] or 0) + 1 end
+    local top, topN = nil, -1
+    for r, n in pairs(counts) do if n > topN then top, topN = r, n end end
+    for i = 1, #p do
+      if p[i].reason == top then table.remove(p, i); break end
+    end
+  end
 end
 
 local function clearStatelog()
@@ -493,11 +531,17 @@ function St.Start()
   if St.on then return end
   St.on = true
   wipe(St.override)
+  -- State CONSULTS the napkin and keybind cache as inputs, so it owns making them
+  -- live for a capture session — otherwise, with the HUD off, both are dormant and
+  -- every cd reads source="none" while every keybind is nil (the v0.29.0 gap: the
+  -- napkin's SUCCEEDED frame and the bar scan are only started by the HUD).  Both
+  -- Start()s are idempotent, so this is harmless when the HUD is also running.
+  if ns.HudNapkin and ns.HudNapkin.Start then pcall(ns.HudNapkin.Start) end
+  if ns.HudBinds and ns.HudBinds.Start then pcall(ns.HudBinds.Start) end
   eframe:RegisterEvent("COOLDOWN_VIEWER_SPELL_OVERRIDE_UPDATED")
   eframe:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
   eframe:RegisterEvent("PLAYER_REGEN_DISABLED")
   eframe:RegisterEvent("PLAYER_REGEN_ENABLED")
-  eframe:RegisterUnitEvent("UNIT_POWER_UPDATE", "player")
   if not pollTicker then pollTicker = C_Timer.NewTicker(POLL_PERIOD, poll) end
   -- Seed the ring with an immediate first pulse so a session that is captured OOC
   -- and then /reload'd has at least one recorded moment even if nothing changed.
