@@ -91,6 +91,25 @@ function ns.Describe(v)
   else return "<" .. t .. ">" end
 end
 
+-- STASHABLE form of an observed value — the ONE guard for "this is about to be
+-- written to SavedVariables".  A Secret Value must never reach disk (serializing
+-- one writes garbage at best and taints the writer at worst), so a secret degrades
+-- to the STRING "<secret>" — which is itself the finding a reader wants ("this read
+-- secret here") — and anything not a scalar drops to nil rather than persisting a
+-- live frame/table reference.
+--
+-- This is Probe.lua's file-local `stash` promoted to a shared helper (M4.5 T3 / W4
+-- Phase 1): State's `/cdmp statelog` capture writes full State pulses to disk and
+-- needs the exact same secret-never-reaches-disk discipline the probe snapshot has.
+-- One idiom, one home.  (Probe.lua keeps its own copy for now; do not chase that
+-- de-dupe here — it is a behavioural no-op and this file must stay low-risk.)
+function ns.Stash(v)
+  if ns.IsSecret(v) then return "<secret>" end
+  local t = type(v)
+  if t == "number" or t == "boolean" or t == "string" then return v end
+  return nil
+end
+
 -- Base cooldown in SECONDS for a spellID, or nil if unreadable.  Static spell
 -- metadata, not live cooldown state — readable and branchable (notes.md §1);
 -- the *remaining* time is the secret, the base length is not.
@@ -171,6 +190,30 @@ local function readCharges(spellID)
   if not pcall(function() c = info.currentCharges or info.charges end) then return nil end
   if ns.IsSecret(c) or type(c) ~= "number" then return nil end
   return c
+end
+
+-- ns.ReadCharges — live (current, max) charges for a spellID, guarded, or nil.
+-- The public door over the same secret-aware read `rawCooldown` uses internally,
+-- exposed for State (W4 Phase 1): a charged ability's readiness is "a charge
+-- banked", not "the recharge timer", and State reports both so the Coach can
+-- decide.  Same discipline as every read here — a secret or an unreadable table
+-- returns nil ("we don't know"), never a poisoned number.  Combat-gated like
+-- ns.ReadCooldown: GetSpellCharges reads secret in restricted combat.
+function ns.ReadCharges(spellID)
+  if type(spellID) ~= "number" or ns.IsSecret(spellID) then return nil end
+  if InCombatLockdown() then return nil end
+  if not (C_Spell and C_Spell.GetSpellCharges) then return nil end
+  local ok, info = pcall(C_Spell.GetSpellCharges, spellID)
+  if not ok or type(info) ~= "table" then return nil end
+  if ns.IsSecretTable(info) then return nil end
+  local cur, max
+  if not pcall(function()
+    cur = info.currentCharges or info.charges
+    max = info.maxCharges
+  end) then return nil end
+  if ns.IsSecret(cur) or ns.IsSecret(max) then return nil end
+  if type(cur) ~= "number" or type(max) ~= "number" then return nil end
+  return cur, max
 end
 
 function ns.ReadCooldown(spellID)

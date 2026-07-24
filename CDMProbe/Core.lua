@@ -30,6 +30,11 @@ local DEFAULTS = {
   -- is printed to chat at pull end (ns.Print always writes to DEFAULT_CHAT_FRAME,
   -- so routing this through BeginCapture would spam every combat exit).
   pulls = {},
+  -- W4 Phase 1 — the reduced-State capture ring (State.lua / `/cdmp statelog`).
+  -- A bounded ring of full State pulses, separate from `.probe` / `.pulls`; the
+  -- independent corpus the Phase-2 Coach is tested against.  Structured, read +
+  -- asserted by `wowkb.cdmp` (the `statelog` baseline section).
+  statelog = {},
 }
 
 -- Chat helpers ----------------------------------------------------------------
