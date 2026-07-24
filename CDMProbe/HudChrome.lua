@@ -152,19 +152,20 @@ local STACK_COL    = { 1.00, 0.86, 0.35 }   -- bright gold; must beat the icon a
 -- The keybind hint now sits SQUARE IN THE MIDDLE of that box and is allowed to
 -- overlap the fill (player call, §4.4) — the hint keeps its outline, so it stays
 -- legible on any fill level.
-local CUE_FILL = { JUDGE = 0.25, SOON = 0.45, ROTATION = 0.80, LATE = 1.00 }
-local CUE_BURST_FILL = 1.00   -- burst emphasis always fills the box (A3, Tyrant)
 -- The row text clears the whole box, since the box is icon-width now.
 H.CUE_BOX_PAD = 4
 H.ROW_OFFSET = 44
 
--- c — level hue · a — alpha · pulse — slow alpha breathe period (s); nil = steady.
--- `fill` — fraction of the icon-sized box the colour occupies (§4.4).
+-- The cue palette — RENDER RESOURCES ONLY (W4b, A1/A2): `c` level hue · `a` alpha.
+-- The DECISIONS that used to live here — the fill fraction per level, the burst
+-- override, and the pulse period — moved to HudBoard (DEFAULT_FILL / DEFAULT_PULSE),
+-- which now emits `fill` and `pulse` on the cue descriptor.  H.DrawCue draws what
+-- it is handed and decides nothing.
 local CUE = {
-  JUDGE    = { c = { 0.27, 0.88, 1.00 }, a = 0.85,               fill = CUE_FILL.JUDGE },
-  SOON     = { c = { 1.00, 0.86, 0.15 }, a = 0.80, pulse = 0.85, fill = CUE_FILL.SOON },
-  ROTATION = { c = { 0.30, 1.00, 0.48 }, a = 1.00,               fill = CUE_FILL.ROTATION },
-  LATE     = { c = { 0.42, 1.00, 0.58 }, a = 1.00, pulse = 1.3,  fill = CUE_FILL.LATE },
+  JUDGE    = { c = { 0.27, 0.88, 1.00 }, a = 0.85 },
+  SOON     = { c = { 1.00, 0.86, 0.15 }, a = 0.80 },
+  ROTATION = { c = { 0.30, 1.00, 0.48 }, a = 1.00 },
+  LATE     = { c = { 0.42, 1.00, 0.58 }, a = 1.00 },
 }
 
 -- Level -> word colour, for the DEBUG rows only (non-verbose draws no words).
@@ -442,8 +443,9 @@ function H.paintCue(o)
   local w = (item and ns.HasMethod(item, "GetWidth") and item:GetWidth()) or 0
   if w > 0 then t.boxW = w end
   -- §4.4 — FILL is the priority axis, measured ACROSS the box from the icon edge.
-  -- Burst emphasis fills it outright.
-  local frac = (o.emphasis == "burst") and CUE_BURST_FILL or (spec.fill or CUE_FILL.JUDGE)
+  -- The fraction (burst -> 1.0, else the level's fill) is DECIDED by HudBoard and
+  -- arrives on the descriptor as `o.cueFill`; here we only draw it.
+  local frac = o.cueFill or 0.25
   t:SetWidth(math.max(2, (t.boxW or 28) * frac))
 
   local c = spec.c
@@ -471,43 +473,33 @@ function H.paintCue(o)
   end)
 end
 
--- level:      one of the score LEVELS ("NEVER"/"AVAILABLE"/"SOON"/"ROTATION"/
---             "LATE"), or nil to clear the cue bar entirely.
--- judgeReady: true when a judgeable=false ability is otherwise up (Implosion off
---             cooldown) — the one AVAILABLE that lights (cyan "ready, your call").
--- emphasis:   "burst" makes this the WIDEST bar on the board regardless of level
---             (A3, Tyrant only) — hue still carries the level, width carries "this
---             is the burst go-signal".  nil for everything else.
--- NEVER and plain AVAILABLE draw NOTHING; the board only ever cues a call.
-function H.SetCue(item, viewer, level, judgeReady, emphasis)
+-- descriptor: the cue descriptor from HudBoard — { draw, colorKey, fill, pulse } —
+--             or nil to clear the cue bar entirely.
+-- H.DrawCue is the DISPLAY HALF of the old SetCue and makes NO decisions: HudBoard
+-- already mapped level -> colorKey (incl. the JUDGE-ready cyan and the SOON/Tyrant
+-- treatments), chose the fill fraction (burst vs level) and the pulse period.  This
+-- draws what it is handed.  NEVER / plain AVAILABLE / suppressed arrive as
+-- `draw == false`; the board only ever cues a call.
+function H.DrawCue(item, viewer, descriptor)
   local o = item and item.__hud
   if not o then return end
   if viewer then o.side = H.SideFor(viewer) end
-  o.emphasis = emphasis
-  local bkey
-  if level == "SOON" then bkey = "SOON"
-  elseif level == "ROTATION" then bkey = "ROTATION"
-  elseif level == "LATE" then bkey = "LATE"
-  elseif level == "AVAILABLE" and judgeReady then bkey = "JUDGE"
-  end
-  local spec = bkey and CUE[bkey]
-  -- The keybind hint is NOT tinted to the level any more (M4.3): it now sits ON the
-  -- coloured shadow beside the icon, so it stays high-contrast near-white + outline
-  -- for readability rather than matching (and disappearing into) the shadow hue.
+  local spec = descriptor and descriptor.draw and CUE[descriptor.colorKey]
   if not spec then
     o.cueLevel = nil
     if o.cue then o.cue.ag:Stop(); o.cue:Hide() end
     return
   end
   local f = ensureCue(o, item)
-  local changed = (o.cueLevel ~= bkey)
-  o.cueLevel = bkey
+  local changed = (o.cueLevel ~= descriptor.colorKey)
+  o.cueLevel = descriptor.colorKey
+  o.cueFill  = descriptor.fill
   H.paintCue(o)
   if changed then
     f.ag:Stop()
     f:SetAlpha(1)
-    if spec.pulse then
-      f.anim:SetDuration(spec.pulse)
+    if descriptor.pulse then
+      f.anim:SetDuration(descriptor.pulse)
       f.ag:Play()
     end
   end
@@ -855,7 +847,7 @@ function H.Detach(item)
   if not o then return end
   o.attached = false            -- ...so no global repaint can bring it back
   H.SetGlow(item, false)
-  H.SetCue(item, nil, nil)
+  H.DrawCue(item, nil, nil)
   if o.settle then o.settle.ag:Stop(); o.settle:Hide() end
   o.ready = nil                       -- next enable starts at UNKNOWN, not stale
   o.rowExtent = 0                     -- ...and so does the bracket width

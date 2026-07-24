@@ -56,10 +56,11 @@
 -- Unknown spellIDs fall back to the neutral accent — never crash, never guess.
 local ADDON, ns = ...
 
--- Group hues.  These are the exact triples tuned in Resource.lua:12-27; do not
--- re-pick them.  spec.md §3: summon = fel green, core shadow = violet, fel
--- explosion = lime, proc/resource = cyan, defensive = blue, CC = slate,
--- mobility = gold.
+-- Group hues — THE source of truth (B6).  These triples were first tuned in the
+-- retired Resource.lua (deleted W4a); their authority now lives HERE, so the
+-- render modules read `ns.SpecGroups` and hold no colour constants of their own.
+-- spec.md §3: summon = fel green, core shadow = violet, fel explosion = lime,
+-- proc/resource = cyan, defensive = blue, CC = slate, mobility = gold.
 ns.SpecGroups = {
   summon  = { 0.216, 0.784, 0.435 }, -- fel green     — demon summons / burst
   core    = { 0.627, 0.396, 1.000 }, -- shadow violet — core shadow damage

@@ -131,6 +131,18 @@ local POLL_PERIOD  = 0.1    -- ~10 Hz level backstop (a boolean read, no secret)
 local LATE_AFTER   = 3.0
 local SCORE_PERIOD = 0.25   -- drives the ROTATION -> LATE promotion + countdown
 
+-- The board resolver (W4b, A1/A2): the cue-decision engine, one Demonology
+-- instance with its spec constants bound at construction.  Recompute hands it the
+-- board of scores each pass and paints the descriptors it returns; the decisions
+-- that used to be smeared inline (filler / LATE / SOON / suppression / Tyrant hold)
+-- and in HudChrome (level->key, emphasis->fill) all live in HudBoard.Compute now.
+S.board = ns.HudBoard and ns.HudBoard.New({
+  specNoCue = ns.SpecNoCue,
+  tyrantID  = ns.SpecIDs and ns.SpecIDs.TYRANT,
+  shardCap  = ns.SHARD_CAP,
+  lateAfter = LATE_AFTER,
+})
+
 local function hudOn() return ns.Hud and ns.Hud.on end
 
 --------------------------------------------------------------------------------
@@ -560,190 +572,100 @@ local function liveName(e)
 end
 S.LiveName = liveName
 
--- Scratch, reused across passes: the keys lit at ROTATION/LATE this pass.  A
--- reused table and integer appends only — the SAMPLE path must stay free of
--- string work (HudLog's header), and the reason strings are built ONLY when
--- HudLog.Sample reports a new peak.
-local litKeys = {}
--- Scratch for the board-aware pass (v0.16.2): key -> score, computed in phase A
--- so the FILLER resolution can see whether anything better is lit before phase B
--- paints.  Reused (wiped) each Recompute; never allocates.
-local scores = {}
+-- Scratch, reused across passes (never allocates): the per-item scores this pass
+-- and their live identities.  `scores` is HudScore.For's output keyed by registry
+-- key (false = it threw); `liveMap` is S.LiveID per key.  Both are handed to the
+-- board resolver, which does the filler/LATE/cue resolution the loop used to do
+-- inline.  Reused (wiped) each Recompute.
+local scores  = {}
+local liveMap = {}
+
+-- Persist a board next-state table into a stable S.* table.  Identity of the
+-- destination is preserved (wipe + copy, not reassign) because external readers
+-- hold S.cueLevel / S.candidateSince by field and the combat-exit / Stop paths
+-- wipe them in place.
+local function repopulate(dst, src)
+  wipe(dst)
+  for k, v in pairs(src) do dst[k] = v end
+end
 
 function S.Recompute()
-  if not (hudOn() and ns.HudScore) then return end
+  if not (hudOn() and ns.HudScore and S.board) then return end
   local now = GetTime()
-  local lit = 0
-  wipe(litKeys)
 
-  -- ── Phase A — score every item, and note if anything better than filler is up.
-  -- FILLER (Shadow Bolt) is "what you press when nothing else is lit", so it can
-  -- only be resolved against the whole board — which the per-item scorer cannot
-  -- see.  So HudScore leaves it AVAILABLE and we decide here (v0.16.2).
+  -- ── Phase A — score every icon item (per-item, pure) and note its LIVE identity
+  -- (the board needs it for suppression + the Tyrant hold).  `false` = the scorer
+  -- threw.  Everything board-aware — filler resolution, LATE, SOON, suppression,
+  -- the Tyrant-yellow-until-real hold, the churn damp, and the colour-key / fill —
+  -- happens in the ONE pure pass below (W4b, A1/A2); this used to be ~130 lines of
+  -- decisions interleaved with the paint, and the one slice with no busted cover.
   wipe(scores)
-  local anyRotation = false
+  wipe(liveMap)
   for key, e in pairs(ns.Hud.items) do
     if ns.Hud.IsIconViewer(e.viewer) and e.item then
       local ok, sc = pcall(ns.HudScore.For, key, e)
-      scores[key] = ok and sc or false
-      if ok and sc and (sc.level == ns.HudScore.LEVELS.ROTATION) then
-        anyRotation = true
-      end
+      scores[key]  = ok and sc or false
+      liveMap[key] = S.LiveID(e)
     end
   end
-  -- The filler resolves against the board: NEVER when a real call is up, else it
-  -- IS your press (ROTATION, but never a LATE candidate — a filler shouldn't
-  -- nag).  Only touches a filler the scorer left at AVAILABLE, so SPEND-mode
-  -- fillers (already pruned to NEVER) stay pruned.
-  local inCombat = InCombatLockdown()
-  for key, sc in pairs(scores) do
-    if sc and sc.cadence == "filler" and sc.level == ns.HudScore.LEVELS.AVAILABLE then
-      if anyRotation then
-        sc.level = ns.HudScore.LEVELS.NEVER
-        sc.reasons[#sc.reasons + 1] = "better options up"
-      elseif inCombat then
-        sc.level = ns.HudScore.LEVELS.ROTATION
-        sc.candidate = false
-        sc.reasons[#sc.reasons + 1] = "filler — nothing better up"
+
+  local board = S.board:Compute({
+    scores = scores, live = liveMap,
+    prevScore = S.score,
+    prevCueLevel = S.cueLevel, prevCueProjected = S.cueProjected,
+    candidateSince = S.candidateSince,
+    now = now, inCombat = InCombatLockdown(), shards = S.shards,
+  })
+
+  -- ── Log the dot transitions (the string path; the sample path below stays
+  -- lean).  A cleared dot is a transition too, and a LOUD one — it is what an
+  -- unrecognised override looks like (HudScore returns nil rather than inheriting
+  -- the base's cadence), the very case B1 exists to make visible.
+  if ns.HudLog then
+    for i = 1, #board.transitions do
+      local tr = board.transitions[i]
+      local e  = ns.Hud.items[tr.key]
+      if tr.cleared then
+        ns.HudLog.Note("dot", string.format("%s  %s -> (no dot)",
+          liveName(e), tostring(tr.from)))
+      else
+        ns.HudLog.Note("dot", string.format("%s  %s -> %s%s%s : %s",
+          liveName(e), tr.from or "-", tr.to,
+          tr.soon and "/SOON" or "", tr.projected and " ~est" or "",
+          ns.HudScore.Why(scores[tr.key])))
       end
     end
   end
 
-  -- ── Phase B — clock, log transitions, paint.  Uses the phase-A scores.
-  for key, e in pairs(ns.Hud.items) do
-    if ns.Hud.IsIconViewer(e.viewer) and e.item then
-      local sc = scores[key]
-      if sc then
-        -- B6 — LATE MUST NOT ACCRUE OUT OF COMBAT, and the CLOCK must not run
-        -- there either.  LATE is a NAG ("been a candidate 3s+, press it") — a nag
-        -- with nothing to nag about trains the player to ignore the channel.
-        --
-        -- ⚠ M3e caught this GATE IN THE WRONG PLACE.  The promotion below was
-        -- combat-gated, but the STAMP (`= … or now`) was not — so the clock ran
-        -- out of combat, and B6's combat-exit `wipe(candidateSince)` was undone
-        -- 0.25s later by the always-on scoreTicker.  Standing 43s at a dummy then
-        -- pulling opened the fight with every "use on cooldown" button already at
-        -- "waiting 43s" on frame 1 — observed in BOTH recorded pulls (peak set at
-        -- +0.08s, "waiting 43s" / "waiting 19s" matching the idle time exactly).
-        -- The stamp and the promotion are ONE decision and share ONE gate now;
-        -- entering combat starts the clock fresh from the first in-combat frame.
-        -- (InCombatLockdown is readable and branchable — the secure-API lockdown
-        -- flag, not combat state; same precedent quiet() relies on above.)
-        if sc.candidate and InCombatLockdown() then
-          S.candidateSince[key] = S.candidateSince[key] or now
-          local since = S.candidateSince[key]
-          if (now - since) >= LATE_AFTER then
-            sc.level = ns.HudScore.LEVELS.LATE
-            sc.reasons[#sc.reasons + 1] = string.format("waiting %.0fs", now - since)
-          end
-        else
-          -- Not a candidate, OR out of combat: no clock.  Out of combat this also
-          -- means a candidate carries NO stale timestamp into the pull — which is
-          -- the whole point.  (The combat-exit wipe is now redundant but harmless.)
-          S.candidateSince[key] = nil
-        end
-        -- M3e — the TRANSITION.  `S.score[key]` still holds the PREVIOUS score at
-        -- this point, so the compare has to happen before the assignment below.
-        -- Recorded on a move of the level or of soon/projected, because those two
-        -- change what the dot CLAIMS even when the level is unmoved.  This is the
-        -- path that is allowed to cost strings; the sample path below is not.
-        local prev = S.score[key]
-        if ns.HudLog and (not prev or prev.level ~= sc.level
-            or (prev.soon or false) ~= (sc.soon or false)
-            or (prev.projected or false) ~= (sc.projected or false)) then
-          ns.HudLog.Note("dot", string.format("%s  %s -> %s%s%s : %s",
-            liveName(e), prev and prev.level or "-", sc.level,
-            sc.soon and "/SOON" or "", sc.projected and " ~est" or "",
-            ns.HudScore.Why(sc)))
-        end
-        if sc.level == ns.HudScore.LEVELS.ROTATION or sc.level == ns.HudScore.LEVELS.LATE then
-          lit = lit + 1
-          litKeys[lit] = key
-        end
-        S.score[key] = sc
-        -- M4.1 — the 4th arg is now `judgeReady` (was the B4 hollow flag, retired
-        -- with the disc): a judgeable=false ability that is otherwise up (Implosion
-        -- off cooldown) lights the cue bar cyan "ready, your call".  The B4 estimate
-        -- marker now rides the debug row's `~est` text only.
-        -- SOON is a treatment on NEVER, never a level of its own: it brightens
-        -- and counts down but claims nothing about pressability.
-        -- The 5th arg is `emphasis` (A3, M4.4) — "burst" makes Tyrant's cue bar
-        -- the widest on the board regardless of level.
-        -- M4.6 §4.5b — the CHURN gate.  Sc.Stabilise damps a cue change that is
-        -- driven only by the in-flight shard PROJECTION; `sc.level` itself is
-        -- left alone, so the row / log / `lit` still report the true score.
-        local painted = ns.HudScore.Stabilise(S.cueLevel[key], S.cueProjected[key], sc)
-        S.cueLevel[key]     = painted
-        S.cueProjected[key] = sc.projected or false
-        -- M4.6 §4.7 — Grimoire NEVER carries a cue.  It is driven by the burst
-        -- sequence (the pane tells you when), so an independent cue on it is a
-        -- second voice giving the same order out of step with the first.
-        -- ⚠ Open question, not a closed one: if we later decide firing it outside
-        -- burst beats letting it idle, this suppression is what to revisit.
-        local live = S.LiveID(e)
-        local suppressed = live and ns.SpecNoCue and ns.SpecNoCue[live]
-        local paintKey = (sc.soon and painted == ns.HudScore.LEVELS.NEVER)
-          and "SOON" or painted
-        -- M4.6 §4.6 — TYRANT IS YELLOW UNTIL THE GO IS REAL.  Green on the burst
-        -- button is the one signal that should mean "press it NOW", so it is held
-        -- back until the window is genuinely takeable: Tyrant pressable AND shards
-        -- capped.  Short of that it stays yellow — "coming, not yet" — while the
-        -- burst EMPHASIS keeps it the loudest box on the board either way, so the
-        -- hue change costs no prominence.  Unreadable shards read as NOT full: a
-        -- green we cannot justify is the one we must not draw.
-        if live and ns.SpecIDs and live == ns.SpecIDs.TYRANT
-           and paintKey and paintKey ~= "SOON" then
-          local held = S.shards
-          local full = (type(held) == "number") and held >= (ns.SHARD_CAP or 5)
-          if not full then paintKey = "SOON" end
-          -- ⚠ ONE CAUSE, ONE EXPLANATION.  Play-test 6: "Tyrant pulses yellow out
-          -- of combat before first pull, but doesn't say SHARDS! to explain why
-          -- it's not green."  v0.26.0 gated the SHARDS! call-out on the BURST
-          -- WINDOW being armed, which out of combat it never is (the opener owns
-          -- the pane there) — so the yellow appeared with nothing explaining it.
-          -- The flag now rides the SAME condition that forced the yellow, so the
-          -- cue and its reason can never disagree.  An unexplained downgrade is
-          -- exactly the "oracle, not auditable" failure §0.5.8.7 forbids.
-          S.tyrantShardHold = not full
-        elseif live and ns.SpecIDs and live == ns.SpecIDs.TYRANT then
-          S.tyrantShardHold = false
-        end
-        pcall(ns.HudChrome.SetCue, e.item, e.viewer,
-          suppressed and nil or paintKey, sc.judgeReady, sc.emphasis)
-      else
-        -- Losing a dot is a transition too, and a LOUD one: it is what an
-        -- unrecognised override looks like (HudScore returns nil rather than
-        -- inheriting the base's cadence).  Silence here would hide the very case
-        -- B1 exists to make safe.
-        if ns.HudLog and S.score[key] then
-          ns.HudLog.Note("dot", string.format("%s  %s -> (no dot)",
-            liveName(e), S.score[key].level))
-        end
-        S.score[key] = nil
-        S.candidateSince[key] = nil
-        S.cueLevel[key] = nil
-        S.cueProjected[key] = nil
-        pcall(ns.HudChrome.SetCue, e.item, e.viewer, nil)
-      end
-    end
+  -- ── Paint every cue from its descriptor.  H.DrawCue makes NO decisions — the
+  -- colour key, fill fraction and pulse period are already resolved on `d`.
+  for key, d in pairs(board.cues) do
+    local e = ns.Hud.items[key]
+    if e and e.item then pcall(ns.HudChrome.DrawCue, e.item, e.viewer, d) end
   end
-  -- M3c-c1 — the rail rides the same recompute set as the dots.  This is the
-  -- ONE tail that sees every input the mode reads: RefreshGlows ends here (aura
-  -- edges, shard changes, overrides), and so do beginCast/endCast — which is
-  -- what makes the predictive SPEND flip land DURING the cast rather than a beat
-  -- after it.  No new ticker: HudCore.lua's header rule stands.
+
+  -- ── Persist the board's next-state.  S.score keeps only REAL scores (a `false`
+  -- would break the unguarded `sc.level` loops in HudRow / PrintStatus); the other
+  -- three tables are wiped-and-copied so their identity survives for the external
+  -- readers and the combat-exit / Stop wipes.
+  wipe(S.score)
+  for k, v in pairs(scores) do if v then S.score[k] = v end end
+  repopulate(S.candidateSince, board.candidateSinceNext)
+  repopulate(S.cueLevel,       board.cueLevelNext)
+  repopulate(S.cueProjected,   board.cueProjectedNext)
+  S.tyrantShardHold = board.tyrantShardHold
+
+  -- ── The tail, unchanged: the rail rides the same recompute set (the ONE place
+  -- that sees every input the mode reads), then the opener/burst dissolve clocks,
+  -- then the pull-recorder sample — one increment; the peak reason strings are
+  -- built only when it reports a new peak.  No new ticker (HudCore's header rule).
   S.PaintRail()
-  -- M3c-c2 — the opener's dissolve clock (first Tyrant window close).  On the
-  -- same tail, no new ticker; a cheap elapsed-time compare against the Tyrant cast.
   if ns.HudOpener then ns.HudOpener.Tick() end
   if ns.HudBurst then ns.HudBurst.Tick() end
-  -- M3e — the SAMPLE, on the same tail and for the same reason: this is the one
-  -- place that sees every input.  Sample() is one increment; the reason strings
-  -- are built ONLY when it reports a new peak, which is rare by construction.
-  if ns.HudLog and ns.HudLog.Sample(lit) then
+  if ns.HudLog and ns.HudLog.Sample(board.lit) then
     local set = {}
-    for i = 1, lit do
-      local k = litKeys[i]
+    for i = 1, board.lit do
+      local k = board.litKeys[i]
       set[i] = string.format("%s (%s)", liveName(ns.Hud.items[k]),
         ns.HudScore.Why(S.score[k]))
     end
