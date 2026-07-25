@@ -39,7 +39,7 @@ stds.wow = {
     "HasAction", "GetActionInfo", "GetActionText",
     -- C_ namespaces the addon uses (functions accessed via these tables) -------
     "C_AddOns", "C_CooldownViewer", "C_NamePlate", "C_Secrets",
-    "C_Spell", "C_Timer", "C_UnitAuras", "AuraUtil",
+    "C_Spell", "C_SpellActivationOverlay", "C_Timer", "C_UnitAuras", "AuraUtil",
     -- Enums --------------------------------------------------------------------
     "Enum",
   },

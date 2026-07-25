@@ -247,10 +247,18 @@ local function scanActiveAuras()
 end
 
 -- aura{active, readable}.  `activeByID` is the full-scan set; `ids` are the entry's
--- associated spellIDs (live, base, linked).  Active if ANY associated id is in the
--- scan set OR a direct by-id read finds it (the by-id read is readable in combat where
--- the scan may go secret, so the two paths back each other up).
-local function readAura(hasAura, selfAura, activeByID, ids)
+-- associated spellIDs (live, base, linked); `aurasSecret` is how many auras this pulse
+-- read secret.  Active if ANY associated id is in the scan set or a direct by-id read
+-- finds it.
+--
+-- ⚠ COMBAT AURAS ARE SECRET (measured v0.29.4).  A `/cdmp statelog` capture proved it:
+-- out of combat the scan read 8 buffs / 0 secret; IN COMBAT only 1 passive was
+-- readable and 6–16 auras per pulse came back as secret tables, with
+-- GetPlayerAuraBySpellID returning nil for the hidden ones.  So when the aura space is
+-- partially secret we CANNOT honestly say a buff is absent — an unconfirmed entry is
+-- `readable:false`, NOT a false `active:false` (secrecy first-class).  The
+-- combat-readable proc signal lives on the `glow` fact below, not here.
+local function readAura(hasAura, selfAura, activeByID, ids, aurasSecret)
   if not (hasAura or selfAura) then return { readable = true, active = false } end
   for _, id in ipairs(ids) do
     if readable(id) and activeByID[id] then return { readable = true, active = true } end
@@ -264,7 +272,77 @@ local function readAura(hasAura, selfAura, activeByID, ids)
       end
     end
   end
+  -- Not positively confirmed.  If auras are being hidden this pulse, absence is
+  -- unknowable -> readable:false.  Only a fully-readable aura space makes false honest.
+  if aurasSecret and aurasSecret > 0 then return { readable = false } end
   return { readable = true, active = false }
+end
+
+-- glow{active, readable} — is this spell PROC-HIGHLIGHTED right now (the spell-
+-- activation overlay the action bars flash)?  This is the CDM's OWN combat-readable
+-- proc signal: RefreshOverlayGlow (CooldownViewer.lua:1124) calls exactly this
+-- `IsSpellOverlayed` to decide the glow, and it reads in combat where C_UnitAuras goes
+-- secret (fired 27x in a measured pull).  Spec-agnostic: State reports "spell X is
+-- overlay-glowed"; the Coach knows a glow on Demonbolt means a Demonic Core proc.  The
+-- glow lands on the EMPOWERED spell, which is the actionable one — better than the aura.
+local function readGlow(spellID)
+  if not readable(spellID) then return { readable = false } end
+  if not (C_SpellActivationOverlay and C_SpellActivationOverlay.IsSpellOverlayed) then
+    return { readable = false }
+  end
+  local ok, on = pcall(C_SpellActivationOverlay.IsSpellOverlayed, spellID)
+  if not ok or ns.IsSecret(on) then return { readable = false } end
+  return { readable = true, active = on and true or false }
+end
+
+-- buff{...} — what the buff-tracking ITEM FRAME exposes that the DB struct does not
+-- (v0.29.5, probing the user's "is buff-tracking another source?" question).
+-- Demonic Core is a CooldownViewerBuffItemMixin; its `isActive` is a bool Blizzard's
+-- TRUSTED code derives from the (secret) aura and stores on the frame — so it MAY be a
+-- clean, readable-in-combat "is this buff up" signal even though the aura itself is
+-- secret.  We MEASURE that here: read `IsActive()` and `IsShown()` guarded, and carry
+-- `hideWhenInactive` (whether `shown` is even a signal — the ShouldBeShown caveat).
+-- Duration/stacks are deliberately NOT read: they are auraData-derived and secret.
+local function readBuffItem(item)
+  if not item then return nil end
+  local out = {}
+  if ns.HasMethod(item, "IsActive") then
+    local ok, v = pcall(item.IsActive, item)
+    if ok and not ns.IsSecret(v) then
+      out.isActive, out.isActiveReadable = (v and true or false), true
+    else
+      out.isActiveReadable = false
+    end
+  end
+  if ns.HasMethod(item, "IsShown") then
+    local ok, v = pcall(item.IsShown, item)
+    if ok and not ns.IsSecret(v) then out.shown = v and true or false end
+  end
+  local ok, hwi = pcall(function() return item.hideWhenInactive end)
+  if ok and type(hwi) == "boolean" then out.hideWhenInactive = hwi end
+  return out
+end
+
+-- cooldownID -> live item frame, across all viewers.  Frame-anchored best-effort: the
+-- buff-tracking items are where a proc's isActive/shown lives, and the DB struct never
+-- carries it.  Rebuilt each Build so a repooled frame can't go stale.
+local function itemFrameMap()
+  local map = {}
+  if not ns.VIEWERS then return map end
+  for _, v in ipairs(ns.VIEWERS) do
+    local viewer = ns.GetViewer(v.frame)
+    if viewer then
+      for _, item in ipairs(ns.GetItemFrames(viewer)) do
+        local cid = readable(item.cooldownID) and item.cooldownID or nil
+        if not cid and ns.HasMethod(item, "GetCooldownID") then
+          local ok, id = pcall(item.GetCooldownID, item)
+          if ok and readable(id) then cid = id end
+        end
+        if cid and not map[cid] then map[cid] = item end
+      end
+    end
+  end
+  return map
 end
 
 --------------------------------------------------------------------------------
@@ -383,6 +461,7 @@ function St.Build(drain)
   wipe(St.baseOfCast)
   -- ONE full active-buff scan for the whole pulse — the spec-agnostic proc source.
   local auraList, activeByID, auraSecret = scanActiveAuras()
+  local items = itemFrameMap()   -- cooldownID -> item frame, for the buff-item probe
 
   local cooldowns = {}
   for cooldownID, categoryName in pairs(set) do
@@ -427,7 +506,11 @@ function St.Build(drain)
       -- live facts (secrecy first-class)
       cd     = readCd(live, base),
       charge = readCharge(live, hasCharges),
-      aura   = readAura(hasAura, selfAura, activeByID, auraIds),
+      aura   = readAura(hasAura, selfAura, activeByID, auraIds, auraSecret),
+      glow   = readGlow(live),   -- the combat-readable proc-highlight signal
+      -- buff-item frame state (isActive/shown) — measured for the aura entries, the
+      -- candidate per-buff combat signal the DB struct doesn't carry.
+      buff   = (hasAura or selfAura) and readBuffItem(items[cooldownID]) or nil,
       -- mostly-static, OOC-resolved off the BASE id (finding-3)
       keybind = (base and ns.HudBinds and ns.HudBinds.Get and ns.HudBinds.Get(base)) or nil,
     }
@@ -469,10 +552,11 @@ local OOC_SAMPLE  = 5.0        -- periodic out-of-combat sample, for baseline co
 -- A cheap running hash of the salient facts, arithmetic only.  In combat the live
 -- cd read short-circuits to nil (constant), so combat pulses ride the event flags;
 -- out of combat cd/aura movement shows up here directly.
--- Returns (hash, auraOn): a cheap change signature plus the count of active auras
--- (so the poll can label a proc distinctly from a plain change).
+-- Returns (hash, procOn): a cheap change signature plus the count of active proc
+-- signals (glow highlights + readable auras), so the poll can label a proc distinctly.
 local function signature()
   local h = InCombatLockdown() and 1 or 0
+  local procOn = 0
   for cooldownID in pairs(enumerate()) do
     local info = cooldownInfo(cooldownID)
     local base = info and readable(info.spellID) and info.spellID or nil
@@ -481,8 +565,12 @@ local function signature()
     local cdbit = (isReady == nil) and 0 or (isReady and 1 or 2)
     local rem = (type(remaining) == "number") and math.floor(remaining) or 0
     local ov = readable(St.override[base]) and St.override[base] or 0
+    -- glow is the combat-readable proc signal, so fold it in AND count it as a proc.
+    local g = readGlow(live)
+    local glowbit = (g.readable and g.active) and 1 or 0
+    if glowbit == 1 then procOn = procOn + 1 end
     -- Mix cooldownID + facts into the hash (mod keeps it a Lua number, not a string).
-    h = (h * 131 + cooldownID + cdbit * 7 + rem * 13 + ov) % 2147483647
+    h = (h * 131 + cooldownID + cdbit * 7 + rem * 13 + ov + glowbit * 11) % 2147483647
   end
   -- Fold every readable power into the hash so a shard step is a 'change' — spec-
   -- agnostically, mixing whatever powers the character has (no opinion on which).
@@ -492,36 +580,35 @@ local function signature()
       h = (h * 131 + value * 17 + val) % 2147483647
     end
   end
-  -- Fold the active-buff set in so a proc is a 'change', and count them so the poll
-  -- can label a proc distinctly.  Same-membership -> same pairs order -> same hash.
+  -- Fold the active-buff set in so an OOC proc is a 'change' too, and count them.
+  -- Same-membership -> same pairs order -> same hash.
   local _, activeByID = scanActiveAuras()
-  local auraOn = 0
   for id in pairs(activeByID) do
-    auraOn = auraOn + 1
+    procOn = procOn + 1
     h = (h * 131 + id) % 2147483647
   end
-  return h, auraOn
+  return h, procOn
 end
 
 local pollTicker
 local lastSig = nil
-local lastAuraOn = 0
+local lastProcOn = 0
 local lastSample = 0
 
 local function poll()
   if not St.on then return end
   local now = GetTime()
   local due = captureReason
-  local sig, auraOn = signature()
+  local sig, procOn = signature()
   if not due then
     if sig ~= lastSig then
       -- an aura coming UP is a proc — a distinct, protected moment in the ring
-      due = (auraOn > lastAuraOn) and "proc" or "change"
+      due = (procOn > lastProcOn) and "proc" or "change"
     elseif (now - lastSample) >= OOC_SAMPLE and not InCombatLockdown() then
       due = "sample"
     end
   end
-  lastSig, lastAuraOn = sig, auraOn   -- resync so an owed event isn't re-detected
+  lastSig, lastProcOn = sig, procOn   -- resync so an owed event isn't re-detected
   if due then
     captureReason = nil
     lastSample = now
