@@ -298,13 +298,24 @@ eframe:SetScript("OnEvent", function(_, event, a1, a2, a3)
   if event == "COOLDOWN_VIEWER_SPELL_OVERRIDE_UPDATED" then
     -- (baseSpellID, overrideSpellID).  Record the transform and update the one
     -- override map identity reads from.
+    --
+    -- ⚠ IDEMPOTENCY (v0.29.3).  The client fires this event REDUNDANTLY — several
+    -- times per logical transform, each carrying the same (base, override) pair, as
+    -- the pet summon / aura / linked-spell / cooldown updates each poke the override
+    -- table.  Blizzard's own code expects this: CooldownViewerItemData.lua:91
+    -- SetOverrideSpell early-returns when overrideSpellID is unchanged, and
+    -- CooldownViewer.lua:173 defers its refresh "until a unique event is received".
+    -- We mirror that guard: only record a transform when the value ACTUALLY changes,
+    -- so the delta is the real transition, not 1 real + N no-op re-fires.
     if readable(a1) then
       local from = St.override[a1]
       local to = readable(a2) and a2 or nil
-      St.override[a1] = to
-      pushEvent({ kind = "transform", base = a1, from = ns.Stash(from),
-                  to = ns.Stash(to), at = GetTime() })
-      markCapture("transform")
+      if to ~= from then
+        St.override[a1] = to
+        pushEvent({ kind = "transform", base = a1, from = ns.Stash(from),
+                    to = ns.Stash(to), at = GetTime() })
+        markCapture("transform")
+      end
     end
   elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
     -- a3 is the spellID (unit, castGUID, spellID); RegisterUnitEvent filters to
