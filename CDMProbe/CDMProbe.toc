@@ -19,6 +19,7 @@ HudCueWatch.lua
 HudGradTest.lua
 HudNapkin.lua
 HudScore.lua
+Coach.lua
 HudBoard.lua
 HudLog.lua
 HudState.lua

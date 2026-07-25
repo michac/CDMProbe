@@ -161,6 +161,13 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   state -> (level, reasons).  NEVER / AVAILABLE /
                                   ROTATION / LATE, plus the judgeable=false cap.
                                   Owns no frames and reads nothing secret.
+    Coach.lua                     W4 pipeline Stage 2 (NEW, not wired live yet):
+                                  Coach.Compute(state) -> Guidance, the SINGLE-TOP-
+                                  PRESS ranked winner.  Classify (reuse HudScore's
+                                  readable facts) + Context/RankWinner/Escalate/Emit
+                                  (redesigned priority cascade).  Pure factory like
+                                  HudBoard; greened against the 23-golden corpus.
+                                  See docs/w4-phase2-coach-notes.md.
     HudNapkin.lua                 anticipation: SUCCEEDED cast -> base-cooldown
                                   countdown.  The only DRIFTING input in the
                                   design, fenced so it can only make the HUD
@@ -177,6 +184,11 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
       mock_ns.lua                 the harness: CreateFrame stub + fake clock +
                                   global fakes + real Util/SpecDemonology + a
                                   fixture-settable HudState/ShardCost/napkin surface
+      json_fixture.lua            dkjson loader for the wow-repo golden corpus
+                                  (configurable path; $CDMP_GOLDENS_DIR override)
+      spec/coach_golden_spec.lua  the ⛔ gate arbiter: Coach.Compute diffed against
+                                  all 23 corpus/goldens/*/guidance.json (23/23)
+      spec/coach_classify_spec.lua Classify in isolation (probably-up, transforms)
       spec/hudscore_spec.lua      dot-score rules (strictness, judgeable, prunes)
       spec/hudqueue_spec.lua      sequence widget (C1, prime, drop-through, +N)
       spec/hudnapkin_spec.lua     anticipation countdown + honesty rules
