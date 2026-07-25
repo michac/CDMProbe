@@ -212,22 +212,56 @@ end
 -- the buff is up.  We never index it, so a secret aura still reads as active — only a
 -- thrown call is `readable=false`.  (Measured readable in combat this build, but the
 -- guard stays: absence of a read is not evidence of absence of the buff.)
-local function readAura(live, base, hasAura, selfAura)
-  if not (hasAura or selfAura) then return { readable = true, active = false } end
-  if not (C_UnitAuras and C_UnitAuras.GetPlayerAuraBySpellID) then
-    return { readable = false }
+--
+-- FULL ACTIVE-BUFF SCAN — the spec-agnostic source of truth for "what is on the player
+-- right now" (v0.29.4).  `GetPlayerAuraBySpellID(id)` only finds the aura if `id` is
+-- the buff's OWN aura spellID — and a CDM entry's `spellID` is not always that id
+-- (Wild Imp's matched; Demonic Core's may not).  So we ALSO enumerate every player
+-- buff and report the list (`activeAuras`), and mark an entry active when any of its
+-- associated ids is in that set.  The raw list is first-class: the spec-agnostic State
+-- reports which buffs are up; the Coach (spec-aware) decides which ones MEAN something.
+-- Secret-guarded per aura: in restricted combat a packed auraData can be a secret
+-- table, so an unreadable aura is COUNTED (`secret`), never indexed.
+local function scanActiveAuras()
+  local list, byID, secret = {}, {}, 0
+  if not (AuraUtil and AuraUtil.ForEachAura) then return list, byID, secret end
+  local cb = function(aura)
+    local sid, name
+    local ok = pcall(function()
+      if type(aura) == "table" and not ns.IsSecretTable(aura) then
+        sid, name = aura.spellId, aura.name
+      end
+    end)
+    if ok and readable(sid) then
+      if not byID[sid] then
+        byID[sid] = true
+        list[#list + 1] = { spellID = sid, name = (type(name) == "string") and name or nil }
+      end
+    else
+      secret = secret + 1
+    end
+    -- return nothing -> keep iterating every aura
   end
-  for _, id in ipairs({ live, base }) do
-    if readable(id) then
-      -- ⚠ ONE ARGUMENT (v0.29.2 fix).  C_UnitAuras.GetPlayerAuraBySpellID(spellID)
-      -- takes the spellID ONLY — the unit is implied by the name.  v0.29.0-.1 passed
-      -- ("player", id), so it searched for an aura whose spellID was the STRING
-      -- "player" — always nil, never an error, so every proc silently read inactive
-      -- (readable=true, active=false across every pulse).  Verified against every
-      -- Blizzard call site in wow-ui-source @ 4383ced.
-      local ok, aura = pcall(C_UnitAuras.GetPlayerAuraBySpellID, id)
-      if not ok then return { readable = false } end
-      if type(aura) == "table" then return { readable = true, active = true } end
+  pcall(AuraUtil.ForEachAura, "player", "HELPFUL", nil, cb, true)
+  return list, byID, secret
+end
+
+-- aura{active, readable}.  `activeByID` is the full-scan set; `ids` are the entry's
+-- associated spellIDs (live, base, linked).  Active if ANY associated id is in the
+-- scan set OR a direct by-id read finds it (the by-id read is readable in combat where
+-- the scan may go secret, so the two paths back each other up).
+local function readAura(hasAura, selfAura, activeByID, ids)
+  if not (hasAura or selfAura) then return { readable = true, active = false } end
+  for _, id in ipairs(ids) do
+    if readable(id) and activeByID[id] then return { readable = true, active = true } end
+  end
+  if C_UnitAuras and C_UnitAuras.GetPlayerAuraBySpellID then
+    for _, id in ipairs(ids) do
+      if readable(id) then
+        local ok, aura = pcall(C_UnitAuras.GetPlayerAuraBySpellID, id)
+        if not ok then return { readable = false } end
+        if type(aura) == "table" then return { readable = true, active = true } end
+      end
     end
   end
   return { readable = true, active = false }
@@ -347,6 +381,8 @@ end)
 function St.Build(drain)
   local set = enumerate()
   wipe(St.baseOfCast)
+  -- ONE full active-buff scan for the whole pulse — the spec-agnostic proc source.
+  local auraList, activeByID, auraSecret = scanActiveAuras()
 
   local cooldowns = {}
   for cooldownID, categoryName in pairs(set) do
@@ -368,6 +404,12 @@ function St.Build(drain)
       end
     end
 
+    -- The entry's associated aura ids (no nils/holes — ipairs-safe), for the scan match.
+    local auraIds = {}
+    if readable(live) then auraIds[#auraIds + 1] = live end
+    if readable(base) and base ~= live then auraIds[#auraIds + 1] = base end
+    for _, id in ipairs(linked) do auraIds[#auraIds + 1] = id end
+
     cooldowns[cooldownID] = {
       -- structural metadata (spec-agnostic)
       cooldownID = cooldownID,
@@ -385,7 +427,7 @@ function St.Build(drain)
       -- live facts (secrecy first-class)
       cd     = readCd(live, base),
       charge = readCharge(live, hasCharges),
-      aura   = readAura(live, base, hasAura, selfAura),
+      aura   = readAura(hasAura, selfAura, activeByID, auraIds),
       -- mostly-static, OOC-resolved off the BASE id (finding-3)
       keybind = (base and ns.HudBinds and ns.HudBinds.Get and ns.HudBinds.Get(base)) or nil,
     }
@@ -402,6 +444,11 @@ function St.Build(drain)
     combat = InCombatLockdown() and true or false,
     cooldowns = cooldowns,
     power  = readPower(),
+    -- Every active player buff, spec-agnostically — the Coach's authoritative proc
+    -- source, and the diagnostic that reveals a proc's TRUE aura id when a CDM entry's
+    -- own spellID does not match it.  `auraSecret` = auras whose id read secret.
+    activeAuras = auraList,
+    activeAuraSecret = auraSecret,
     events = events,
   }
 end
@@ -426,7 +473,6 @@ local OOC_SAMPLE  = 5.0        -- periodic out-of-combat sample, for baseline co
 -- (so the poll can label a proc distinctly from a plain change).
 local function signature()
   local h = InCombatLockdown() and 1 or 0
-  local auraOn = 0
   for cooldownID in pairs(enumerate()) do
     local info = cooldownInfo(cooldownID)
     local base = info and readable(info.spellID) and info.spellID or nil
@@ -434,14 +480,9 @@ local function signature()
     local isReady, remaining = ns.ReadCooldown(live)
     local cdbit = (isReady == nil) and 0 or (isReady and 1 or 2)
     local rem = (type(remaining) == "number") and math.floor(remaining) or 0
-    local aur = 0
-    if info and (info.hasAura or info.selfAura) then
-      local a = readAura(live, base, info.hasAura, info.selfAura)
-      if a.readable and a.active then aur = 1; auraOn = auraOn + 1 end
-    end
     local ov = readable(St.override[base]) and St.override[base] or 0
     -- Mix cooldownID + facts into the hash (mod keeps it a Lua number, not a string).
-    h = (h * 131 + cooldownID + cdbit * 7 + rem * 13 + aur * 3 + ov) % 2147483647
+    h = (h * 131 + cooldownID + cdbit * 7 + rem * 13 + ov) % 2147483647
   end
   -- Fold every readable power into the hash so a shard step is a 'change' — spec-
   -- agnostically, mixing whatever powers the character has (no opinion on which).
@@ -450,6 +491,14 @@ local function signature()
     if okV and type(val) == "number" and not ns.IsSecret(val) then
       h = (h * 131 + value * 17 + val) % 2147483647
     end
+  end
+  -- Fold the active-buff set in so a proc is a 'change', and count them so the poll
+  -- can label a proc distinctly.  Same-membership -> same pairs order -> same hash.
+  local _, activeByID = scanActiveAuras()
+  local auraOn = 0
+  for id in pairs(activeByID) do
+    auraOn = auraOn + 1
+    h = (h * 131 + id) % 2147483647
   end
   return h, auraOn
 end
