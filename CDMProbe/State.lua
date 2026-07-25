@@ -405,6 +405,58 @@ local function pushEvent(e)
   pending[#pending + 1] = e
 end
 
+--------------------------------------------------------------------------------
+-- Cast history — a bounded, timestamped window of recent casts (sequence memory)
+--------------------------------------------------------------------------------
+-- A single State pulse is a snapshot; to know we're PARTWAY THROUGH A SEQUENCE the
+-- Coach needs recent cast order.  Keeping that here (spec-agnostic: "the player cast
+-- these spells at these times") lets the Coach compute the sequence cursor as a PURE
+-- FUNCTION of State — which is what makes the Phase-2 golden tests fixturable (perturb
+-- a pulse's history, assert the Guidance.sequence).  Same observation the napkin
+-- already ingests, ordered by time instead of keyed by spell.
+--
+-- We record BOTH phases:
+--   * "start"     (UNIT_SPELLCAST_START)     — a cast has COMMITTED / is in flight.
+--     Cast-time spells only (instants fire SUCCEEDED alone).  Lets the Coach hint the
+--     NEXT step and animate the current one BEFORE it lands.
+--   * "succeeded" (UNIT_SPELLCAST_SUCCEEDED) — the cast LANDED; advance the sequence.
+-- Bounded by count on push and by age at Build, long enough to cover an opener.
+local HISTORY_MAX    = 32       -- hard cap on retained cast entries
+local HISTORY_WINDOW = 20.0     -- seconds of history a pulse carries (>= longest sequence)
+local history = {}
+
+local function pushCast(phase, spellID)
+  if not readable(spellID) then return end
+  history[#history + 1] = { phase = phase, spellID = spellID,
+                            base = ns.Stash(St.BaseOfCast(spellID)), at = GetTime() }
+  while #history > HISTORY_MAX do table.remove(history, 1) end
+end
+
+St.combatStartedAt = nil        -- GetTime() when combat last began; nil = never seen
+
+-- Per-cooldown last-transition stamp (NOT a history — the Coach only ever needs "when
+-- did this last change", e.g. how long it has sat ready for a LATE cue).  We remember
+-- the previous observed cd.state per cooldownID and stamp `cd.changedAt` when it flips.
+-- ⚠ Honest caveat: this is when STATE'S VIEW changed, ~poll-granular, and it counts
+-- readability transitions too (a live 'ready' -> secret 'unknown' on combat entry is a
+-- flip here, not a real cooldown event) — the Coach discounts those using `cd.source`
+-- + `combatStartedAt`.  The reliable in-combat readiness edge is a later alert-hook
+-- upgrade, same shape as the buff.isActive proc finding.
+local cdPrevState = {}
+local cdChangedAt = {}
+
+-- Stamp `cd.changedAt` = when this cooldown's observed state last flipped.  First
+-- observation stamps `now` ("seen in this state since"), which the Coach treats as a
+-- floor, not a proven transition (cold-start, like the live HUD's candidateSince).
+local function stampCd(cooldownID, cd, now)
+  if cdPrevState[cooldownID] ~= cd.state then
+    cdPrevState[cooldownID] = cd.state
+    cdChangedAt[cooldownID] = now
+  end
+  cd.changedAt = cdChangedAt[cooldownID]
+  return cd
+end
+
 local eframe = CreateFrame("Frame")
 eframe:SetScript("OnEvent", function(_, event, a1, a2, a3)
   if event == "COOLDOWN_VIEWER_SPELL_OVERRIDE_UPDATED" then
@@ -429,15 +481,26 @@ eframe:SetScript("OnEvent", function(_, event, a1, a2, a3)
         markCapture("transform")
       end
     end
+  elseif event == "UNIT_SPELLCAST_START" then
+    -- (unit, castGUID, spellID) — the cast is IN FLIGHT.  Cast-time spells only; the
+    -- Coach can start hinting the next step before this one lands.
+    if readable(a3) then
+      pushCast("start", a3)
+      pushEvent({ kind = "cast_started", spellID = a3,
+                  base = ns.Stash(St.BaseOfCast(a3)), at = GetTime() })
+      markCapture("cast")
+    end
   elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
     -- a3 is the spellID (unit, castGUID, spellID); RegisterUnitEvent filters to
     -- player.  Resolve back to the base entry so the Coach can tie it to a cooldown.
     if readable(a3) then
+      pushCast("succeeded", a3)
       pushEvent({ kind = "cast_succeeded", spellID = a3,
                   base = ns.Stash(St.BaseOfCast(a3)), at = GetTime() })
       markCapture("cast")
     end
   elseif event == "PLAYER_REGEN_DISABLED" then
+    St.combatStartedAt = GetTime()
     pushEvent({ kind = "combat_start", at = GetTime() })
     markCapture("combat")
   elseif event == "PLAYER_REGEN_ENABLED" then
@@ -457,6 +520,7 @@ end)
 -- the pending events into the pulse and clears them; a diagnostic Build leaves them
 -- for the next real capture so "delta since last pulse" stays honest.
 function St.Build(drain)
+  local now = GetTime()
   local set = enumerate()
   wipe(St.baseOfCast)
   -- ONE full active-buff scan for the whole pulse — the spec-agnostic proc source.
@@ -504,7 +568,7 @@ function St.Build(drain)
       isKnown    = info and (info.isKnown and true or false) or nil,
       flags      = info and ns.Stash(info.flags) or nil,
       -- live facts (secrecy first-class)
-      cd     = readCd(live, base),
+      cd     = stampCd(cooldownID, readCd(live, base), now),
       charge = readCharge(live, hasCharges),
       aura   = readAura(hasAura, selfAura, activeByID, auraIds, auraSecret),
       glow   = readGlow(live),   -- the combat-readable proc-highlight signal
@@ -522,9 +586,17 @@ function St.Build(drain)
     wipe(pending)
   end
 
+  -- Cast history within the window, oldest->newest — the sequence-memory substrate.
+  local hist = {}
+  for i = 1, #history do
+    local c = history[i]
+    if (now - c.at) <= HISTORY_WINDOW then hist[#hist + 1] = c end
+  end
+
   return {
-    at     = GetTime(),
+    at     = now,
     combat = InCombatLockdown() and true or false,
+    combatStartedAt = St.combatStartedAt,   -- so "elapsed in combat" is computable here
     cooldowns = cooldowns,
     power  = readPower(),
     -- Every active player buff, spec-agnostically — the Coach's authoritative proc
@@ -532,6 +604,8 @@ function St.Build(drain)
     -- own spellID does not match it.  `auraSecret` = auras whose id read secret.
     activeAuras = auraList,
     activeAuraSecret = auraSecret,
+    -- Recent casts (start + succeeded), the Coach's sequence memory — see the header.
+    history = hist,
     events = events,
   }
 end
@@ -670,6 +744,9 @@ local function clearStatelog()
   ns.db.statelog = { pulses = {}, byReason = {}, count = 0,
                      startedAt = date("%Y-%m-%d %H:%M:%S"), version = ns.version }
   wipe(pending)
+  wipe(history)
+  wipe(cdPrevState)
+  wipe(cdChangedAt)
   captureReason = nil
   lastSig = nil
   lastSample = 0
@@ -692,6 +769,7 @@ function St.Start()
   if ns.HudNapkin and ns.HudNapkin.Start then pcall(ns.HudNapkin.Start) end
   if ns.HudBinds and ns.HudBinds.Start then pcall(ns.HudBinds.Start) end
   eframe:RegisterEvent("COOLDOWN_VIEWER_SPELL_OVERRIDE_UPDATED")
+  eframe:RegisterUnitEvent("UNIT_SPELLCAST_START", "player")
   eframe:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
   eframe:RegisterEvent("PLAYER_REGEN_DISABLED")
   eframe:RegisterEvent("PLAYER_REGEN_ENABLED")
