@@ -114,7 +114,7 @@ SlashCmdList["CDMPROBE"] = dispatch
 -- guards the load order: Renderer.lua loads after Core, so resolve ns.RenderTest
 -- at DISPATCH time, not registration time.
 ns.RegisterCommand("rendertest",
-  "Phase-3 draw test: render a hand-authored DrawList fixture (list | off)",
+  "Phase-3 draw test: render a DrawList fixture (inventory | rotate | list | off)",
   function(rest)
     if ns.RenderTest then ns.RenderTest(rest)
     else ns.Print("Renderer not loaded") end

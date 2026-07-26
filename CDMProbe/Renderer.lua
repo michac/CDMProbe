@@ -375,8 +375,20 @@ local function shards(value, max)
            value = value, max = max or 5, powerType = "SOUL_SHARDS" }
 end
 
-local FIXTURE_ORDER = { "hand-of-guldan", "burst-hold", "opener-midflight", "secrecy-combat" }
+local FIXTURE_ORDER = { "inventory", "hand-of-guldan", "burst-hold", "opener-midflight", "secrecy-combat" }
 local FIXTURES = {
+  -- INVENTORY — not a scenario: one dot of EVERY emphasis token side by side, each
+  -- captioned, so the whole palette (and which tokens glow) reads at a glance.  The
+  -- reference card for the visual language, not a state the Coach would produce.
+  ["inventory"] = { icons = 5,
+    captions = { "ROTATION", "LATE", "SOON", "JUDGE", "SEQUENCE" },
+    drawList = {
+      cues = {
+        cue("fake1", "ROTATION", "R"), cue("fake2", "LATE", "R"),
+        cue("fake3", "SOON", "E"),     cue("fake4", "JUDGE", "1"),
+        cue("fake5", "SEQUENCE", "sQ"),
+      },
+    } },
   -- One ROTATION press: HoG is the single call (3 shards, no proc, summons cooling).
   ["hand-of-guldan"] = { icons = 1, drawList = {
     cues = { cue("fake1", "ROTATION", "R") },
@@ -417,18 +429,19 @@ local FIXTURES = {
 ns.RenderTestFixtures = FIXTURES   -- exported so a spec / tool can read them
 
 -- Build (or reuse) the placeholder icon row + a persistent test Renderer.  Icons
--- are bordered dark squares — the DOT is the star of each screenshot.
-local function buildRig(n)
+-- are bordered dark squares — the DOT is the star of each screenshot.  An optional
+-- `captions` list labels each icon underneath (the inventory view's reference card).
+local function buildRig(n, captions)
   local rig = ns._renderTestRig
   if not rig then
     local container = CreateFrame("Frame", "CDMProbeRenderTest", UIParent)
-    container:SetSize(480, 220)
+    container:SetSize(560, 220)
     container:SetPoint("CENTER", UIParent, "CENTER", 0, 60)
     container:SetFrameStrata("HIGH")
     rig = { container = container, icons = {}, renderer = R.New() }
     ns._renderTestRig = rig
   end
-  local SIZE, GAP = 48, 12
+  local SIZE, GAP = 48, 22
   local total = n * SIZE + (n - 1) * GAP
   for i = 1, n do
     local icon = rig.icons[i]
@@ -442,41 +455,83 @@ local function buildRig(n)
       local fill = icon:CreateTexture(nil, "ARTWORK")
       fill:SetAllPoints(icon)
       fill:SetColorTexture(0.12, 0.13, 0.16, 1)
+      icon._caption = icon:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+      icon._caption:SetPoint("TOP", icon, "BOTTOM", 0, -4)
       rig.icons[i] = icon
     end
     icon:ClearAllPoints()
     icon:SetPoint("LEFT", rig.container, "CENTER", -total / 2 + (i - 1) * (SIZE + GAP), 0)
     icon:Show()
+    if captions and captions[i] then
+      icon._caption:SetText(captions[i]); icon._caption:Show()
+    else
+      icon._caption:Hide()
+    end
     rig.renderer:Register("fake" .. i, icon)
   end
   for i = n + 1, #rig.icons do rig.icons[i]:Hide() end
   return rig
 end
 
--- `/cdmp rendertest [<name>|off|list]` — render a fixture; bare = the first one.
+-- ROTATE — a live demo: 5 CDM panels, one press cue hopping between them on a
+-- timer.  Shows the diff-by-key movement (the old handle's dot + glow drop as the
+-- new one lights) and the glow tracking the dot across icons.  A C_Timer ticker,
+-- so it needs stopping when the view changes or clears (unlike the static fixtures).
+local ROTATE_ICONS, ROTATE_INTERVAL = 5, 0.8
+
+local function stopRotate()
+  if ns._renderTestTicker then
+    ns._renderTestTicker:Cancel()
+    ns._renderTestTicker = nil
+  end
+end
+
+local function startRotate()
+  stopRotate()
+  local rig = buildRig(ROTATE_ICONS)
+  rig.container:Show()
+  local i = 0
+  local function step()
+    i = (i % ROTATE_ICONS) + 1
+    rig.renderer:Draw({ cues = { cue("fake" .. i, "ROTATION", tostring(i)) } })
+  end
+  step()                                     -- light the first one immediately
+  ns._renderTestTicker = C_Timer.NewTicker(ROTATE_INTERVAL, step)
+end
+
+-- `/cdmp rendertest [<name>|inventory|rotate|off|list]` — render a fixture; bare =
+-- the first one (the inventory reference card).
 function ns.RenderTest(arg)
   arg = (arg or ""):gsub("^%s+", ""):gsub("%s+$", ""):lower()
+  if arg == "list" then
+    ns.Heading("rendertest views")
+    for _, name in ipairs(FIXTURE_ORDER) do ns.Printf("  |cff88ff88%s|r", name) end
+    ns.Print("  |cff88ff88rotate|r — one cue hopping across 5 panels (live)")
+    ns.Print("usage: |cffffffff/cdmp rendertest <name>|r | rotate | off")
+    return
+  end
+  stopRotate()                               -- any view change cancels a live rotate
   if arg == "off" then
     if ns._renderTestRig then
-      ns._renderTestRig.renderer:Draw({})   -- clear every dot / panel / pip
+      ns._renderTestRig.renderer:Draw({})    -- clear every dot / panel / pip
       ns._renderTestRig.container:Hide()
     end
     ns.Print("rendertest: off")
     return
   end
-  if arg == "list" then
-    ns.Heading("rendertest fixtures")
-    for _, name in ipairs(FIXTURE_ORDER) do ns.Printf("  |cff88ff88%s|r", name) end
-    ns.Print("usage: |cffffffff/cdmp rendertest <name>|r | off")
+  if arg == "rotate" then
+    startRotate()
+    ns.Printf("rendertest: |cffffffffrotate|r (5 panels, %.1fs) — |cffffffff/cdmp rendertest off|r to stop",
+      ROTATE_INTERVAL)
     return
   end
   if arg == "" then arg = FIXTURE_ORDER[1] end
   local fx = FIXTURES[arg]
   if not fx then
-    ns.Printf("unknown fixture '%s' — try |cffffffff/cdmp rendertest list|r", arg)
+    ns.Printf("unknown view '%s' — try |cffffffff/cdmp rendertest list|r", arg)
     return
   end
-  local rig = buildRig(fx.icons)
+  local rig = buildRig(fx.icons, fx.captions)
   rig.container:Show()
   rig.renderer:Draw(fx.drawList)
   ns.Printf("rendertest: |cffffffff%s|r (%d icon%s) — |cffffffff/cdmp rendertest off|r to clear",

@@ -206,6 +206,25 @@ describe("Renderer", function()
     assert.is_true(burst[1].glow)        -- ROTATION
     assert.is_nil(burst[2].glow)         -- JUDGE
   end)
+
+  it("the inventory fixture carries one dot of every emphasis token, captioned", function()
+    local inv = H.ns.RenderTestFixtures["inventory"]
+    assert.equals(5, #inv.drawList.cues)
+    local seen = {}
+    for _, c in ipairs(inv.drawList.cues) do seen[c.emphasis] = true end
+    for _, tok in ipairs({ "ROTATION", "LATE", "SOON", "JUDGE", "SEQUENCE" }) do
+      assert.is_true(seen[tok], "inventory missing " .. tok)
+    end
+    assert.equals(5, #inv.captions)
+    -- rendered together, all five draw + only the press cues glow
+    local r = Rr.New()
+    for i = 1, 5 do r:Register("fake" .. i, H.newStub()) end
+    r:Draw(inv.drawList)
+    assert.is_true(r.cueFrames["fake1"]._shown)   -- ROTATION
+    assert.is_true(r.glowing["fake1"])            -- ROTATION glows
+    assert.is_true(r.glowing["fake2"])            -- LATE glows
+    assert.is_nil(r.glowing["fake3"])             -- SOON does not
+  end)
   it("fixtures anchor the cue dot to the icon's upper-right corner with a keybind", function()
     local ns = H.ns
     local hog = ns.RenderTestFixtures["hand-of-guldan"].drawList.cues[1]
