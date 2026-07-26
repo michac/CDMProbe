@@ -20,7 +20,10 @@ HudGradTest.lua
 HudNapkin.lua
 HudScore.lua
 Coach.lua
+HudGeometry.lua
+Binder.lua
 Renderer.lua
+HudLayout.lua
 HudBoard.lua
 HudLog.lua
 HudState.lua
@@ -29,3 +32,4 @@ HudBurst.lua
 HudRow.lua
 HudCore.lua
 State.lua
+HudDriver.lua

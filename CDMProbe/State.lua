@@ -5,6 +5,10 @@
 -- DrawList -> Renderer (docs/architecture.md).  This file builds ONLY Stage 1.  It
 -- decides no cue, knows no rotation, imports no SpecDemonology — that is invariant
 -- #3, and it is enforced from the outside by `wowkb.cdmp check`'s statelog denylist.
+-- (It DOES consult a couple of injected `ns.Spec*` READERS — the napkin's base
+-- cooldowns, and `ns.SpecGhost` for the shard-incoming projection — exactly as the
+-- architecture sanctions "a game-fact input like base cooldowns": State's code names
+-- no spell and no role; the rotational meaning stays Coach-only.)
 --
 -- WHY IT EXISTS SEPARATELY FROM HudState.lua.  HudState is the de-facto State layer
 -- today, but 1,254 lines that also score and paint (w4-hud-audit.md A4), with three
@@ -395,14 +399,20 @@ end
 -- the previous one.  Derived thresholds ("napkin getting close") are NOT events —
 -- those are the Coach's call over State's honest countdown (architecture.md Events).
 local pending = {}
+local PENDING_MAX = 64          -- bound the delta so a drain-LESS consumer can't leak
 local captureReason = nil       -- why the next poll should record (nil = no pull owed)
 
 local function markCapture(reason)
   captureReason = captureReason or reason
 end
 
+-- Append to the since-last-pulse delta.  Bounded: a Build(false) consumer (the live
+-- driver) never drains `pending`, so without a cap it would grow without limit; the
+-- ring is only ever the last PENDING_MAX events, which is far more than one pulse's
+-- worth (the statelog Capture drains it every ~change anyway).
 local function pushEvent(e)
   pending[#pending + 1] = e
+  while #pending > PENDING_MAX do table.remove(pending, 1) end
 end
 
 --------------------------------------------------------------------------------
@@ -423,6 +433,7 @@ end
 -- Bounded by count on push and by age at Build, long enough to cover an opener.
 local HISTORY_MAX    = 32       -- hard cap on retained cast entries
 local HISTORY_WINDOW = 20.0     -- seconds of history a pulse carries (>= longest sequence)
+local INFLIGHT_WINDOW = 3.0     -- a cast still plausibly IN FLIGHT this recently (~2 GCDs)
 local history = {}
 
 local function pushCast(phase, spellID)
@@ -514,6 +525,51 @@ eframe:SetScript("OnEvent", function(_, event, a1, a2, a3)
 end)
 
 --------------------------------------------------------------------------------
+-- Incoming shards — the in-flight builder projection (W4 P5b)
+--------------------------------------------------------------------------------
+-- `power.SoulShards.incoming` (architecture.md Stage-1) = the net shard yield of casts
+-- currently IN FLIGHT, so the Coach can rank on PROJECTED shards (value + incoming) —
+-- the overcap guard and the HoG-SOON "pressable the instant an in-flight builder's
+-- shard lands" cue.  Sourced from State's OWN cast history (a 'start' with no later
+-- 'succeeded' for the same base, within a short flight window), NOT from HudState — the
+-- clean-room separation (see the S.override note) is deliberate: State owns its
+-- projection and never reaches into the old HUD's `S.cast`.
+--
+-- SPEC-AGNOSTIC BY THE SAME RULE AS THE NAPKIN.  The per-cast yield comes from the
+-- INJECTED `ns.SpecGhost(base)` reader — the "injected mechanical shard-yield table"
+-- the architecture sanctions as "a game-fact input like base cooldowns, so State's CODE
+-- stays spec-agnostic; the rotational ROLE stays Coach-only".  State names no spell and
+-- no role; it sums an injected number.  A pure SPENDER reads SpecGhost == 0, so this is
+-- BUILDER-ONLY by construction — the safe direction (never pre-credits shards a spend
+-- would remove; no double-deduction hazard the old HUD's atStart guard exists to cover).
+--
+-- Attached to the SoulShards power via the game Enum.PowerType name (game vocabulary,
+-- the contract's sanctioned power-token exception — the same names State keys every
+-- power by).  The second-spec seam is exactly here: a spec whose casts generate a
+-- different resource names it in place of SoulShards, with its own SpecGhost yields.
+local function inflightIncoming(now)
+  if not (ns.SpecGhost) then return 0 end
+  -- Latest phase per base within the flight window (a fresh 'start' still in flight).
+  local latest = {}
+  for i = 1, #history do
+    local h = history[i]
+    local id = h.base or h.spellID
+    if type(id) == "number" and type(h.at) == "number" and (now - h.at) <= INFLIGHT_WINDOW then
+      local prev = latest[id]
+      if not prev or h.at >= prev.at then latest[id] = { phase = h.phase, at = h.at } end
+    end
+  end
+  local sum = 0
+  for id, e in pairs(latest) do
+    if e.phase == "start" then
+      local g = ns.SpecGhost(id)
+      if type(g) == "number" and g > 0 then sum = sum + g end
+    end
+  end
+  return sum
+end
+
+--------------------------------------------------------------------------------
 -- Build — the pulse
 --------------------------------------------------------------------------------
 -- Constructs the reduced picture for THIS instant.  `drain` (capture path) moves
@@ -593,12 +649,23 @@ function St.Build(drain)
     if (now - c.at) <= HISTORY_WINDOW then hist[#hist + 1] = c end
   end
 
+  -- Power, with the in-flight builder projection folded onto the shard bar (P5b).
+  local power = readPower()
+  local shardName = Enum and Enum.PowerType and POWER_NAME[Enum.PowerType.SoulShards]
+  if shardName and power[shardName] then
+    power[shardName].incoming = inflightIncoming(now)
+  end
+
   return {
     at     = now,
     combat = InCombatLockdown() and true or false,
     combatStartedAt = St.combatStartedAt,   -- so "elapsed in combat" is computable here
+    -- The user-toggled single/AoE mode (P5b).  State FORWARDS it (from the AoE toggle
+    -- the old HUD's /cdmp single|multi sets); the Coach READS it.  Spec-agnostic: it is
+    -- a generic "st"|"aoe" enum, not a rotation fact.  Defaults "st" (single).
+    mode   = (ns.HudState and ns.HudState.aoe) and "aoe" or "st",
     cooldowns = cooldowns,
-    power  = readPower(),
+    power  = power,
     -- Every active player buff, spec-agnostically — the Coach's authoritative proc
     -- source, and the diagnostic that reveals a proc's TRUE aura id when a CDM entry's
     -- own spellID does not match it.  `auraSecret` = auras whose id read secret.
@@ -670,7 +737,7 @@ local lastProcOn = 0
 local lastSample = 0
 
 local function poll()
-  if not St.on then return end
+  if not St.recording then return end
   local now = GetTime()
   local due = captureReason
   local sig, procOn = signature()
@@ -753,19 +820,28 @@ local function clearStatelog()
 end
 
 --------------------------------------------------------------------------------
--- Lifecycle
+-- Lifecycle — ingestion (ref-counted) vs statelog recording (W4 P5c)
 --------------------------------------------------------------------------------
-St.on = false
+-- TWO separable things share this file: EVENT INGESTION (the override/history/combat
+-- tracking + the napkin/keybind inputs a good pulse needs) and STATELOG RECORDING (the
+-- poll ticker writing the disk ring).  The statelog session needs both; the LIVE DRIVER
+-- (HudDriver, /cdmp hud2) needs ingestion but NOT the disk ring.  So ingestion is
+-- REF-COUNTED — each consumer Acquire()s / Release()s, and the eframe events run while
+-- any consumer holds a ref — and recording is its own flag on top.  This is the
+-- "expose the pulse to a driver" seam the cutover plan asks for: State.Build + a clean
+-- way to keep ingestion live without forcing disk churn.
+St.consumers = 0                -- live consumers of event ingestion (statelog + driver)
+St.recording = false           -- is the statelog poll writing the disk ring?
 
-function St.Start()
-  if St.on then return end
-  St.on = true
+function St.Acquire()
+  St.consumers = St.consumers + 1
+  if St.consumers > 1 then return end   -- already ingesting
   wipe(St.override)
   -- State CONSULTS the napkin and keybind cache as inputs, so it owns making them
-  -- live for a capture session — otherwise, with the HUD off, both are dormant and
-  -- every cd reads source="none" while every keybind is nil (the v0.29.0 gap: the
-  -- napkin's SUCCEEDED frame and the bar scan are only started by the HUD).  Both
-  -- Start()s are idempotent, so this is harmless when the HUD is also running.
+  -- live for a session — otherwise, with the HUD off, both are dormant and every cd
+  -- reads source="none" while every keybind is nil (the v0.29.0 gap: the napkin's
+  -- SUCCEEDED frame and the bar scan are only started by the HUD).  Both Start()s are
+  -- idempotent, so this is harmless when the old HUD is also running.
   if ns.HudNapkin and ns.HudNapkin.Start then pcall(ns.HudNapkin.Start) end
   if ns.HudBinds and ns.HudBinds.Start then pcall(ns.HudBinds.Start) end
   eframe:RegisterEvent("COOLDOWN_VIEWER_SPELL_OVERRIDE_UPDATED")
@@ -773,6 +849,18 @@ function St.Start()
   eframe:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
   eframe:RegisterEvent("PLAYER_REGEN_DISABLED")
   eframe:RegisterEvent("PLAYER_REGEN_ENABLED")
+end
+
+function St.Release()
+  if St.consumers <= 0 then return end
+  St.consumers = St.consumers - 1
+  if St.consumers == 0 then eframe:UnregisterAllEvents() end
+end
+
+function St.Start()
+  if St.recording then return end
+  St.recording = true
+  St.Acquire()
   if not pollTicker then pollTicker = C_Timer.NewTicker(POLL_PERIOD, poll) end
   -- Seed the ring with an immediate first pulse so a session that is captured OOC
   -- and then /reload'd has at least one recorded moment even if nothing changed.
@@ -780,9 +868,10 @@ function St.Start()
 end
 
 function St.Stop()
-  St.on = false
-  eframe:UnregisterAllEvents()
+  if not St.recording then return end
+  St.recording = false
   if pollTicker then pollTicker:Cancel(); pollTicker = nil end
+  St.Release()
 end
 
 --------------------------------------------------------------------------------
@@ -797,7 +886,7 @@ local function statusLine()
   local n = (sl and sl.pulses and #sl.pulses) or 0
   local total = (sl and sl.count) or 0
   ns.Printf("statelog: %s — %d pulse(s) in the ring, %d captured this session",
-    St.on and "|cff88ff88recording|r" or "|cff808080idle|r", n, total)
+    St.recording and "|cff88ff88recording|r" or "|cff808080idle|r", n, total)
   if sl and sl.byReason and next(sl.byReason) then
     local parts = {}
     for reason, c in pairs(sl.byReason) do parts[#parts + 1] = string.format("%s=%d", reason, c) end
@@ -869,7 +958,7 @@ ns.RegisterCommand("statelog",
       St.Stop()
       return statusLine()
     end
-    if not St.on then
+    if not St.recording then
       if not (ns.db and ns.db.statelog and ns.db.statelog.startedAt) then clearStatelog() end
       St.Start()
     else

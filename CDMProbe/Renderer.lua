@@ -309,7 +309,9 @@ end
 --------------------------------------------------------------------------------
 -- Resource bar (3d, optional/minimal)
 --------------------------------------------------------------------------------
-local PIP_SIZE, PIP_GAP = 14, 4
+-- Pip size + gap come from the SHARED geometry table so the layout here and the
+-- fixture's centring dx (G.resourceBar) can't drift (W4 Phase 4).
+local PIP_SIZE, PIP_GAP = ns.HudGeometry.BAR.pip, ns.HudGeometry.BAR.gap
 
 -- `max` pips in a row; the first `value` filled with the powerType colour, the
 -- rest a faint empty ring.  Pooled + surplus hidden like the cue dots.
@@ -368,23 +370,13 @@ end
 -- cooldownID; mapping those to fake icon handles fake1..fakeN is exactly the
 -- Binder's Phase-4 job, done by hand here for the test.  `icons` = how many
 -- placeholder squares the row needs.
--- The cue dot rides INSIDE the icon's upper-right corner (3px inset); the keybind
--- hint (below) rides the upper-left.  These are the fixtures' geometry choices —
--- exactly what the Binder will emit per icon in Phase 4.
-local DOT = { point = "TOPRIGHT", relPoint = "TOPRIGHT", dx = -3, dy = -3, size = 12 }
--- The PRESS-level cues glow like a proc; the softer signals (JUDGE/SOON/SEQUENCE)
--- stay as plain corner dots so the glow keeps meaning "press this now".
-local GLOW_EMPHASIS = { ROTATION = true, LATE = true }
-local function cue(handle, emphasis, keybind)
-  return { anchorTo = handle, point = DOT.point, relPoint = DOT.relPoint,
-           dx = DOT.dx, dy = DOT.dy, size = DOT.size,
-           emphasis = emphasis, keybind = keybind, glow = GLOW_EMPHASIS[emphasis] }
-end
-local function shards(value, max)
-  return { anchorTo = "UIPARENT", point = "CENTER",
-           dx = -((max or 5) * 18 - 4) / 2, dy = -18,
-           value = value, max = max or 5, powerType = "SOUL_SHARDS" }
-end
+-- The cue dot rides INSIDE the icon's upper-right corner; the keybind hint rides the
+-- upper-left.  The geometry (dot corner/size, glow rule, panel + bar positions) lives
+-- in the SHARED ns.HudGeometry table — the Binder stamps the exact same shapes in
+-- Phase 4, so these fixtures and the live producer agree by construction, not copy.
+local G = ns.HudGeometry
+local cue = G.cue          -- cue(handle, emphasis, keybind) -> a positioned cue
+local shards = G.resourceBar  -- shards(value, max) -> the centred discrete-pip bar
 
 local FIXTURE_ORDER = { "inventory", "hand-of-guldan", "burst-hold", "opener-midflight", "secrecy-combat" }
 local FIXTURES = {
@@ -416,23 +408,22 @@ local FIXTURES = {
   -- attention-redirect to the panel (Tyrant is the step), NOT a ROTATION press.
   ["opener-midflight"] = { icons = 1, drawList = {
     cues = { cue("fake1", "SEQUENCE", "sQ") },
-    panel = {
-      anchorTo = "UIPARENT", point = "TOP", dx = 0, dy = -200, title = "OPENER",
-      steps = {
-        { label = "Dreadstalkers",         keybind = "E",  state = "done" },
-        { label = "Grimoire: Imp Lord",    keybind = "sE", state = "done" },
-        { label = "Summon Demonic Tyrant", keybind = "sQ", state = "active" },
-        { label = "Hand of Gul'dan",       keybind = "R",  state = "pending" },
-        { label = "Hand of Gul'dan",       keybind = "R",  state = "blocked" },
-        { label = "Implosion",             keybind = "1",  state = "skipped" },
-      },
-    },
+    panel = G.panel("OPENER", {
+      { label = "Dreadstalkers",         keybind = "E",  state = "done" },
+      { label = "Grimoire: Imp Lord",    keybind = "sE", state = "done" },
+      { label = "Summon Demonic Tyrant", keybind = "sQ", state = "active" },
+      { label = "Hand of Gul'dan",       keybind = "R",  state = "pending" },
+      { label = "Hand of Gul'dan",       keybind = "R",  state = "blocked" },
+      { label = "Implosion",             keybind = "1",  state = "skipped" },
+    }),
     resourceBar = shards(3, 5),
   } },
   -- ROTATION + SOON with every cd unreadable: Demonbolt presses (Core up via a
   -- readable buff+glow); Tyrant draws SOON off the napkin estimate (anticipation).
+  -- fake1 = Demonbolt (its key is "F" in the golden state — matched here so the
+  -- fixture equals what the Binder emits from that golden).
   ["secrecy-combat"] = { icons = 2, drawList = {
-    cues = { cue("fake1", "ROTATION", "Q"), cue("fake2", "SOON", "sQ") },
+    cues = { cue("fake1", "ROTATION", "F"), cue("fake2", "SOON", "sQ") },
     resourceBar = shards(2, 5),
   } },
 }
