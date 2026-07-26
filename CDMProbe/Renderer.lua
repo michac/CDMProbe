@@ -94,7 +94,8 @@ function R.New(cfg)
   self.root       = cfg.root    -- our own overlay parent; created lazily
   self.cueFrames  = {}          -- anchorTo -> dot texture (diff-by-key pool)
   self.cueKeys    = {}          -- anchorTo -> keybind-hint fontstring (diff-by-key)
-  self.glowing    = {}          -- anchorTo -> the frame currently proc-glowing
+  self.cueGlows   = {}          -- anchorTo -> the dot's glow-halo texture
+  self.glowing    = {}          -- anchorTo -> true while its dot is glowing
   self.pips       = {}          -- 1..N -> pip texture (resource bar pool)
   self.panelWidget = nil        -- { frame, title, rows = {} }, built on first panel
   -- UIPARENT is a sanctioned root token (architecture.md :341); pre-register it so
@@ -156,7 +157,7 @@ function R:drawCues(cues)
       end
       dot:Show()
       self:drawCueKey(key, anchor, c.keybind)
-      self:setCueGlow(key, anchor, c.glow and true or false)
+      self:setDotGlow(key, dot, c.glow and col or nil, sz)
     end
   end
   for key, dot in pairs(self.cueFrames) do
@@ -165,8 +166,12 @@ function R:drawCues(cues)
   for key, fs in pairs(self.cueKeys) do
     if not active[key] then fs:Hide() end
   end
-  for key, anchor in pairs(self.glowing) do
-    if not active[key] then self:stopGlow(key, anchor) end
+  for key, g in pairs(self.cueGlows) do
+    if not active[key] then
+      g:Hide()
+      if g.ag then g.ag:Stop() end
+      self.glowing[key] = nil
+    end
   end
 end
 
@@ -193,71 +198,47 @@ function R:drawCueKey(key, anchor, keybind)
 end
 
 --------------------------------------------------------------------------------
--- Proc glow — the icon lights up like Demonic Core lighting up Demonbolt.
+-- Proc glow — the DOT itself glows, like Demonic Core lighting up Demonbolt, but
+-- scoped to the little cue rather than the whole icon.
 --------------------------------------------------------------------------------
--- Blizzard's own overlay glow (ActionButton_ShowOverlayGlow) is the SAME animated
--- alert the proc uses, so prefer it for a pixel-identical look; when the global
--- isn't present we fall back to a self-pooled additive halo with a breathe.  The
--- glow rides the ICON (the registered anchor), not our dot — matching the proc,
--- which lights the whole button.  Idempotent per handle: we only (re)start the
--- animation when the glowing frame CHANGES, so a steady cue doesn't re-trigger the
--- start burst every Draw.
-function R:setCueGlow(key, anchor, on)
-  local current = self.glowing[key]
-  if on and anchor then
-    if current ~= anchor then
-      if current then self:stopGlow(key, current) end
-      if type(ActionButton_ShowOverlayGlow) == "function" then
-        pcall(ActionButton_ShowOverlayGlow, anchor)
-      else
-        self:fallbackGlow(anchor, true)
-      end
-      self.glowing[key] = anchor
-    end
-  elseif current then
-    self:stopGlow(key, current)
-  end
-end
+-- A soft additive halo, tinted to the dot's own emphasis hue, sized ~2.4x the dot
+-- and centred on it (so it rides the dot into the icon corner), breathing on a
+-- looping alpha bounce.  Sits a layer BELOW the dot (ARTWORK vs the dot's OVERLAY)
+-- so the crisp dot stays on top of its own glow.  Pooled per handle like the dot.
+-- Idempotent: the breathe only (re)starts on the not-glowing -> glowing edge, so a
+-- steady cue redraw (a colour/size change) doesn't hitch the animation.
+local GLOW_TEX   = "Interface\\Buttons\\UI-ActionButton-Border"  -- soft rounded halo
+local GLOW_SCALE = 2.4
 
-function R:stopGlow(key, anchor)
-  if type(ActionButton_HideOverlayGlow) == "function" then
-    pcall(ActionButton_HideOverlayGlow, anchor)
-  else
-    self:fallbackGlow(anchor, false)
+function R:setDotGlow(key, dot, col, size)
+  local g = self.cueGlows[key]
+  if not col then                              -- no glow this frame: hide + park
+    if g then g:Hide(); if g.ag then g.ag:Stop() end end
+    self.glowing[key] = nil
+    return
   end
-  self.glowing[key] = nil
-end
-
--- The fallback: a soft additive square halo, sized a little larger than the icon,
--- breathing on a looping alpha bounce.  Cached ON the anchor frame so re-glowing
--- the same icon reuses one texture.  Only reached when Blizzard's global is absent.
-function R:fallbackGlow(frame, on)
-  local g = frame._rendererGlow
-  if on then
-    if not g then
-      g = frame:CreateTexture(nil, "OVERLAY")
-      g:SetTexture("Interface\\Buttons\\UI-ActionButton-Border")
-      g:SetBlendMode("ADD")
-      g:SetPoint("CENTER", frame, "CENTER", 0, 0)
-      local w = (frame.GetWidth and frame:GetWidth()) or 48
-      local h = (frame.GetHeight and frame:GetHeight()) or 48
-      g:SetSize(w * 1.6, h * 1.6)
-      local ag = g:CreateAnimationGroup()
-      local a = ag:CreateAnimation("Alpha")
-      a:SetFromAlpha(0.35)
-      a:SetToAlpha(1.00)
-      a:SetDuration(0.6)
-      a:SetOrder(1)
-      ag:SetLooping("BOUNCE")
-      g.ag = ag
-      frame._rendererGlow = g
-    end
-    g:Show()
-    if g.ag then g.ag:Play() end
-  elseif g then
-    if g.ag then g.ag:Stop() end
-    g:Hide()
+  local was = self.glowing[key]
+  if not g then
+    g = self:ensureRoot():CreateTexture(nil, "ARTWORK")
+    g:SetTexture(GLOW_TEX)
+    g:SetBlendMode("ADD")
+    local ag = g:CreateAnimationGroup()
+    local a = ag:CreateAnimation("Alpha")
+    a:SetFromAlpha(0.30)
+    a:SetToAlpha(1.00)
+    a:SetDuration(0.55)
+    a:SetOrder(1)
+    ag:SetLooping("BOUNCE")
+    g.ag = ag
+    self.cueGlows[key] = g
   end
+  g:SetVertexColor(col[1], col[2], col[3], 1)
+  g:ClearAllPoints()
+  g:SetPoint("CENTER", dot, "CENTER", 0, 0)
+  g:SetSize(size * GLOW_SCALE, size * GLOW_SCALE)
+  g:Show()
+  if not was and g.ag then g.ag:Play() end
+  self.glowing[key] = true
 end
 
 --------------------------------------------------------------------------------

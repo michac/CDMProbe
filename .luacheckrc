@@ -37,9 +37,6 @@ stds.wow = {
     "GetSpecialization", "GetSpecializationInfo",
     -- Action-bar scan (HudBinds) ----------------------------------------------
     "HasAction", "GetActionInfo", "GetActionText",
-    -- Proc glow (Renderer) — Blizzard's own overlay-glow alert, guarded at the
-    -- call site so a rename degrades to the self-rolled fallback --------------
-    "ActionButton_ShowOverlayGlow", "ActionButton_HideOverlayGlow",
     -- C_ namespaces the addon uses (functions accessed via these tables) -------
     "C_AddOns", "C_CooldownViewer", "C_NamePlate", "C_Secrets",
     "C_Spell", "C_SpellActivationOverlay", "C_Timer", "C_UnitAuras", "AuraUtil",
