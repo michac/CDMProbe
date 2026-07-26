@@ -64,7 +64,7 @@ local function newStub()
   local function chain(self) return self end
   for _, m in ipairs({
     "SetAllPoints", "SetScale",
-    "SetJustifyH", "SetJustifyV",
+    "SetJustifyH", "SetJustifyV", "SetBlendMode",
     "SetAlpha", "SetTexture", "SetMask", "SetDrawLayer",
     "SetFrameStrata", "EnableMouse", "SetParent", "SetAtlas",
     "RegisterEvent", "RegisterUnitEvent", "UnregisterEvent", "UnregisterAllEvents",
@@ -99,6 +99,8 @@ local function newStub()
   function t:SetText(s) self._text = s; return self end
   function t:GetText() return self._text end
   function t:GetAlpha() return self._alpha or 1 end
+  function t:GetWidth()  return (self._size and self._size[1]) or 48 end
+  function t:GetHeight() return (self._size and self._size[2]) or 48 end
   function t:IsShown() return self._shown and true or false end
   function t:SetScript(ev, fn) self._scripts[ev] = fn; return self end
   function t:HookScript(ev, fn) self._scripts[ev] = fn; return self end

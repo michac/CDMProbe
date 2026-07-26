@@ -67,6 +67,10 @@ end
 -- Empty-pip ring for the resource bar (a state, not a guess) — HudChrome RAIL_RING.
 local EMPTY_PIP = { 0.30, 0.29, 0.36, 0.60 }
 
+-- Keybind-hint text colour — near-white green, reads on any icon (copied from
+-- HudChrome KEY_COL, HudChrome.lua:45; keep in lock-step until the cutover).
+local KEY_COL = { 0.78, 0.92, 0.80 }
+
 -- State -> row tint for the panel.  A bare colour cue on top of the state word.
 local STATE_TINT = {
   done    = { 0.45, 0.55, 0.48, 1.00 },  -- dim green: behind you
@@ -89,6 +93,8 @@ function R.New(cfg)
   self.registry   = {}          -- handle / root token -> frame (the one impure seam)
   self.root       = cfg.root    -- our own overlay parent; created lazily
   self.cueFrames  = {}          -- anchorTo -> dot texture (diff-by-key pool)
+  self.cueKeys    = {}          -- anchorTo -> keybind-hint fontstring (diff-by-key)
+  self.glowing    = {}          -- anchorTo -> the frame currently proc-glowing
   self.pips       = {}          -- 1..N -> pip texture (resource bar pool)
   self.panelWidget = nil        -- { frame, title, rows = {} }, built on first panel
   -- UIPARENT is a sanctioned root token (architecture.md :341); pre-register it so
@@ -116,10 +122,16 @@ end
 -- Cue dots (3b)
 --------------------------------------------------------------------------------
 -- A cue is a solid square, coloured by its emphasis token and anchored to its
--- handle's frame.  Diff-by-key on `anchorTo`: only handles in THIS DrawList are
--- (re)painted; a handle that dropped out is hidden, never destroyed.  An emphasis
--- token the theme doesn't know draws NOTHING (never guess a colour) — an unknown
--- token that had a dot last frame is hidden like any dropout.
+-- handle's frame — a corner treatment INSIDE the icon (the DrawList geometry puts
+-- it upper-right; see the fixtures).  Diff-by-key on `anchorTo`: only handles in
+-- THIS DrawList are (re)painted; a handle that dropped out is hidden, never
+-- destroyed.  An emphasis token the theme doesn't know draws NOTHING (never guess
+-- a colour) — an unknown token that had a dot last frame is hidden like any dropout.
+--
+-- A cue may also carry an optional `keybind` STRING; when present the Renderer
+-- draws a hint in the icon's UPPER-LEFT corner (the placement is the Renderer's
+-- convention, like token->colour — the DrawList supplies only the string).  Live,
+-- the Binder will fill it from the action-bar scan.
 function R:drawCues(cues)
   local active = {}
   for _, c in ipairs(cues or {}) do
@@ -127,6 +139,7 @@ function R:drawCues(cues)
     local key = c.anchorTo
     if col and key ~= nil then
       active[key] = true
+      local anchor = self.registry[key]
       local dot = self.cueFrames[key]
       if not dot then
         dot = self:ensureRoot():CreateTexture(nil, "OVERLAY")
@@ -137,16 +150,113 @@ function R:drawCues(cues)
       local sz = c.size or 12
       dot:SetSize(sz, sz)
       dot:ClearAllPoints()
-      local anchor = self.registry[key]
       if anchor then
         dot:SetPoint(c.point or "CENTER", anchor,
                      c.relPoint or c.point or "CENTER", c.dx or 0, c.dy or 0)
       end
       dot:Show()
+      self:drawCueKey(key, anchor, c.keybind)
+      self:setCueGlow(key, anchor, c.glow and true or false)
     end
   end
   for key, dot in pairs(self.cueFrames) do
     if not active[key] then dot:Hide() end
+  end
+  for key, fs in pairs(self.cueKeys) do
+    if not active[key] then fs:Hide() end
+  end
+  for key, anchor in pairs(self.glowing) do
+    if not active[key] then self:stopGlow(key, anchor) end
+  end
+end
+
+-- The keybind hint: a small outlined string pinned to the icon's upper-left.
+-- Drawn only when the cue carries a non-empty `keybind` AND its handle resolves to
+-- a frame; otherwise any prior hint for that handle is hidden.
+function R:drawCueKey(key, anchor, keybind)
+  local fs = self.cueKeys[key]
+  if not (keybind and keybind ~= "" and anchor) then
+    if fs then fs:Hide() end
+    return
+  end
+  if not fs then
+    fs = self:ensureRoot():CreateFontString(nil, "OVERLAY")
+    ns.SetFont(fs, 14, "OUTLINE")
+    fs:SetJustifyH("LEFT")
+    fs:SetTextColor(KEY_COL[1], KEY_COL[2], KEY_COL[3], 1)
+    self.cueKeys[key] = fs
+  end
+  fs:SetText(keybind)
+  fs:ClearAllPoints()
+  fs:SetPoint("TOPLEFT", anchor, "TOPLEFT", 2, -2)
+  fs:Show()
+end
+
+--------------------------------------------------------------------------------
+-- Proc glow — the icon lights up like Demonic Core lighting up Demonbolt.
+--------------------------------------------------------------------------------
+-- Blizzard's own overlay glow (ActionButton_ShowOverlayGlow) is the SAME animated
+-- alert the proc uses, so prefer it for a pixel-identical look; when the global
+-- isn't present we fall back to a self-pooled additive halo with a breathe.  The
+-- glow rides the ICON (the registered anchor), not our dot — matching the proc,
+-- which lights the whole button.  Idempotent per handle: we only (re)start the
+-- animation when the glowing frame CHANGES, so a steady cue doesn't re-trigger the
+-- start burst every Draw.
+function R:setCueGlow(key, anchor, on)
+  local current = self.glowing[key]
+  if on and anchor then
+    if current ~= anchor then
+      if current then self:stopGlow(key, current) end
+      if type(ActionButton_ShowOverlayGlow) == "function" then
+        pcall(ActionButton_ShowOverlayGlow, anchor)
+      else
+        self:fallbackGlow(anchor, true)
+      end
+      self.glowing[key] = anchor
+    end
+  elseif current then
+    self:stopGlow(key, current)
+  end
+end
+
+function R:stopGlow(key, anchor)
+  if type(ActionButton_HideOverlayGlow) == "function" then
+    pcall(ActionButton_HideOverlayGlow, anchor)
+  else
+    self:fallbackGlow(anchor, false)
+  end
+  self.glowing[key] = nil
+end
+
+-- The fallback: a soft additive square halo, sized a little larger than the icon,
+-- breathing on a looping alpha bounce.  Cached ON the anchor frame so re-glowing
+-- the same icon reuses one texture.  Only reached when Blizzard's global is absent.
+function R:fallbackGlow(frame, on)
+  local g = frame._rendererGlow
+  if on then
+    if not g then
+      g = frame:CreateTexture(nil, "OVERLAY")
+      g:SetTexture("Interface\\Buttons\\UI-ActionButton-Border")
+      g:SetBlendMode("ADD")
+      g:SetPoint("CENTER", frame, "CENTER", 0, 0)
+      local w = (frame.GetWidth and frame:GetWidth()) or 48
+      local h = (frame.GetHeight and frame:GetHeight()) or 48
+      g:SetSize(w * 1.6, h * 1.6)
+      local ag = g:CreateAnimationGroup()
+      local a = ag:CreateAnimation("Alpha")
+      a:SetFromAlpha(0.35)
+      a:SetToAlpha(1.00)
+      a:SetDuration(0.6)
+      a:SetOrder(1)
+      ag:SetLooping("BOUNCE")
+      g.ag = ag
+      frame._rendererGlow = g
+    end
+    g:Show()
+    if g.ag then g.ag:Play() end
+  elseif g then
+    if g.ag then g.ag:Stop() end
+    g:Hide()
   end
 end
 
@@ -266,10 +376,17 @@ end
 -- cooldownID; mapping those to fake icon handles fake1..fakeN is exactly the
 -- Binder's Phase-4 job, done by hand here for the test.  `icons` = how many
 -- placeholder squares the row needs.
-local DOT = { point = "TOP", relPoint = "BOTTOM", dy = -6, size = 16 }
-local function cue(handle, emphasis)
+-- The cue dot rides INSIDE the icon's upper-right corner (3px inset); the keybind
+-- hint (below) rides the upper-left.  These are the fixtures' geometry choices —
+-- exactly what the Binder will emit per icon in Phase 4.
+local DOT = { point = "TOPRIGHT", relPoint = "TOPRIGHT", dx = -3, dy = -3, size = 12 }
+-- The PRESS-level cues glow like a proc; the softer signals (JUDGE/SOON/SEQUENCE)
+-- stay as plain corner dots so the glow keeps meaning "press this now".
+local GLOW_EMPHASIS = { ROTATION = true, LATE = true }
+local function cue(handle, emphasis, keybind)
   return { anchorTo = handle, point = DOT.point, relPoint = DOT.relPoint,
-           dy = DOT.dy, size = DOT.size, emphasis = emphasis }
+           dx = DOT.dx, dy = DOT.dy, size = DOT.size,
+           emphasis = emphasis, keybind = keybind, glow = GLOW_EMPHASIS[emphasis] }
 end
 local function shards(value, max)
   return { anchorTo = "UIPARENT", point = "CENTER",
@@ -281,19 +398,20 @@ local FIXTURE_ORDER = { "hand-of-guldan", "burst-hold", "opener-midflight", "sec
 local FIXTURES = {
   -- One ROTATION press: HoG is the single call (3 shards, no proc, summons cooling).
   ["hand-of-guldan"] = { icons = 1, drawList = {
-    cues = { cue("fake1", "ROTATION") },
+    cues = { cue("fake1", "ROTATION", "R") },
     resourceBar = shards(3, 5),
   } },
   -- ROTATION + two JUDGE: HoG presses now; Dreadstalkers + Implosion are your-call
   -- "stage for the Tyrant window or press" (JUDGE coexists with the one ROTATION).
   ["burst-hold"] = { icons = 3, drawList = {
-    cues = { cue("fake1", "ROTATION"), cue("fake2", "JUDGE"), cue("fake3", "JUDGE") },
+    cues = { cue("fake1", "ROTATION", "R"), cue("fake2", "JUDGE", "E"),
+             cue("fake3", "JUDGE", "1") },
     resourceBar = shards(3, 5),
   } },
   -- SEQUENCE dot + panel: the OPENER plan carries the guidance; the one cue is an
   -- attention-redirect to the panel (Tyrant is the step), NOT a ROTATION press.
   ["opener-midflight"] = { icons = 1, drawList = {
-    cues = { cue("fake1", "SEQUENCE") },
+    cues = { cue("fake1", "SEQUENCE", "sQ") },
     panel = {
       anchorTo = "UIPARENT", point = "TOP", dx = 0, dy = -200, title = "OPENER",
       steps = {
@@ -310,7 +428,7 @@ local FIXTURES = {
   -- ROTATION + SOON with every cd unreadable: Demonbolt presses (Core up via a
   -- readable buff+glow); Tyrant draws SOON off the napkin estimate (anticipation).
   ["secrecy-combat"] = { icons = 2, drawList = {
-    cues = { cue("fake1", "ROTATION"), cue("fake2", "SOON") },
+    cues = { cue("fake1", "ROTATION", "Q"), cue("fake2", "SOON", "sQ") },
     resourceBar = shards(2, 5),
   } },
 }

@@ -122,6 +122,94 @@ describe("Renderer", function()
   end)
 
   ------------------------------------------------------------------------------
+  -- keybind hint (upper-left inside the icon)
+  ------------------------------------------------------------------------------
+  it("draws the keybind hint at the icon's TOPLEFT when the cue carries one", function()
+    local r, icons = rigged(1)
+    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION", keybind = "R" } } })
+    local fs = r.cueKeys["fake1"]
+    assert.equals("R", fs:GetText())
+    assert.is_true(fs._shown)
+    local pt = fs._points[1]
+    assert.equals("TOPLEFT", pt.point)
+    assert.equals(icons[1], pt.rel)          -- pinned to the icon, not the dot
+    assert.equals("TOPLEFT", pt.relPoint)
+  end)
+
+  it("draws no keybind hint when the cue omits one", function()
+    local r = rigged(1)
+    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" } } })
+    assert.is_nil(r.cueKeys["fake1"])
+  end)
+
+  it("hides the keybind hint when its handle drops out", function()
+    local r = rigged(2)
+    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION", keybind = "R" },
+                      { anchorTo = "fake2", emphasis = "JUDGE", keybind = "E" } } })
+    assert.is_true(r.cueKeys["fake2"]._shown)
+    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION", keybind = "R" } } })
+    assert.is_false(r.cueKeys["fake2"]._shown)
+  end)
+
+  ------------------------------------------------------------------------------
+  -- proc glow (rides the icon, driven by the cue's `glow` flag)
+  ------------------------------------------------------------------------------
+  it("glows the ICON (registered anchor) when the cue asks for it", function()
+    local r, icons = rigged(1)
+    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION", glow = true } } })
+    assert.equals(icons[1], r.glowing["fake1"])   -- the anchor, not the dot
+  end)
+
+  it("does not glow a cue without the flag", function()
+    local r = rigged(1)
+    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "JUDGE" } } })
+    assert.is_nil(r.glowing["fake1"])
+  end)
+
+  it("stops the glow when the cue drops out", function()
+    local r = rigged(2)
+    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION", glow = true },
+                      { anchorTo = "fake2", emphasis = "ROTATION", glow = true } } })
+    assert.is_not_nil(r.glowing["fake2"])
+    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION", glow = true } } })
+    assert.is_nil(r.glowing["fake2"])
+    assert.is_not_nil(r.glowing["fake1"])
+  end)
+
+  it("stops the glow when the cue stays but no longer asks to glow", function()
+    local r = rigged(1)
+    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION", glow = true } } })
+    assert.is_not_nil(r.glowing["fake1"])
+    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" } } })
+    assert.is_nil(r.glowing["fake1"])
+  end)
+
+  it("a glowing cue draws without error off-game (fallback path)", function()
+    local r = rigged(1)
+    assert.has_no.errors(function()
+      r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION", glow = true } } })
+    end)
+  end)
+
+  ------------------------------------------------------------------------------
+  -- the shipped fixtures place the dot in the corner + carry keybinds + glow
+  ------------------------------------------------------------------------------
+  it("fixtures glow the press cue but not the softer JUDGE/SOON cues", function()
+    local ns = H.ns
+    assert.is_true(ns.RenderTestFixtures["hand-of-guldan"].drawList.cues[1].glow)
+    local burst = ns.RenderTestFixtures["burst-hold"].drawList.cues
+    assert.is_true(burst[1].glow)        -- ROTATION
+    assert.is_nil(burst[2].glow)         -- JUDGE
+  end)
+  it("fixtures anchor the cue dot to the icon's upper-right corner with a keybind", function()
+    local ns = H.ns
+    local hog = ns.RenderTestFixtures["hand-of-guldan"].drawList.cues[1]
+    assert.equals("TOPRIGHT", hog.point)
+    assert.equals("TOPRIGHT", hog.relPoint)
+    assert.equals("R", hog.keybind)
+  end)
+
+  ------------------------------------------------------------------------------
   -- 3c — sequence panel
   ------------------------------------------------------------------------------
   local OPENER = {
