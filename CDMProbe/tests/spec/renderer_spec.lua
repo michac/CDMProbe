@@ -13,20 +13,13 @@ local function colorEq(c, r, g, b)
 end
 
 describe("Renderer", function()
-  local Rr, theme, summon
+  local Rr, theme
 
   before_each(function()
     local ns = H.fresh()
     H.load("Renderer.lua")
     Rr = ns.Renderer
-    summon = ns.SpecGroups.summon
-    theme = {
-      ROTATION = { 0.30, 1.00, 0.48 },
-      LATE     = { 0.42, 1.00, 0.58 },
-      SOON     = { 1.00, 0.86, 0.15 },
-      JUDGE    = { 0.27, 0.88, 1.00 },
-      SEQUENCE = summon,
-    }
+    theme = Rr.New().theme          -- the real defaults, so assertions never drift
   end)
 
   -- A renderer with N placeholder icon frames registered under "fake1".."fakeN".
@@ -44,9 +37,16 @@ describe("Renderer", function()
   ------------------------------------------------------------------------------
   -- Factory + theme
   ------------------------------------------------------------------------------
-  it("resolves the SEQUENCE token to the summon fel-green from ns.SpecGroups", function()
-    local r = Rr.New()
-    assert.is_true(colorEq(r.theme.SEQUENCE, summon[1], summon[2], summon[3]))
+  it("resolves the five emphasis tokens to five DISTINCT, glanceable colours", function()
+    local t = Rr.New().theme
+    local toks = { "ROTATION", "LATE", "SOON", "JUDGE", "SEQUENCE" }
+    for i = 1, #toks do
+      for j = i + 1, #toks do
+        local a, b = t[toks[i]], t[toks[j]]
+        local dist = math.abs(a[1] - b[1]) + math.abs(a[2] - b[2]) + math.abs(a[3] - b[3])
+        assert.is_true(dist > 0.30, toks[i] .. " and " .. toks[j] .. " are too similar (" .. dist .. ")")
+      end
+    end
   end)
 
   it("takes an injected theme through cfg", function()

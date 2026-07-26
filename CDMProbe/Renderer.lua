@@ -38,21 +38,21 @@ R.__index = R
 --------------------------------------------------------------------------------
 -- The default theme — emphasis TOKEN -> RGBA.
 --------------------------------------------------------------------------------
--- The four actionability hues are COPIED from HudChrome's `CUE` palette
--- (HudChrome.lua:164-169) so the old live path and the new Renderer never
--- disagree; keep them in lock-step by hand until the cutover retires HudChrome.
--- SEQUENCE (a distinct token — it points the eye at the panel, not at a press) is
--- the summon fel-green from ns.SpecGroups.summon, read live so it tracks the one
--- source of truth for group hues (SpecDemonology.lua:64-73).
+-- The five tokens must be GLANCEABLE — distinct enough to read apart in the icon
+-- corner at a flick of the eye.  The first cut kept ROTATION/LATE/SEQUENCE all in
+-- the green family (LATE a brighter green, SEQUENCE the summon fel-green) and they
+-- were indistinguishable in-game (2026-07-26 feedback).  So LATE and SEQUENCE are
+-- pulled OFF the green: LATE = hot amber ("overdue, catch up"), SEQUENCE = violet
+-- ("look at the panel, not a press").  ROTATION/SOON/JUDGE still match HudChrome's
+-- CUE palette (HudChrome.lua:165-167); LATE + SEQUENCE now deliberately diverge for
+-- separation — the Renderer owns token->pixels, so this is a local dial-in.
 local function defaultTheme()
-  local g = ns.SpecGroups or {}
-  local summon = g.summon or { 0.216, 0.784, 0.435 }
   return {
-    ROTATION = { 0.30, 1.00, 0.48, 1.00 },  -- green: press now
-    LATE     = { 0.42, 1.00, 0.58, 1.00 },  -- brighter green: overdue
+    ROTATION = { 0.30, 1.00, 0.48, 1.00 },  -- green:  press now
+    LATE     = { 1.00, 0.42, 0.10, 1.00 },  -- amber:  overdue, catch up
     SOON     = { 1.00, 0.86, 0.15, 1.00 },  -- yellow: anticipation
-    JUDGE    = { 0.27, 0.88, 1.00, 1.00 },  -- cyan: your-call
-    SEQUENCE = { summon[1], summon[2], summon[3], 1.00 },  -- fel green: see the panel
+    JUDGE    = { 0.27, 0.88, 1.00, 1.00 },  -- cyan:   your-call
+    SEQUENCE = { 0.64, 0.42, 1.00, 1.00 },  -- violet: look at the panel
   }
 end
 
@@ -216,7 +216,10 @@ end
 -- Idempotent: the breathe only (re)starts on the not-glowing -> glowing edge, so a
 -- steady cue redraw (a colour/size change) doesn't hitch the animation.
 local GLOW_TEX   = "Interface\\Buttons\\UI-ActionButton-Border"  -- soft rounded halo
-local GLOW_SCALE = 2.4
+-- ~4.5x the dot => the halo blooms PAST the icon edges (deliberately, 2026-07-26
+-- feedback: "more prominent, even if it overlaps the edges").  Paired with a high
+-- alpha floor so it's always visibly lit, breathing brighter on the bounce.
+local GLOW_SCALE = 4.5
 
 function R:setDotGlow(key, dot, col, size)
   local g = self.cueGlows[key]
@@ -232,9 +235,9 @@ function R:setDotGlow(key, dot, col, size)
     g:SetBlendMode("ADD")
     local ag = g:CreateAnimationGroup()
     local a = ag:CreateAnimation("Alpha")
-    a:SetFromAlpha(0.30)
+    a:SetFromAlpha(0.45)
     a:SetToAlpha(1.00)
-    a:SetDuration(0.55)
+    a:SetDuration(0.50)
     a:SetOrder(1)
     ag:SetLooping("BOUNCE")
     g.ag = ag
