@@ -114,7 +114,15 @@ function R:ensureRoot()
   if not self.root then
     self.root = CreateFrame("Frame", nil, UIParent)
     self.root:SetAllPoints(UIParent)
-    self.root:SetFrameStrata("HIGH")
+    -- The cue overlay must float ABOVE the icons it decorates.  The dots ride
+    -- inside the icon corner, so if the overlay sat at the same strata as the
+    -- frames it anchors to (the test rig's HIGH container, or live CDM icons) the
+    -- icon art would occlude them.  DIALOG is one strata above HIGH — dots, glow
+    -- and keybind hints then render on top of the icon by strata, regardless of
+    -- per-frame level.  (Live CDM has its own swipe/cooldown child frames; sitting
+    -- above THOSE is a Phase-5 concern — here the anchors are bare squares.)
+    self.root:SetFrameStrata("DIALOG")
+    self.root:SetFrameLevel(500)
   end
   return self.root
 end
