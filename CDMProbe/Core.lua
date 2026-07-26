@@ -108,6 +108,18 @@ SLASH_CDMPROBE1 = "/cdmp"
 SLASH_CDMPROBE2 = "/cdmprobe"
 SlashCmdList["CDMPROBE"] = dispatch
 
+-- W4 Phase 3 — the Renderer test mode.  Registered here (like the other top-level
+-- commands) but implemented in Renderer.lua (ns.RenderTest), which owns the
+-- placeholder-frame rig + the hand-authored DrawList fixtures.  The thin wrapper
+-- guards the load order: Renderer.lua loads after Core, so resolve ns.RenderTest
+-- at DISPATCH time, not registration time.
+ns.RegisterCommand("rendertest",
+  "Phase-3 draw test: render a hand-authored DrawList fixture (list | off)",
+  function(rest)
+    if ns.RenderTest then ns.RenderTest(rest)
+    else ns.Print("Renderer not loaded") end
+  end)
+
 -- Bootstrap -------------------------------------------------------------------
 local boot = CreateFrame("Frame")
 boot:RegisterEvent("ADDON_LOADED")

@@ -63,16 +63,35 @@ local function newStub()
   local t = { _scripts = {}, _level = 1 }
   local function chain(self) return self end
   for _, m in ipairs({
-    "SetPoint", "ClearAllPoints", "SetAllPoints", "Show", "Hide",
-    "SetSize", "SetWidth", "SetHeight", "SetScale",
-    "SetJustifyH", "SetJustifyV", "SetTextColor", "SetVertexColor",
-    "SetAlpha", "SetColorTexture", "SetTexture", "SetMask", "SetDrawLayer",
-    "SetFrameStrata", "EnableMouse", "SetShown", "SetParent", "SetAtlas",
+    "SetAllPoints", "SetScale",
+    "SetJustifyH", "SetJustifyV",
+    "SetAlpha", "SetTexture", "SetMask", "SetDrawLayer",
+    "SetFrameStrata", "EnableMouse", "SetParent", "SetAtlas",
     "RegisterEvent", "RegisterUnitEvent", "UnregisterEvent", "UnregisterAllEvents",
     "SetLooping", "Play", "Stop", "Pause", "Finish",
     "SetDuration", "SetSmoothing", "SetOffset", "SetFromAlpha", "SetToAlpha",
     "SetOrder", "SetStartDelay", "SetChildKey", "SetTarget", "SetTargetKey",
   }) do t[m] = chain end
+  -- RECORDING methods (W4 Phase 3 — the Renderer harness).  The Renderer draws no
+  -- real pixels off-game, so busted asserts on what the stub was TOLD: colour,
+  -- points, size, shown-state.  These replace the silent chain no-ops so a spec can
+  -- read `dot._color` / `dot._points` / `dot._shown` after a Draw (mock_ns header).
+  function t:SetColorTexture(r, g, b, a) self._color = { r, g, b, a }; return self end
+  function t:SetVertexColor(r, g, b, a) self._color = { r, g, b, a }; return self end
+  function t:SetTextColor(r, g, b, a)   self._textColor = { r, g, b, a }; return self end
+  function t:SetPoint(point, rel, relPoint, dx, dy)
+    self._points = self._points or {}
+    self._points[#self._points + 1] =
+      { point = point, rel = rel, relPoint = relPoint, dx = dx, dy = dy }
+    return self
+  end
+  function t:ClearAllPoints() self._points = {}; return self end
+  function t:Show()        self._shown = true;  return self end
+  function t:Hide()        self._shown = false; return self end
+  function t:SetShown(v)   self._shown = v and true or false; return self end
+  function t:SetSize(w, h) self._size = { w, h }; return self end
+  function t:SetWidth(w)   self._size = self._size or {}; self._size[1] = w; return self end
+  function t:SetHeight(h)  self._size = self._size or {}; self._size[2] = h; return self end
   function t:SetFrameLevel(n) self._level = n or self._level; return self end
   function t:GetFrameLevel() return self._level or 1 end
   function t:SetFont(...) return true end                 -- ns.SetFont branches on this
@@ -119,6 +138,7 @@ _G.CreateFrame = function(_, name, _, _)
   if type(name) == "string" then _G[name] = f end
   return f
 end
+_G.UIParent = _G.UIParent or newStub()   -- the Renderer's default root token target
 
 --------------------------------------------------------------------------------
 -- Load a module file into the current namespace through the vararg shim.

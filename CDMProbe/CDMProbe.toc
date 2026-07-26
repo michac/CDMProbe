@@ -20,6 +20,7 @@ HudGradTest.lua
 HudNapkin.lua
 HudScore.lua
 Coach.lua
+Renderer.lua
 HudBoard.lua
 HudLog.lua
 HudState.lua
