@@ -442,25 +442,17 @@ local FIXTURES = {
     cues = { cue("fake1", "ROTATION", "R") },
     resourceBar = shards(3, 5),
   } },
-  -- ROTATION + two JUDGE: HoG presses now; Dreadstalkers + Implosion are your-call
-  -- "stage for the Tyrant window or press" (JUDGE coexists with the one ROTATION).
+  -- LATE + JUDGE (TCT redesign): not TCT (Tyrant far) so it's STEADY — an overdue
+  -- Dreadstalkers presses (LATE, glows), Implosion is your-call (JUDGE).  No HoG dot.
   ["burst-hold"] = { icons = 3, drawList = {
-    cues = { cue("fake1", "ROTATION", "R"), cue("fake2", "JUDGE", "E"),
-             cue("fake3", "JUDGE", "1") },
+    cues = { cue("fake2", "LATE", "E"), cue("fake3", "JUDGE", "1") },
     resourceBar = shards(3, 5),
   } },
-  -- SEQUENCE dot + panel: the OPENER plan carries the guidance; the one cue is an
-  -- attention-redirect to the panel (Tyrant is the step), NOT a ROTATION press.
-  ["opener-midflight"] = { icons = 1, drawList = {
-    cues = { cue("fake1", "SEQUENCE", "sQ") },
-    panel = G.panel("OPENER", {
-      { label = "Dreadstalkers",         keybind = "E",  state = "done" },
-      { label = "Grimoire: Imp Lord",    keybind = "sE", state = "done" },
-      { label = "Summon Demonic Tyrant", keybind = "sQ", state = "active" },
-      { label = "Hand of Gul'dan",       keybind = "R",  state = "pending" },
-      { label = "Hand of Gul'dan",       keybind = "R",  state = "blocked" },
-      { label = "Implosion",             keybind = "1",  state = "skipped" },
-    }),
+  -- ROTATION + SOON, no panel (TCT redesign — the opener panel is retired): mid-opener
+  -- the burst walk still owes a shard, so Shadow Bolt caps (ROTATION) while Tyrant rides
+  -- the SOON anchor.  The one-press cue walk replaced the sequence panel.
+  ["opener-midflight"] = { icons = 2, drawList = {
+    cues = { cue("fake1", "ROTATION", "Q"), cue("fake2", "SOON", "sQ") },
     resourceBar = shards(3, 5),
   } },
   -- ROTATION + SOON with every cd unreadable: Demonbolt presses (Core up via a

@@ -429,3 +429,27 @@ end
 function ns.SpecGhost(spellID)
   return (ns.SpecInfo(spellID).generates) or 0
 end
+
+-- SIGNED net Soul Shard delta of an in-flight cast (W4 P6 Part 2) — what the shard
+-- bar will read AFTER this cast resolves, relative to now.  Positive for a builder
+-- (Shadow Bolt +1, Demonbolt +2, Infernal Bolt +3), NEGATIVE for a pure spender
+-- (Hand of Gul'dan −cost).  Supersedes SpecGhost as State's `incoming` reader so an
+-- in-flight HoG projects −3 and the Coach (ranking on projected = value + incoming)
+-- clears it to the builder mid-cast instead of re-cuing the spell you are casting.
+--
+--   delta = (generates or 0) − (live shard cost IFF this ability spends shards)
+--
+-- The spend is counted only when `spends == "shards"` — Demonbolt spends a CORE, not
+-- shards, so its +2 refund stands uncosted (same rule as SpecPole's C2 ordering).  The
+-- cost is read LIVE (talent-dependent) via ns.ShardCost; an UNREADABLE cost drops the
+-- spend term (delta = generates only) rather than guessing — the safe direction (never
+-- pre-deducts shards on an unreadable read).
+function ns.SpecShardDelta(spellID)
+  local info = ns.SpecInfo(spellID)
+  local delta = info.generates or 0
+  if info.spends == "shards" and ns.ShardCost then
+    local cost = ns.ShardCost(spellID)
+    if type(cost) == "number" then delta = delta - cost end
+  end
+  return delta
+end

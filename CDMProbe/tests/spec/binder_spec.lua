@@ -297,7 +297,7 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
     -- fake<N> (fixture handle) -> cooldownID (Binder handle), per scenario.  The
     -- fixture author mapped each golden cue onto an icon; this is the inverse.
     local HANDLE_MAP = {
-      ["opener-midflight"] = { fake1 = "2742" },
+      ["opener-midflight"] = { fake1 = "34990", fake2 = "2742" },
       ["burst-hold"]       = { fake1 = "34991", fake2 = "671", fake3 = "149122" },
       ["secrecy-combat"]   = { fake1 = "1979", fake2 = "2742" },
     }

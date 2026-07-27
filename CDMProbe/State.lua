@@ -6,7 +6,7 @@
 -- decides no cue, knows no rotation, imports no SpecDemonology — that is invariant
 -- #3, and it is enforced from the outside by `wowkb.cdmp check`'s statelog denylist.
 -- (It DOES consult a couple of injected `ns.Spec*` READERS — the napkin's base
--- cooldowns, and `ns.SpecGhost` for the shard-incoming projection — exactly as the
+-- cooldowns, and `ns.SpecShardDelta` for the signed shard-incoming projection — exactly as the
 -- architecture sanctions "a game-fact input like base cooldowns": State's code names
 -- no spell and no role; the rotational meaning stays Coach-only.)
 --
@@ -443,6 +443,23 @@ local function pushCast(phase, spellID)
   while #history > HISTORY_MAX do table.remove(history, 1) end
 end
 
+-- The live Soul Shard value as a plain number, or nil if unreadable/no Enum (P6 P2).
+-- Used both for the spender START snapshot and inflightIncoming's double-deduction guard.
+local function currentShardValue()
+  local pt = Enum and Enum.PowerType and Enum.PowerType.SoulShards
+  if pt == nil then return nil end
+  local ok, val = pcall(UnitPower, "player", pt)
+  if ok and not ns.IsSecret(val) and type(val) == "number" then return val end
+  return nil
+end
+
+-- Shard bar value snapshotted at the START of an in-flight SPENDER, keyed by base
+-- spellID (P6 Part 2, the double-deduction guard).  A spend (Hand of Gul'dan) consumes
+-- its shards on COMPLETION, so its negative projection must apply only while the shards
+-- are still in hand; inflightIncoming drops the −delta once the live value falls below
+-- this snapshot (the deduction has landed).  The old HUD used the same atStart pattern.
+local spendStartShards = {}     -- base spellID -> shard value at its UNIT_SPELLCAST_START
+
 St.combatStartedAt = nil        -- GetTime() when combat last began; nil = never seen
 
 -- Per-cooldown last-transition stamp (NOT a history — the Coach only ever needs "when
@@ -497,6 +514,14 @@ eframe:SetScript("OnEvent", function(_, event, a1, a2, a3)
     -- Coach can start hinting the next step before this one lands.
     if readable(a3) then
       pushCast("start", a3)
+      -- Snapshot shards at a SPENDER's start (signed delta < 0) so inflightIncoming can
+      -- guard the completion-frame double-deduction (P6 Part 2).  Spec-agnostic: State
+      -- reads the injected signed delta, names no spell.
+      local base = St.BaseOfCast(a3)
+      if ns.SpecShardDelta and type(base) == "number" then
+        local d = ns.SpecShardDelta(base)
+        if type(d) == "number" and d < 0 then spendStartShards[base] = currentShardValue() end
+      end
       pushEvent({ kind = "cast_started", spellID = a3,
                   base = ns.Stash(St.BaseOfCast(a3)), at = GetTime() })
       markCapture("cast")
@@ -506,9 +531,22 @@ eframe:SetScript("OnEvent", function(_, event, a1, a2, a3)
     -- player.  Resolve back to the base entry so the Coach can tie it to a cooldown.
     if readable(a3) then
       pushCast("succeeded", a3)
+      local base = St.BaseOfCast(a3)
+      if type(base) == "number" then spendStartShards[base] = nil end
       pushEvent({ kind = "cast_succeeded", spellID = a3,
                   base = ns.Stash(St.BaseOfCast(a3)), at = GetTime() })
       markCapture("cast")
+    end
+  elseif event == "UNIT_SPELLCAST_INTERRUPTED" or event == "UNIT_SPELLCAST_FAILED"
+      or event == "UNIT_SPELLCAST_FAILED_QUIET" or event == "UNIT_SPELLCAST_STOP" then
+    -- A cast STOPPED — cancelled/interrupted, or the normal STOP that trails SUCCEEDED.
+    -- Push a terminal 'stopped' phase so it SUPERSEDES the 'start' in inflightIncoming's
+    -- latest-phase-per-base check; without this a cancelled Hand of Gul'dan would keep
+    -- projecting −3 for up to INFLIGHT_WINDOW (P6 Part 2).  Clears the spend snapshot too.
+    if readable(a3) then
+      pushCast("stopped", a3)
+      local base = St.BaseOfCast(a3)
+      if type(base) == "number" then spendStartShards[base] = nil end
     end
   elseif event == "PLAYER_REGEN_DISABLED" then
     St.combatStartedAt = GetTime()
@@ -535,21 +573,28 @@ end)
 -- clean-room separation (see the S.override note) is deliberate: State owns its
 -- projection and never reaches into the old HUD's `S.cast`.
 --
--- SPEC-AGNOSTIC BY THE SAME RULE AS THE NAPKIN.  The per-cast yield comes from the
--- INJECTED `ns.SpecGhost(base)` reader — the "injected mechanical shard-yield table"
+-- SPEC-AGNOSTIC BY THE SAME RULE AS THE NAPKIN.  The per-cast delta comes from the
+-- INJECTED `ns.SpecShardDelta(base)` reader — the "injected mechanical shard-yield table"
 -- the architecture sanctions as "a game-fact input like base cooldowns, so State's CODE
 -- stays spec-agnostic; the rotational ROLE stays Coach-only".  State names no spell and
--- no role; it sums an injected number.  A pure SPENDER reads SpecGhost == 0, so this is
--- BUILDER-ONLY by construction — the safe direction (never pre-credits shards a spend
--- would remove; no double-deduction hazard the old HUD's atStart guard exists to cover).
+-- no role; it sums an injected SIGNED number: a builder is +, a spender is − (P6 Part 2).
+--
+-- The SIGNED direction is why the projection now clears an in-flight HoG (−3) instead of
+-- only promoting builders (the v0.32.2 bug: the overlay re-cued the spell you were
+-- casting).  A spender's shards are consumed on COMPLETION, not cast-start, so during
+-- flight the live `value` still reads the pre-spend number — the DOUBLE-DEDUCTION guard
+-- (`spendStartShards` snapshot at START) drops the −delta only once the live value has
+-- fallen below it, covering the one-frame race at completion before 'succeeded' lands.
+-- Builders need no guard — they credit, never over-credit.
 --
 -- Attached to the SoulShards power via the game Enum.PowerType name (game vocabulary,
 -- the contract's sanctioned power-token exception — the same names State keys every
--- power by).  The second-spec seam is exactly here: a spec whose casts generate a
--- different resource names it in place of SoulShards, with its own SpecGhost yields.
-local function inflightIncoming(now)
-  if not (ns.SpecGhost) then return 0 end
-  -- Latest phase per base within the flight window (a fresh 'start' still in flight).
+-- power by).  The second-spec seam is exactly here: a spec whose casts move a different
+-- resource names it in place of SoulShards, with its own SpecShardDelta.
+local function inflightIncoming(now, liveShards)
+  if not (ns.SpecShardDelta) then return 0 end
+  -- Latest phase per base within the flight window (a fresh 'start' still in flight; a
+  -- 'succeeded'/'stopped' supersedes it and stops it counting).
   local latest = {}
   for i = 1, #history do
     local h = history[i]
@@ -562,8 +607,19 @@ local function inflightIncoming(now)
   local sum = 0
   for id, e in pairs(latest) do
     if e.phase == "start" then
-      local g = ns.SpecGhost(id)
-      if type(g) == "number" and g > 0 then sum = sum + g end
+      local d = ns.SpecShardDelta(id)
+      if type(d) == "number" and d ~= 0 then
+        if d > 0 then
+          sum = sum + d               -- builder: credit unconditionally
+        else
+          -- Spender: apply the −delta only while the deduction has NOT landed (live value
+          -- still at/above the start snapshot).  No snapshot / unreadable live => apply
+          -- (the projecting-the-clear direction; the Coach ignores it anyway when shards
+          -- read unreadable).
+          local snap = spendStartShards[id]
+          if snap == nil or liveShards == nil or liveShards >= snap then sum = sum + d end
+        end
+      end
     end
   end
   return sum
@@ -649,11 +705,15 @@ function St.Build(drain)
     if (now - c.at) <= HISTORY_WINDOW then hist[#hist + 1] = c end
   end
 
-  -- Power, with the in-flight builder projection folded onto the shard bar (P5b).
+  -- Power, with the in-flight SIGNED shard projection folded onto the shard bar (P5b;
+  -- signed in P6 Part 2 so an in-flight spender clears itself).  The live value doubles
+  -- as inflightIncoming's double-deduction guard input.
   local power = readPower()
   local shardName = Enum and Enum.PowerType and POWER_NAME[Enum.PowerType.SoulShards]
   if shardName and power[shardName] then
-    power[shardName].incoming = inflightIncoming(now)
+    local v = power[shardName].value
+    local liveShards = (type(v) == "number") and v or nil
+    power[shardName].incoming = inflightIncoming(now, liveShards)
   end
 
   return {
@@ -847,6 +907,12 @@ function St.Acquire()
   eframe:RegisterEvent("COOLDOWN_VIEWER_SPELL_OVERRIDE_UPDATED")
   eframe:RegisterUnitEvent("UNIT_SPELLCAST_START", "player")
   eframe:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
+  -- Terminal cast phases — clear an in-flight spender's −shard projection when the cast
+  -- ends without completing (or on the STOP that trails a normal cast).  P6 Part 2.
+  eframe:RegisterUnitEvent("UNIT_SPELLCAST_INTERRUPTED", "player")
+  eframe:RegisterUnitEvent("UNIT_SPELLCAST_FAILED", "player")
+  eframe:RegisterUnitEvent("UNIT_SPELLCAST_FAILED_QUIET", "player")
+  eframe:RegisterUnitEvent("UNIT_SPELLCAST_STOP", "player")
   eframe:RegisterEvent("PLAYER_REGEN_DISABLED")
   eframe:RegisterEvent("PLAYER_REGEN_ENABLED")
 end

@@ -48,15 +48,11 @@ C.__index = C
 -- Tunables (seconds / shards).  Named + commented so the cascade reads as rules.
 --------------------------------------------------------------------------------
 local SHARD_CAP  = 5      -- full soul-shard bar (ns.SHARD_CAP mirrors this)
-local STAGE_LEAD = 5.0    -- Tyrant anticipated <= this => the window is setting up: the
-                         -- pre-Tyrant walk runs and Tyrant rides a SOON burst anchor
-local POOL_UNTIL = 3.0    -- pool shards to cap only while Tyrant is > this out; inside the
-                          -- final approach, commit to the Core dump / demon stage instead
-local BURST_LEAD = 20.0   -- Tyrant anticipated <= this => the burst is imminent
+local TCT_LEAD   = 3.0    -- Tyrant Condition (TCT): Tyrant napkin remaining <= this (OR off
+                         -- cooldown) => the burst window: cap -> demons -> Tyrant -> flood
 local LATE_LEAD  = 4.0    -- a probably-up press left elapsed this long => overdue
 local CAST_FRESH = 1.0    -- a history 'start' this fresh => the cast_started edge
 local IMP_WINDOW = 6.0    -- history lookback for the imp-napkin promote
-local OPENER_MAX = 15.0   -- combat this young + Tyrant never cast => opener running
 local HOG_COST_FALLBACK = 3   -- Hand of Gul'dan's cost when no live reader is wired
 
 -- The game's own power token per Enum.PowerType name (contract's sanctioned
@@ -115,6 +111,16 @@ local function succeededWithin(state, base, window)
     if h.phase == "succeeded" and (h.base == base or h.spellID == base) then
       if num(h.at) and (now - h.at) <= window then return true, h.at end
     end
+  end
+  return false
+end
+
+-- Any cast committed (a 'start' edge) this fresh?  Ends the OOC-idle opener display the
+-- instant you launch — Coach kicks in on the cast, not on the land / combat flag.
+local function anyCastFresh(state)
+  local now = state.at or 0
+  for _, h in ipairs(state.history or {}) do
+    if h.phase == "start" and num(h.at) and (now - h.at) <= CAST_FRESH then return true end
   end
   return false
 end
@@ -272,12 +278,18 @@ function C:Context(state)
   ctx.tyrantWindowActive = buffActive(S.TYRANT)
   local ty = S.TYRANT and cidByBase[S.TYRANT] and factsByCid[cidByBase[S.TYRANT]]
   ctx.tyrant = ty
-  ctx.tyrantProbablyUp = ty and ty.napkinProbablyUp or false
+  -- Off cooldown = napkin probably-up OR NEVER CAST (cdSource "none": pre-first-Tyrant,
+  -- the opener).  Only Tyrant carries a real 60s CD, so source "none" here means "ready",
+  -- not "no data" — that's what makes the pull's opener a burst (Tyrant off cd => TCT).
+  ctx.tyrantProbablyUp = (ty and (ty.napkinProbablyUp or ty.cdSource == "none")) or false
   ctx.tyrantAnticipated = ty and ty.anticipated or false
   ctx.tyrantRemaining = ty and ty.remaining or nil
   ctx.tyrantSource = ty and ty.cdSource or nil
-  ctx.tyrantImminent = ctx.tyrantAnticipated and ctx.tyrantRemaining
-    and ctx.tyrantRemaining <= BURST_LEAD or false
+  -- Tyrant Condition (TCT) — the single burst trigger: Tyrant off cooldown (probably-up)
+  -- OR its napkin countdown within the lead.  Replaces OPENER/ENTRY/STAGING/IMMINENT.
+  ctx.tct = ctx.tyrantProbablyUp
+    or (ctx.tyrantAnticipated and ctx.tyrantRemaining and ctx.tyrantRemaining <= TCT_LEAD)
+    or false
 
   -- Dreadstalkers + Grimoire: Imp Lord — the two pre-Tyrant demon summons (SEQUENCE 2).
   -- `*Committed` reads the cast-START edge so the staging walk advances the instant a
@@ -297,10 +309,6 @@ function C:Context(state)
   ctx.implosion = im
   ctx.implosionProbablyUp = im and im.napkinProbablyUp or false
 
-  -- Board freshness — the summons freshly laid (Dreadstalkers just cast) => we are
-  -- entering the Tyrant window, not mid-sustain.
-  ctx.boardFresh = committedWithin(state, S.DREADSTALKERS, 3.0)
-
   -- The imp-napkin confident promote (implosion-primed): 2+ full HoGs banked recently
   -- with no Implosion since AND imps to spend (Implosion probably-up).  A readable
   -- approximation of the secret >=6-imp gate — only confident enough to PRESS in AoE.
@@ -314,22 +322,16 @@ function C:Context(state)
   local implodedSince = succeededWithin(state, S.IMPLOSION, IMP_WINDOW)
   ctx.impNapkinConfident = (hogHits >= 2) and not implodedSince and ctx.implosionProbablyUp or false
 
-  -- Opener — Tyrant has NEVER been on cooldown (cd.source == "none": pre-first-cast)
-  -- and combat is young.  The recurring mid-fight Tyrant entry reads source "napkin"
-  -- (been cast), so this discriminates opener-midflight from tyrant-ready cleanly.
-  local elapsed = state.combatStartedAt and (state.at - state.combatStartedAt) or nil
-  ctx.openerActive = (ctx.tyrantSource == "none")
-    and state.combat and (not elapsed or elapsed <= OPENER_MAX)
-    and succeededWithin(state, S.DREADSTALKERS, 20.0) and true or false
-
-  -- Phase — first match.  (Documented in the module header + w4-build-plan.)
-  if ctx.openerActive then ctx.phase = "OPENER"
+  -- Phase — first match (docs/w4-phase6-tct-redesign.md).
+  --   OOC_IDLE      : out of combat, nothing committed -> the dumb SB+DB opener display.
+  --                   Ends on the cast-START edge (anyCastFresh) so Coach kicks in on the
+  --                   cast, not the land; pre-pull Tyrant is off cd => TCT => the walk.
+  --   TYRANT_WINDOW : Tyrant buff active -> flood HoG.
+  --   BURST         : TCT true -> cap -> demons -> Summon Tyrant -> flood.
+  --   STEADY        : else -> the resource cascade.
+  if not state.combat and not anyCastFresh(state) then ctx.phase = "OOC_IDLE"
   elseif ctx.tyrantWindowActive then ctx.phase = "TYRANT_WINDOW"
-  elseif ctx.tyrantProbablyUp and shards and shards >= SHARD_CAP and ctx.boardFresh then
-    ctx.phase = "TYRANT_ENTRY"
-  elseif ctx.tyrantAnticipated and ctx.tyrantRemaining and ctx.tyrantRemaining <= STAGE_LEAD then
-    ctx.phase = "TYRANT_STAGING"
-  elseif ctx.tyrantImminent then ctx.phase = "BURST_IMMINENT"
+  elseif ctx.tct then ctx.phase = "BURST"
   else ctx.phase = "STEADY" end
 
   return ctx
@@ -343,47 +345,41 @@ function C:RankWinner(ctx)
   local S = ids()
   local B = ctx.cidByBase
   local shards = ctx.shards or 0
+  local projected = ctx.projected or shards   -- "shards after the current cast"
   local cost = hogCost(self)
 
   local function key(base) return B[base] end
 
-  if ctx.phase == "OPENER" then
+  -- OOC-idle owns no single press; Emit lights BOTH openers (Shadow Bolt + Demonbolt).
+  if ctx.phase == "OOC_IDLE" then
     return nil
   end
 
   if ctx.phase == "TYRANT_WINDOW" then
     -- HoG-spam floods imps inside the window (SEQUENCE 3 / maxroll "as many HoG as
     -- possible for 15s") — HoG OUTRANKS a Core dump here, the inverse of steady.
-    if shards >= 3 then
+    if projected >= 3 then
       return key(S.HAND_OF_GULDAN), "ROTATION", "flood imps — spam Hand of Gul'dan"
-    elseif ctx.coreUp and shards < 4 then
+    elseif ctx.coreUp and projected < 4 then
       return key(S.DEMONBOLT), "ROTATION"
     else
       return key(S.SHADOW_BOLT), "ROTATION"
     end
   end
 
-  if ctx.phase == "TYRANT_ENTRY" then
-    return key(S.TYRANT), "ROTATION"
-  end
-
-  if ctx.phase == "TYRANT_STAGING" then
-    -- The pre-Tyrant walk (SEQUENCE 2), one press at a time.  Order:
-    --   1. Dump a banked Demonic Core (Demonbolt) — it refunds +2 shards, so it BUILDS
-    --      toward the pool while spending the Core; the top move when one's up.
-    --   2. POOL shards to cap (Shadow Bolt), even with a demon droppable — the flood
-    --      needs a full bar — but ONLY while there's time (Tyrant > POOL_UNTIL out); in
-    --      the final approach, commit to the demon instead of a slow build.
-    --   3. Drop the demons in order: Dreadstalkers ("the last summon before Tyrant"),
-    --      then Grimoire: Imp Lord ("pressed next to Dreadstalkers").
-    -- Steps 3+ advance on the cast-START edge (ctx.*Committed), so once a demon is
-    -- committed the cue moves to the next move instead of telling you to re-press what
-    -- you're already casting.  If everything is staged but Tyrant isn't up yet, fall
-    -- through to the steady cascade (TYRANT_ENTRY takes over once Tyrant reads up).
-    if ctx.coreUp and shards < 4 then
-      return key(S.DEMONBOLT), "ROTATION"
-    end
-    if shards < SHARD_CAP and ctx.tyrantRemaining and ctx.tyrantRemaining > POOL_UNTIL then
+  if ctx.phase == "BURST" then
+    -- The Tyrant burst walk (SEQUENCE 2), one press at a time, on PROJECTED shards:
+    --   1. cap shards — Demonbolt if a Core's up (dumps it AND refunds +2 shards), else
+    --      Shadow Bolt; the flood needs a full bar, so this prefixes the demon drop.
+    --   2. drop Dreadstalkers ("the last summon before Tyrant").
+    --   3. drop Grimoire: Imp Lord ("pressed next to Dreadstalkers").  Steps 2-3 advance
+    --      on the cast-START edge (ctx.*Committed) so a committed demon yields to the next
+    --      move instead of re-pressing what you're already casting.
+    --   4. Summon Tyrant once it reads off cd.
+    -- Nothing left to stage + Tyrant not up yet -> fall through to steady -> HoG (lay
+    -- Wild Imps for Tyrant to empower).
+    if projected < SHARD_CAP then
+      if ctx.coreUp then return key(S.DEMONBOLT), "ROTATION" end
       return key(S.SHADOW_BOLT), "ROTATION", "pool to 5 for the flood"
     end
     if ctx.dreadProbablyUp and not ctx.dreadCommitted then
@@ -392,9 +388,12 @@ function C:RankWinner(ctx)
     if ctx.dreadCommitted and ctx.grimoireProbablyUp and not ctx.grimoireCommitted then
       return key(S.IMP_LORD), "ROTATION", "Imp Lord — pair with Dreadstalkers"
     end
+    if ctx.tyrantProbablyUp then
+      return key(S.TYRANT), "ROTATION"
+    end
   end
 
-  -- STEADY / BURST_IMMINENT — the resource+summon cascade (rotation.md 1-12).
+  -- STEADY (and the BURST fall-through) — the resource+summon cascade (rotation.md 1-12).
   -- 1. A Demonic Art transform is the top press when armed.
   if ctx.artFrame then
     local ai = ctx.artInfo
@@ -403,7 +402,7 @@ function C:RankWinner(ctx)
     local isInfernal = ai and ai.generates == 3
     if isInfernal then
       -- Infernal Bolt refills +3; take it only if it won't overcap (rotation.md prio).
-      if shards + 3 <= SHARD_CAP then
+      if projected + 3 <= SHARD_CAP then
         return ctx.artFrame, "ROTATION", "Infernal Bolt"
       end
     else
@@ -413,8 +412,8 @@ function C:RankWinner(ctx)
   end
 
   -- 2. A cooldown-gated summon reading probably-up, pressed on CD when Tyrant is far
-  --    (nothing to stage for).
-  if ctx.dreadProbablyUp and not ctx.tyrantImminent then
+  --    (not TCT — nothing to stage for; inside TCT the BURST walk owns the demons).
+  if ctx.dreadProbablyUp and not ctx.tct then
     return key(S.DREADSTALKERS), "ROTATION"
   end
 
@@ -424,18 +423,16 @@ function C:RankWinner(ctx)
     return key(S.IMPLOSION), "ROTATION", "imps banked — implode"
   end
 
-  -- 4. Spend a Demonic Core on Demonbolt — but only BELOW 4 shards, else the +2
-  --    refund overcaps (the shipped softenAbove rule, now a cascade position).
-  if ctx.coreUp and shards < 4 then
+  -- 4. Spend a Demonic Core on Demonbolt — but only BELOW 4 shards (projected), else the
+  --    +2 refund overcaps (the shipped softenAbove rule, now a cascade position).
+  if ctx.coreUp and projected < 4 then
     return key(S.DEMONBOLT), "ROTATION"
   end
 
-  -- 5. Hand of Gul'dan — the primary spender, at/above its cost on the PROJECTION
-  --    (value + in-flight builder yield).  Gating the press on `projected` rather
-  --    than live `shards` is the 6b promote: an in-flight builder that lands the
-  --    cost'th shard makes HoG the readable next move NOW (one move ahead), not a
-  --    lagging "SOON".  incoming is builder-only (5b); the signed-spend case is 6d.
-  if ctx.projected and ctx.projected >= cost then
+  -- 5. Hand of Gul'dan — the primary spender, at/above cost on the PROJECTION (value +
+  --    signed incoming: an in-flight builder promotes it; an in-flight HoG clears it to
+  --    the builder below).
+  if projected >= cost then
     return key(S.HAND_OF_GULDAN), "ROTATION"
   end
 
@@ -455,7 +452,10 @@ function C:Escalate(winnerKey, level, ctx)
   -- A probably-up summon (Dreadstalkers) left sitting past the lead.
   if rec.base == S.DREADSTALKERS and rec.overdue then return "LATE" end
   -- HoG parked at a FULL bar (actual shards, not the projection) — the readable dump.
-  if rec.base == S.HAND_OF_GULDAN and ctx.shards and ctx.shards >= SHARD_CAP then
+  -- Suppressed during the burst / window, where a full bar is intentional pooling for
+  -- the flood, not overcap-parking.
+  if rec.base == S.HAND_OF_GULDAN and ctx.shards and ctx.shards >= SHARD_CAP
+      and not ctx.tct and not ctx.tyrantWindowActive then
     return "LATE"
   end
   return level
@@ -492,35 +492,25 @@ function C:Emit(state, ctx, winnerKey, level, winnerNote)
                 transient = transientFor(state, rec) }
   end
 
+  -- OOC-idle: the dumb opener display — light BOTH openers (Shadow Bolt + Demonbolt) as
+  -- ROTATION and stop.  A deliberate single-top-press exception (docs/w4-phase6); no walk,
+  -- no anchor, because nothing has been committed yet.
+  if ctx.phase == "OOC_IDLE" then
+    put(B[S.SHADOW_BOLT], "ROTATION")
+    put(B[S.DEMONBOLT], "ROTATION")
+    return { resourceBar = self:ResourceBar(ctx), cues = cues, sequence = { show = false } }
+  end
+
   -- The one press.
   if winnerKey then put(winnerKey, level, winnerNote) end
 
-  -- SEQUENCE — the opener panel owns the plan; the active step's ability draws the
-  -- attention-redirect cue (not a press).
-  if ctx.phase == "OPENER" and B[S.TYRANT] then
-    put(B[S.TYRANT], "SEQUENCE", "opener — Tyrant is the step")
-  end
-
-  -- Tyrant SOON — the burst anchor while the window sets up (never a press).  Rides the
-  -- whole staging lead so it stays visible across the pool -> demons -> summon walk; a
-  -- bare non-press SOON that coexists with the one ROTATION.
+  -- Tyrant SOON — the burst anchor while TCT is true (never a press).  Rides the whole
+  -- burst so it stays visible across cap -> demons -> summon; a bare non-press SOON that
+  -- coexists with the one ROTATION.  When Tyrant is itself the press it's ROTATION, not
+  -- SOON (the winnerKey guard).
   local tyKey = B[S.TYRANT]
-  if tyKey and tyKey ~= winnerKey and ctx.tyrantAnticipated and ctx.tyrantRemaining
-      and ctx.tyrantRemaining <= STAGE_LEAD and not cues[tyKey] then
+  if tyKey and tyKey ~= winnerKey and ctx.tct and not cues[tyKey] then
     put(tyKey, "SOON")
-  end
-
-  -- (HoG "SOON" retired at 6b.)  The press gate (RankWinner step 5) now reads
-  -- `projected` directly, so an in-flight builder that lifts projected to the cost
-  -- promotes HoG to the ROTATION press itself — there is no separate value-vs-
-  -- projected band left to signal as SOON.  Anticipating a not-yet-affordable
-  -- spender (projected < cost) is out of scope here; that behaviour belongs to 6d.
-
-  -- Dreadstalkers JUDGE — held for the imminent window (your call to stage or press).
-  local drKey = B[S.DREADSTALKERS]
-  if drKey and drKey ~= winnerKey and not cues[drKey]
-      and ctx.dreadProbablyUp and ctx.phase == "BURST_IMMINENT" then
-    put(drKey, "JUDGE", "Tyrant soon — hold for the window or press")
   end
 
   -- Demonbolt JUDGE — only on a FRESH Core proc edge with a readable competitor: the
@@ -538,9 +528,7 @@ function C:Emit(state, ctx, winnerKey, level, winnerNote)
   -- unless the confident promote already claimed it as the winner.
   local imKey = B[S.IMPLOSION]
   if imKey and imKey ~= winnerKey and not cues[imKey] and ctx.implosionProbablyUp then
-    local note = (ctx.phase == "BURST_IMMINENT") and "hold imps for burst — your call"
-      or "imps uncertain — your call"
-    put(imKey, "JUDGE", note)
+    put(imKey, "JUDGE", "imps uncertain — your call")
   end
 
   return {
@@ -565,57 +553,13 @@ function C:ResourceBar(ctx)
 end
 
 --------------------------------------------------------------------------------
--- sequence — the opener panel (drop-through cursor over the fixed opener).  Only
--- OPENER draws a panel; steady state shows none.
+-- sequence — RETIRED at the TCT redesign (docs/w4-phase6-tct-redesign.md).  The
+-- one-press-at-a-time cue walk replaced the opener panel (6e = drop the panel), so
+-- the Coach never emits a panel now.  The contract field stays (show:false) for the
+-- Binder/Renderer; 5e deletes HudPane/HudOpener/HudBurst.
 --------------------------------------------------------------------------------
--- The Demo opener panel (diabolist-sequences.md SEQUENCE 1 / rotation.md opener).
--- Authored here as pass-through display data (labels are the panel's own copy, the
--- contract's opaque display text) rather than in ns.Spec (no schema change).
-local OPENER_STEPS = {
-  { id = 104316,  label = "Dreadstalkers" },
-  { id = 1276452, label = "Grimoire: Imp Lord" },
-  { id = 265187,  label = "Summon Demonic Tyrant" },
-  { id = 105174,  label = "Hand of Gul'dan" },
-  { id = 105174,  label = "Hand of Gul'dan", gate = "shards", note = "Need 3 shards" },
-  { id = 196277,  label = "Implosion", aoe = true, note = "AoE only" },
-}
-
-function C:Sequence(state, ctx)
-  if ctx.phase ~= "OPENER" then return { show = false } end
-
-  -- Drop-through cursor: advance past each opener step already seen in the cast
-  -- history (in order), so out-of-order / optional presses don't jam it.
-  local cursor = 0
-  local hist = state.history or {}
-  for _, h in ipairs(hist) do
-    if h.phase == "succeeded" then
-      local step = OPENER_STEPS[cursor + 1]
-      if step and (h.base == step.id or h.spellID == step.id) then
-        cursor = cursor + 1
-      end
-    end
-  end
-
-  local keybindOf = function(spellID)
-    local key = ctx.cidByBase[spellID]
-    local cd = key and state.cooldowns[key]
-    return cd and cd.keybind or nil
-  end
-
-  local steps = {}
-  for i, tmpl in ipairs(OPENER_STEPS) do
-    local zero = i - 1
-    local st, note
-    if zero < cursor then st = "done"
-    elseif zero == cursor then st = "active"
-    elseif tmpl.aoe and ctx.mode ~= "aoe" then st, note = "skipped", tmpl.note
-    elseif tmpl.gate == "shards" then st, note = "blocked", tmpl.note
-    else st = "pending" end
-    steps[i] = { spellID = tmpl.id, label = tmpl.label,
-                 keybind = keybindOf(tmpl.id), state = st, note = note }
-  end
-
-  return { show = true, title = "OPENER", cursor = cursor, steps = steps }
+function C:Sequence(_state, _ctx)
+  return { show = false }
 end
 
 --------------------------------------------------------------------------------

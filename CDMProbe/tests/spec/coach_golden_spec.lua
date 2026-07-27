@@ -2,7 +2,7 @@
 --
 -- Loads each frozen golden's state.json, runs the REAL Coach.Compute(state), and
 -- DIFFS the result against guidance.json (the oracle, reasoned from the Demonology
--- rotation source, never from code — corpus/goldens/README.md).  26/26 green is the
+-- rotation source, never from code — corpus/goldens/README.md).  29/29 green is the
 -- proof that the redesigned single-top-press Coach reproduces the independent
 -- corpus.  A RED here is the gate doing its job.
 --
@@ -19,12 +19,13 @@ local FIX = dofile(dir .. "../json_fixture.lua")
 -- renamed scenario is a loud failure, not a silent skip.
 local SCENARIOS = {
   "burst-hold", "cast-ended-edge", "demonbolt-proc", "dreadstalkers",
-  "grimoire-available", "hand-of-guldan", "hog-overcap-late", "implosion",
-  "implosion-primed", "in-tyrant-window", "incoming-overcap", "infernal-bolt",
-  "opener-midflight", "overcap-soften", "overdue-late", "resource-states",
-  "ruination", "secrecy-combat", "shadow-bolt-filler", "soon-anticipated",
-  "soon-incoming", "transient-edges", "tyrant-pool", "tyrant-ready",
-  "tyrant-stage-dread", "tyrant-stage-grimoire",
+  "grimoire-available", "hand-of-guldan", "hog-inflight", "hog-overcap-late",
+  "implosion", "implosion-primed", "in-tyrant-window", "incoming-overcap", "infernal-bolt",
+  "opener-midflight", "opener-ooc", "opener-ooc-casting", "overcap-soften",
+  "overdue-late", "resource-states", "ruination", "secrecy-combat",
+  "shadow-bolt-filler", "soon-anticipated", "soon-incoming", "transient-edges",
+  "tyrant-hog-spam", "tyrant-pool", "tyrant-ready", "tyrant-stage-dread",
+  "tyrant-stage-grimoire",
 }
 
 --------------------------------------------------------------------------------
