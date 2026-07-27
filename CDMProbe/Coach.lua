@@ -48,8 +48,10 @@ C.__index = C
 -- Tunables (seconds / shards).  Named + commented so the cascade reads as rules.
 --------------------------------------------------------------------------------
 local SHARD_CAP  = 5      -- full soul-shard bar (ns.SHARD_CAP mirrors this)
-local SOON_LEAD  = 3.0    -- napkin remaining <= this => the SOON anticipation cue
-local STAGE_LEAD = 5.0    -- Tyrant anticipated <= this & Dread up => stage Dread NOW
+local STAGE_LEAD = 5.0    -- Tyrant anticipated <= this => the window is setting up: the
+                         -- pre-Tyrant walk runs and Tyrant rides a SOON burst anchor
+local POOL_UNTIL = 3.0    -- pool shards to cap only while Tyrant is > this out; inside the
+                          -- final approach, commit to the Core dump / demon stage instead
 local BURST_LEAD = 20.0   -- Tyrant anticipated <= this => the burst is imminent
 local LATE_LEAD  = 4.0    -- a probably-up press left elapsed this long => overdue
 local CAST_FRESH = 1.0    -- a history 'start' this fresh => the cast_started edge
@@ -112,6 +114,21 @@ local function succeededWithin(state, base, window)
     local h = hist[i]
     if h.phase == "succeeded" and (h.base == base or h.spellID == base) then
       if num(h.at) and (now - h.at) <= window then return true, h.at end
+    end
+  end
+  return false
+end
+
+-- Has `base` been COMMITTED within `window` — a cast STARTED or SUCCEEDED?  The burst
+-- walk advances on the cast-start edge (the "next move" rule: the instant a demon is
+-- committed, move to the next step), so it must not wait for the landed `succeeded`.
+local function committedWithin(state, base, window)
+  local now = state.at or 0
+  local hist = state.history or {}
+  for i = 1, #hist do
+    local h = hist[i]
+    if (h.phase == "start" or h.phase == "succeeded") and (h.base == base or h.spellID == base) then
+      if num(h.at) and (now - h.at) <= window then return true end
     end
   end
   return false
@@ -262,10 +279,17 @@ function C:Context(state)
   ctx.tyrantImminent = ctx.tyrantAnticipated and ctx.tyrantRemaining
     and ctx.tyrantRemaining <= BURST_LEAD or false
 
-  -- Dreadstalkers.
+  -- Dreadstalkers + Grimoire: Imp Lord — the two pre-Tyrant demon summons (SEQUENCE 2).
+  -- `*Committed` reads the cast-START edge so the staging walk advances the instant a
+  -- demon is pressed, without waiting for the summon to land (the "next move" rule).
   local dr = S.DREADSTALKERS and cidByBase[S.DREADSTALKERS] and factsByCid[cidByBase[S.DREADSTALKERS]]
   ctx.dread = dr
   ctx.dreadProbablyUp = dr and dr.napkinProbablyUp or false
+  ctx.dreadCommitted = committedWithin(state, S.DREADSTALKERS, 3.0)
+  local gr = S.IMP_LORD and cidByBase[S.IMP_LORD] and factsByCid[cidByBase[S.IMP_LORD]]
+  ctx.grimoire = gr
+  ctx.grimoireProbablyUp = gr and gr.napkinProbablyUp or false
+  ctx.grimoireCommitted = committedWithin(state, S.IMP_LORD, 3.0)
 
   -- Implosion — its true gate (Wild Imps >= 6) is secret, so it is never a plain
   -- press; the cascade only promotes it on the napkin heuristic, else it JUDGEs.
@@ -275,7 +299,7 @@ function C:Context(state)
 
   -- Board freshness — the summons freshly laid (Dreadstalkers just cast) => we are
   -- entering the Tyrant window, not mid-sustain.
-  ctx.boardFresh = succeededWithin(state, S.DREADSTALKERS, 3.0) and true or false
+  ctx.boardFresh = committedWithin(state, S.DREADSTALKERS, 3.0)
 
   -- The imp-napkin confident promote (implosion-primed): 2+ full HoGs banked recently
   -- with no Implosion since AND imps to spend (Implosion probably-up).  A readable
@@ -303,8 +327,7 @@ function C:Context(state)
   elseif ctx.tyrantWindowActive then ctx.phase = "TYRANT_WINDOW"
   elseif ctx.tyrantProbablyUp and shards and shards >= SHARD_CAP and ctx.boardFresh then
     ctx.phase = "TYRANT_ENTRY"
-  elseif ctx.tyrantAnticipated and ctx.tyrantRemaining and ctx.tyrantRemaining <= STAGE_LEAD
-      and ctx.dreadProbablyUp then
+  elseif ctx.tyrantAnticipated and ctx.tyrantRemaining and ctx.tyrantRemaining <= STAGE_LEAD then
     ctx.phase = "TYRANT_STAGING"
   elseif ctx.tyrantImminent then ctx.phase = "BURST_IMMINENT"
   else ctx.phase = "STEADY" end
@@ -345,9 +368,30 @@ function C:RankWinner(ctx)
   end
 
   if ctx.phase == "TYRANT_STAGING" then
-    -- Dreadstalkers is the last thing before Tyrant so the dogs are fresh in the
-    -- window (SEQUENCE 2).
-    return key(S.DREADSTALKERS), "ROTATION"
+    -- The pre-Tyrant walk (SEQUENCE 2), one press at a time.  Order:
+    --   1. Dump a banked Demonic Core (Demonbolt) — it refunds +2 shards, so it BUILDS
+    --      toward the pool while spending the Core; the top move when one's up.
+    --   2. POOL shards to cap (Shadow Bolt), even with a demon droppable — the flood
+    --      needs a full bar — but ONLY while there's time (Tyrant > POOL_UNTIL out); in
+    --      the final approach, commit to the demon instead of a slow build.
+    --   3. Drop the demons in order: Dreadstalkers ("the last summon before Tyrant"),
+    --      then Grimoire: Imp Lord ("pressed next to Dreadstalkers").
+    -- Steps 3+ advance on the cast-START edge (ctx.*Committed), so once a demon is
+    -- committed the cue moves to the next move instead of telling you to re-press what
+    -- you're already casting.  If everything is staged but Tyrant isn't up yet, fall
+    -- through to the steady cascade (TYRANT_ENTRY takes over once Tyrant reads up).
+    if ctx.coreUp and shards < 4 then
+      return key(S.DEMONBOLT), "ROTATION"
+    end
+    if shards < SHARD_CAP and ctx.tyrantRemaining and ctx.tyrantRemaining > POOL_UNTIL then
+      return key(S.SHADOW_BOLT), "ROTATION", "pool to 5 for the flood"
+    end
+    if ctx.dreadProbablyUp and not ctx.dreadCommitted then
+      return key(S.DREADSTALKERS), "ROTATION", "stage — last summon before Tyrant"
+    end
+    if ctx.dreadCommitted and ctx.grimoireProbablyUp and not ctx.grimoireCommitted then
+      return key(S.IMP_LORD), "ROTATION", "Imp Lord — pair with Dreadstalkers"
+    end
   end
 
   -- STEADY / BURST_IMMINENT — the resource+summon cascade (rotation.md 1-12).
@@ -386,8 +430,12 @@ function C:RankWinner(ctx)
     return key(S.DEMONBOLT), "ROTATION"
   end
 
-  -- 5. Hand of Gul'dan — the primary spender, at/above its cost.
-  if ctx.shards and ctx.shards >= cost then
+  -- 5. Hand of Gul'dan — the primary spender, at/above its cost on the PROJECTION
+  --    (value + in-flight builder yield).  Gating the press on `projected` rather
+  --    than live `shards` is the 6b promote: an in-flight builder that lands the
+  --    cost'th shard makes HoG the readable next move NOW (one move ahead), not a
+  --    lagging "SOON".  incoming is builder-only (5b); the signed-spend case is 6d.
+  if ctx.projected and ctx.projected >= cost then
     return key(S.HAND_OF_GULDAN), "ROTATION"
   end
 
@@ -435,7 +483,6 @@ end
 function C:Emit(state, ctx, winnerKey, level, winnerNote)
   local S = ids()
   local B = ctx.cidByBase
-  local cost = hogCost(self)
   local cues = {}
 
   local function put(k, emphasis, note)
@@ -454,22 +501,20 @@ function C:Emit(state, ctx, winnerKey, level, winnerNote)
     put(B[S.TYRANT], "SEQUENCE", "opener — Tyrant is the step")
   end
 
-  -- Tyrant SOON — anticipation within the lead (never a press).  The staging phase
-  -- adds the "stage demons first" nudge; otherwise a bare SOON.
+  -- Tyrant SOON — the burst anchor while the window sets up (never a press).  Rides the
+  -- whole staging lead so it stays visible across the pool -> demons -> summon walk; a
+  -- bare non-press SOON that coexists with the one ROTATION.
   local tyKey = B[S.TYRANT]
   if tyKey and tyKey ~= winnerKey and ctx.tyrantAnticipated and ctx.tyrantRemaining
-      and ctx.tyrantRemaining <= SOON_LEAD and not cues[tyKey] then
-    local note = (ctx.phase == "TYRANT_STAGING") and "~2s — stage demons first" or nil
-    put(tyKey, "SOON", note)
+      and ctx.tyrantRemaining <= STAGE_LEAD and not cues[tyKey] then
+    put(tyKey, "SOON")
   end
 
-  -- HoG SOON — pressable the instant an in-flight builder's shard lands (projected
-  -- >= cost, but not in hand yet).
-  local hogKey = B[S.HAND_OF_GULDAN]
-  if hogKey and hogKey ~= winnerKey and not cues[hogKey]
-      and ctx.shards and ctx.shards < cost and ctx.projected and ctx.projected >= cost then
-    put(hogKey, "SOON")
-  end
+  -- (HoG "SOON" retired at 6b.)  The press gate (RankWinner step 5) now reads
+  -- `projected` directly, so an in-flight builder that lifts projected to the cost
+  -- promotes HoG to the ROTATION press itself — there is no separate value-vs-
+  -- projected band left to signal as SOON.  Anticipating a not-yet-affordable
+  -- spender (projected < cost) is out of scope here; that behaviour belongs to 6d.
 
   -- Dreadstalkers JUDGE — held for the imminent window (your call to stage or press).
   local drKey = B[S.DREADSTALKERS]

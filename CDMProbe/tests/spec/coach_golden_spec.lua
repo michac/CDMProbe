@@ -2,7 +2,7 @@
 --
 -- Loads each frozen golden's state.json, runs the REAL Coach.Compute(state), and
 -- DIFFS the result against guidance.json (the oracle, reasoned from the Demonology
--- rotation source, never from code — corpus/goldens/README.md).  23/23 green is the
+-- rotation source, never from code — corpus/goldens/README.md).  26/26 green is the
 -- proof that the redesigned single-top-press Coach reproduces the independent
 -- corpus.  A RED here is the gate doing its job.
 --
@@ -23,7 +23,8 @@ local SCENARIOS = {
   "implosion-primed", "in-tyrant-window", "incoming-overcap", "infernal-bolt",
   "opener-midflight", "overcap-soften", "overdue-late", "resource-states",
   "ruination", "secrecy-combat", "shadow-bolt-filler", "soon-anticipated",
-  "soon-incoming", "transient-edges", "tyrant-ready",
+  "soon-incoming", "transient-edges", "tyrant-pool", "tyrant-ready",
+  "tyrant-stage-dread", "tyrant-stage-grimoire",
 }
 
 --------------------------------------------------------------------------------
