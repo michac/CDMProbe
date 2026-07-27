@@ -28,8 +28,10 @@
 --
 -- THE TWO SEAMS (both cfg-injected, mirroring the Coach's cfg.shardCost):
 --   * geometry    the shared ns.HudGeometry (overridable for a test / retheme).
---   * keybindFor  fn(spellID) -> string | nil.  Live: wraps HudBinds.Get.  Test: a
---                 fixture map.  The Binder does NOT scan the action bars itself.
+--   * keybindFor  fn(spellID) -> string | nil.  TEST-ONLY now: LIVE keybinds come from
+--                 STATE (the single resolver), stitched onto each layout entry by the
+--                 driver, so a cue prefers `layout[cid].keybind` and only falls back to
+--                 this seam when the layout carries none (the fixture path).
 --
 -- THE cooldownID <-> spellID BRIDGE is the LAYOUT (it carries both), not the Binder:
 -- Guidance keys cues by cooldownID; the keybind scan keys by spellID.  The Layout —
@@ -91,7 +93,10 @@ function B:bindCues(guidance, layout)
     local entry = layout[cid]
     -- draw=false demotes to "no emphasis" (the keybind may still ride).
     local emphasis = (cue and cue.draw ~= false) and cue.emphasis or nil
-    local keybind = keybindOf(self, entry and entry.spellID)
+    -- Prefer the keybind STATE already resolved (stitched onto the layout live by the
+    -- driver, keyed by cooldownID) — State is the SINGLE keybind resolver.  Fall back to
+    -- the cfg seam only for the test path (a fixture layout carries no keybind).
+    local keybind = (entry and entry.keybind) or keybindOf(self, entry and entry.spellID)
     if emphasis or keybind then
       out[#out + 1] = G.cue(cid, emphasis, keybind)
     end

@@ -184,6 +184,26 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
       local drawList = b:Bind({ cues = {} }, { ["34990"] = { spellID = 686 } })
       assert.are.equal(0, #drawList.cues)
     end)
+
+    -- P5d fix — the layout's OWN keybind (State-resolved, stitched by the driver) wins
+    -- over the cfg seam, so a divergent re-lookup can't override State's correct value.
+    it("prefers the layout's State-resolved keybind over the cfg seam", function()
+      local b = Binder.New({ keybindFor = keybindsFrom({ [105174] = "WRONG" }) })
+      local drawList = b:Bind(
+        { cues = { ["34991"] = { draw = true, emphasis = "ROTATION" } } },
+        { ["34991"] = { spellID = 105174, keybind = "R" } })   -- State said R
+      assert.are.equal("R", byAnchor(drawList.cues)["34991"].keybind)
+    end)
+
+    it("draws a keybind-only cue straight from the layout keybind (no seam, no emphasis)", function()
+      local b = Binder.New({})   -- no seam at all, mirroring the live driver
+      local drawList = b:Bind(
+        { cues = {} },
+        { ["671"] = { spellID = 104316, keybind = "E" } })   -- State-stitched Dreadstalkers
+      local m = byAnchor(drawList.cues)
+      assert.is_nil(m["671"].emphasis)
+      assert.are.equal("E", m["671"].keybind)
+    end)
   end)
 
   ------------------------------------------------------------------------------

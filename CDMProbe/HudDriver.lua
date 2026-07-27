@@ -46,7 +46,9 @@ local function ensureInstances()
     D.coach = ns.Coach.New({ shardCost = ns.ShardCost })
   end
   if not D.binder then
-    D.binder = ns.Binder.New({ keybindFor = ns.HudBinds and ns.HudBinds.Get })
+    -- No keybindFor seam live: keybinds come from STATE (stitched onto the layout in
+    -- tick()), the single resolver.  The seam stays a test-only injection point.
+    D.binder = ns.Binder.New({})
   end
   if not D.renderer then
     D.renderer = ns.Renderer.New()
@@ -65,6 +67,15 @@ local function tick()
   -- Live Layout + registry from the same icon-viewer walk (Phase 5a).  Register every
   -- handle -> frame so the Renderer can anchor a cue dot inside its icon corner.
   local layout, registry = ns.HudLayout.Scan()
+  -- STITCH State's keybind onto the layout by cooldownID (P5d fix).  State already
+  -- resolved a keybind per cooldown off the CDM database id — the single, correct
+  -- resolver — so the cue hint uses THAT rather than the Binder re-deriving it from a
+  -- divergent base id (which missed HoG/Dreadstalkers while State got them right).
+  local cds = pulse.cooldowns or {}
+  for cid, entry in pairs(layout) do
+    local cd = cds[cid]
+    if cd then entry.keybind = cd.keybind end
+  end
   for handle, frame in pairs(registry) do D.renderer:Register(handle, frame) end
   local drawList = D.binder:Bind(guidance, layout)
   D.renderer:Draw(drawList)
@@ -109,7 +120,10 @@ end
 --------------------------------------------------------------------------------
 local function dumpLayout()
   local layout, registry = ns.HudLayout.Scan()
-  ns.Heading("HUD2 live Layout (icon viewers -> cooldownID -> spellID)")
+  -- The keybind the cue will actually use comes from STATE (stitched by cooldownID), so
+  -- show that, not a re-lookup — this is the row to read when a key is missing.
+  local cds = (ns.State and ns.State.Build) and (ns.State.Build(false).cooldowns or {}) or {}
+  ns.Heading("HUD2 live Layout (icon viewers -> cooldownID -> spellID + State keybind)")
   local ids = {}
   for cid in pairs(layout) do ids[#ids + 1] = cid end
   table.sort(ids)
@@ -119,11 +133,13 @@ local function dumpLayout()
   for _, cid in ipairs(ids) do
     local e = layout[cid]
     local frame = registry[cid]
-    ns.Printf("  cd=%d  spellID=%s (%s)  side=%s  frame=%s",
+    local kb = cds[cid] and cds[cid].keybind
+    ns.Printf("  cd=%d  spellID=%s (%s)  key=%s  frame=%s",
       cid, tostring(e.spellID), (e.spellID and ns.SpellName(e.spellID)) or "?",
-      e.side, frame and "|cff88ff88bound|r" or "|cffff4040nil|r")
+      kb and ("|cff88ff88" .. kb .. "|r") or "|cff808080none|r",
+      frame and "|cff88ff88bound|r" or "|cffff4040nil|r")
   end
-  ns.Printf("  %d displayed icon(s) — this is the Binder's Layout + the Renderer's registry.", #ids)
+  ns.Printf("  %d displayed icon(s). |cff808080key=none|r = State resolved no bind (unbound / unresolvable).", #ids)
 end
 
 --------------------------------------------------------------------------------
