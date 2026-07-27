@@ -7,12 +7,13 @@
 -- DrawList and never makes a decision.  The Binder is the seam that turns one into
 -- the other — a pure GEOMETRY / BINDING merge:
 --
---   * cues:        Guidance.cues{cooldownID -> {emphasis}} -> DrawList.cues[].  For
---                  each cooldownID the Layout says is DISPLAYED, stamp the corner-dot
---                  geometry, pass the emphasis TOKEN through (colour stays the
---                  Renderer's job), look the keybind up by the entry's spellID, and
---                  set the glow flag.  A cue whose cooldownID isn't on screen is
---                  DROPPED (you can't decorate an icon the CDM isn't showing).
+--   * cues:        Layout{cooldownID -> {spellID}} + Guidance.cues -> DrawList.cues[].
+--                  For each DISPLAYED icon, stamp the corner-dot geometry, pass the
+--                  Coach's emphasis TOKEN through (colour stays the Renderer's job),
+--                  look the keybind up by the entry's spellID, and set the glow flag.
+--                  An icon the Coach did NOT signal still gets an EMPTY CUE (no emphasis
+--                  -> no dot) as long as it has a keybind, so the key hint rides every
+--                  button (P5d).  A cooldownID the Layout isn't showing is DROPPED.
 --   * panel:       Guidance.sequence -> DrawList.panel (self-anchored).
 --   * resourceBar: Guidance.resourceBar -> DrawList.resourceBar (self-anchored).
 --
@@ -73,23 +74,27 @@ function B:bindCues(guidance, layout)
   local cues = guidance.cues or {}
   layout = layout or {}
 
-  -- Keep only cooldownIDs the Layout says are DISPLAYED (drop the rest), and honour
-  -- an explicit draw=false.  Sorted for a deterministic array (the Renderer keys by
-  -- anchorTo and doesn't care about order — this is just stable output).
+  -- Iterate the LAYOUT (every displayed icon), not just the Coach's cues.  A cue is
+  -- emitted for any displayed item that has an EMPHASIS (a Coach signal) OR a KEYBIND.
+  -- The keybind-only case is an EMPTY CUE — no emphasis, so the Renderer draws the key
+  -- hint but no dot/glow.  This is how keybinds ride EVERY button (cued or not) with no
+  -- separate DrawList channel (W4 P5d): the keybind is identity chrome, not a signal.
+  -- A cooldownID the Layout doesn't display is never iterated, so off-screen cues drop
+  -- for free; an uncued icon with no keybind emits nothing.
   local keys = {}
-  for cid, cue in pairs(cues) do
-    if cue and cue.draw ~= false and layout[cid] then
-      keys[#keys + 1] = cid
-    end
-  end
+  for cid in pairs(layout) do keys[#keys + 1] = cid end
   table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
 
   local out = {}
   for _, cid in ipairs(keys) do
     local cue = cues[cid]
     local entry = layout[cid]
+    -- draw=false demotes to "no emphasis" (the keybind may still ride).
+    local emphasis = (cue and cue.draw ~= false) and cue.emphasis or nil
     local keybind = keybindOf(self, entry and entry.spellID)
-    out[#out + 1] = G.cue(cid, cue.emphasis, keybind)
+    if emphasis or keybind then
+      out[#out + 1] = G.cue(cid, emphasis, keybind)
+    end
   end
   return out
 end

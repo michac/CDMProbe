@@ -72,6 +72,28 @@ describe("Renderer", function()
     assert.equals(-28, pt.dy)
   end)
 
+  -- P5d strata fix: decorations ride a per-icon holder that sits ABOVE the icon (so a
+  -- higher-strata panel covers them), not the old global DIALOG root.
+  it("parents the cue to a per-icon holder a few frame-levels above the icon", function()
+    local r, icons = rigged(1)
+    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" } } })
+    local holder = r.cueHolders["fake1"]
+    assert.is_not_nil(holder)
+    assert.is_true(holder._shown)
+    assert.is_true(holder:GetFrameLevel() > icons[1]:GetFrameLevel())  -- clears the swipe
+  end)
+
+  it("re-parents the holder when an icon is repooled to a new frame", function()
+    local r = rigged(1)
+    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" } } })
+    local holder = r.cueHolders["fake1"]
+    local newIcon = H.newStub()
+    r:Register("fake1", newIcon)               -- the CDM repooled this handle's frame
+    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" } } })
+    assert.equals(holder, r.cueHolders["fake1"])   -- same holder object, reparented
+    assert.equals(newIcon, r.cueHolderAnchor["fake1"])
+  end)
+
   it("colours each cue by its own emphasis token (ROTATION + 2 JUDGE)", function()
     local r = rigged(3)
     r:Draw({ cues = {
@@ -150,6 +172,26 @@ describe("Renderer", function()
     assert.is_true(r.cueKeys["fake2"]._shown)
     r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION", keybind = "R" } } })
     assert.is_false(r.cueKeys["fake2"]._shown)
+  end)
+
+  -- P5d: an EMPTY CUE (keybind, no emphasis) draws the key hint but NO dot/glow.
+  it("draws the keybind on an empty cue (no emphasis) with no dot", function()
+    local r = rigged(1)
+    r:Draw({ cues = { { anchorTo = "fake1", keybind = "Q" } } })   -- no emphasis
+    assert.equals("Q", r.cueKeys["fake1"]:GetText())
+    assert.is_true(r.cueKeys["fake1"]._shown)
+    assert.is_nil(r.cueFrames["fake1"])       -- no dot was ever created
+    assert.is_nil(r.glowing["fake1"])
+  end)
+
+  -- The dot hides but the key hint survives when a cued icon loses its emphasis.
+  it("keeps the key hint but drops the dot when a cue goes empty", function()
+    local r = rigged(1)
+    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION", keybind = "Q" } } })
+    assert.is_true(r.cueFrames["fake1"]._shown)
+    r:Draw({ cues = { { anchorTo = "fake1", keybind = "Q" } } })   -- emphasis gone
+    assert.is_false(r.cueFrames["fake1"]._shown) -- dot hidden...
+    assert.is_true(r.cueKeys["fake1"]._shown)    -- ...key hint stays
   end)
 
   ------------------------------------------------------------------------------

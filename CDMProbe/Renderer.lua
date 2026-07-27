@@ -91,7 +91,9 @@ function R.New(cfg)
   self.theme      = cfg.theme or defaultTheme()
   self.powerColor = cfg.powerColor or defaultPowerColor()
   self.registry   = {}          -- handle / root token -> frame (the one impure seam)
-  self.root       = cfg.root    -- our own overlay parent; created lazily
+  self.root       = cfg.root    -- our own overlay parent (panel + pips); created lazily
+  self.cueHolders = {}          -- anchorTo -> holder frame parented to the icon (P5d)
+  self.cueHolderAnchor = {}     -- anchorTo -> the frame the holder is currently on
   self.cueFrames  = {}          -- anchorTo -> dot texture (diff-by-key pool)
   self.cueKeys    = {}          -- anchorTo -> keybind-hint fontstring (diff-by-key)
   self.cueGlows   = {}          -- anchorTo -> the dot's glow-halo texture
@@ -110,21 +112,47 @@ end
 function R:Register(handle, frame) self.registry[handle] = frame; return self end
 function R:Root(token, frame)      self.registry[token] = frame; return self end
 
+-- The root parents our OWN self-anchored widgets (the panel + the resource pips),
+-- NOT the cue decorations.  It sits at MEDIUM — the action-bar strata — so those
+-- widgets behave like the rest of the combat UI: above the world, but COVERED by a
+-- full-screen panel (the map, the character sheet).  This is the same strata
+-- Blizzard's spell-activation glow lives at, which is exactly the behaviour the cue
+-- decorations mimic via per-icon holders (see ensureHolder).
 function R:ensureRoot()
   if not self.root then
     self.root = CreateFrame("Frame", nil, UIParent)
     self.root:SetAllPoints(UIParent)
-    -- The cue overlay must float ABOVE the icons it decorates.  The dots ride
-    -- inside the icon corner, so if the overlay sat at the same strata as the
-    -- frames it anchors to (the test rig's HIGH container, or live CDM icons) the
-    -- icon art would occlude them.  DIALOG is one strata above HIGH — dots, glow
-    -- and keybind hints then render on top of the icon by strata, regardless of
-    -- per-frame level.  (Live CDM has its own swipe/cooldown child frames; sitting
-    -- above THOSE is a Phase-5 concern — here the anchors are bare squares.)
-    self.root:SetFrameStrata("DIALOG")
-    self.root:SetFrameLevel(500)
+    self.root:SetFrameStrata("MEDIUM")
   end
   return self.root
+end
+
+-- P5d STRATA FIX — cue decorations ride a per-icon HOLDER frame parented to the CDM
+-- icon, NOT the global root.  Two properties fall out of that parenting:
+--   * STRATA: the holder inherits the icon's strata, so whatever covers the icon (a
+--     full-screen map / character panel) covers the dot too — the old DIALOG root
+--     drew the dots on top of EVERYTHING, including those panels (the bug).  This is
+--     how Blizzard's own action-button glow behaves.
+--   * LEVEL: the holder sits CUE_LEVEL_ABOVE frame-levels over the icon, so its dot
+--     draws on top of the icon's own swipe/cooldown CHILD frames within that strata
+--     (a texture on the icon itself would render UNDER those child frames).
+-- ⚠ CUE_LEVEL_ABOVE is the in-game knob: it must clear the icon's Cooldown swipe
+-- level.  Bumped here if a live pass shows the swipe still occluding the dot.
+local CUE_LEVEL_ABOVE = 10
+
+function R:ensureHolder(key, anchor)
+  local h = self.cueHolders[key]
+  if not h then
+    h = CreateFrame("Frame", nil, anchor)
+    self.cueHolders[key] = h
+  elseif self.cueHolderAnchor[key] ~= anchor then
+    h:SetParent(anchor)         -- the icon was repooled to a new frame; ride it
+  end
+  self.cueHolderAnchor[key] = anchor
+  h:SetAllPoints(anchor)
+  h:SetFrameLevel((anchor:GetFrameLevel() or 0) + CUE_LEVEL_ABOVE)
+  h:Show()
+  return h
 end
 
 --------------------------------------------------------------------------------
@@ -134,39 +162,56 @@ end
 -- handle's frame — a corner treatment INSIDE the icon (the DrawList geometry puts
 -- it upper-right; see the fixtures).  Diff-by-key on `anchorTo`: only handles in
 -- THIS DrawList are (re)painted; a handle that dropped out is hidden, never
--- destroyed.  An emphasis token the theme doesn't know draws NOTHING (never guess
--- a colour) — an unknown token that had a dot last frame is hidden like any dropout.
+-- destroyed.
 --
--- A cue may also carry an optional `keybind` STRING; when present the Renderer
--- draws a hint in the icon's UPPER-LEFT corner (the placement is the Renderer's
--- convention, like token->colour — the DrawList supplies only the string).  Live,
--- the Binder will fill it from the action-bar scan.
+-- THE DOT AND THE KEY HINT ARE DECOUPLED (P5d).  A cue carries an optional emphasis
+-- token AND an optional `keybind` string, and they draw INDEPENDENTLY:
+--   * emphasis the theme knows -> a coloured dot (+ glow if flagged); an absent or
+--     unknown token draws NO dot (never guess a colour), hiding any prior one.
+--   * a `keybind` string -> a hint in the icon's UPPER-LEFT corner, drawn WHENEVER
+--     present regardless of emphasis (identity chrome — which button is which).
+-- So an EMPTY CUE (keybind, no emphasis) is a key hint with no dot — that is how the
+-- Binder puts a keybind on every displayed icon, cued or not.  The handle stays
+-- ACTIVE while it carries either, so its key hint isn't culled with the dropouts.
 function R:drawCues(cues)
   local active = {}
   for _, c in ipairs(cues or {}) do
-    local col = self.theme[c.emphasis]
     local key = c.anchorTo
-    if col and key ~= nil then
+    local anchor = key ~= nil and self.registry[key] or nil
+    -- Without a resolved icon frame there is nothing to parent a holder to, so nothing
+    -- to decorate — skip and let the cull hide any prior decoration for this handle.
+    if key ~= nil and anchor then
       active[key] = true
-      local anchor = self.registry[key]
-      local dot = self.cueFrames[key]
-      if not dot then
-        dot = self:ensureRoot():CreateTexture(nil, "OVERLAY")
-        dot:SetTexture(WHITE8)
-        self.cueFrames[key] = dot
-      end
-      dot:SetColorTexture(col[1], col[2], col[3], col[4] or 1)
+      local holder = self:ensureHolder(key, anchor)
+      local col = self.theme[c.emphasis]
       local sz = c.size or 12
-      dot:SetSize(sz, sz)
-      dot:ClearAllPoints()
-      if anchor then
+      if col then
+        local dot = self.cueFrames[key]
+        if not dot then
+          dot = holder:CreateTexture(nil, "OVERLAY")
+          dot:SetTexture(WHITE8)
+          self.cueFrames[key] = dot
+        end
+        dot:SetColorTexture(col[1], col[2], col[3], col[4] or 1)
+        dot:SetSize(sz, sz)
+        dot:ClearAllPoints()
         dot:SetPoint(c.point or "CENTER", anchor,
                      c.relPoint or c.point or "CENTER", c.dx or 0, c.dy or 0)
+        dot:Show()
+        self:setDotGlow(key, holder, dot, c.glow and col or nil, sz)
+      else
+        -- EMPTY CUE (keybind-only): no emphasis the theme knows -> no dot, no glow.
+        -- Hide any dot/glow this handle had, but keep the handle ACTIVE so its keybind
+        -- hint (below) survives the end-of-frame cull.
+        if self.cueFrames[key] then self.cueFrames[key]:Hide() end
+        self:setDotGlow(key, holder, self.cueFrames[key], nil, sz)
       end
-      dot:Show()
-      self:drawCueKey(key, anchor, c.keybind)
-      self:setDotGlow(key, dot, c.glow and col or nil, sz)
+      -- The keybind hint draws regardless of emphasis — identity chrome on every button.
+      self:drawCueKey(key, holder, anchor, c.keybind)
     end
+  end
+  for key, h in pairs(self.cueHolders) do
+    if not active[key] then h:Hide() end
   end
   for key, dot in pairs(self.cueFrames) do
     if not active[key] then dot:Hide() end
@@ -186,14 +231,14 @@ end
 -- The keybind hint: a small outlined string pinned to the icon's upper-left.
 -- Drawn only when the cue carries a non-empty `keybind` AND its handle resolves to
 -- a frame; otherwise any prior hint for that handle is hidden.
-function R:drawCueKey(key, anchor, keybind)
+function R:drawCueKey(key, holder, anchor, keybind)
   local fs = self.cueKeys[key]
   if not (keybind and keybind ~= "" and anchor) then
     if fs then fs:Hide() end
     return
   end
   if not fs then
-    fs = self:ensureRoot():CreateFontString(nil, "OVERLAY")
+    fs = holder:CreateFontString(nil, "OVERLAY")
     ns.SetFont(fs, 14, "OUTLINE")
     fs:SetJustifyH("LEFT")
     fs:SetTextColor(KEY_COL[1], KEY_COL[2], KEY_COL[3], 1)
@@ -221,7 +266,7 @@ local GLOW_TEX   = "Interface\\Buttons\\UI-ActionButton-Border"  -- soft rounded
 -- alpha floor so it's always visibly lit, breathing brighter on the bounce.
 local GLOW_SCALE = 4.5
 
-function R:setDotGlow(key, dot, col, size)
+function R:setDotGlow(key, holder, dot, col, size)
   local g = self.cueGlows[key]
   if not col then                              -- no glow this frame: hide + park
     if g then g:Hide(); if g.ag then g.ag:Stop() end end
@@ -230,7 +275,7 @@ function R:setDotGlow(key, dot, col, size)
   end
   local was = self.glowing[key]
   if not g then
-    g = self:ensureRoot():CreateTexture(nil, "ARTWORK")
+    g = holder:CreateTexture(nil, "ARTWORK")
     g:SetTexture(GLOW_TEX)
     g:SetBlendMode("ADD")
     local ag = g:CreateAnimationGroup()

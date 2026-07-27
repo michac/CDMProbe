@@ -145,10 +145,43 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
     end)
 
     it("respects an explicit draw=false", function()
-      local b = Binder.New({ keybindFor = keybindsFrom({}) })
+      local b = Binder.New({ keybindFor = keybindsFrom({}) })   -- nothing bound
       local drawList = b:Bind(
         { cues = { ["34991"] = { draw = false, emphasis = "ROTATION" } } },
         { ["34991"] = { spellID = 105174 } })
+      assert.are.equal(0, #drawList.cues)   -- no emphasis, no keybind -> nothing
+    end)
+
+    -- P5d — empty cues: a keybind rides EVERY displayed icon, cued or not.
+    it("emits a keybind-only (empty) cue for a displayed icon the Coach didn't signal", function()
+      local b = Binder.New({ keybindFor = keybindsFrom({ [686] = "Q", [105174] = "R" }) })
+      local drawList = b:Bind(
+        { cues = { ["34991"] = { draw = true, emphasis = "ROTATION" } } },   -- only HoG cued
+        { ["34991"] = { spellID = 105174 }, ["34990"] = { spellID = 686 } }) -- SB displayed too
+      local m = byAnchor(drawList.cues)
+      -- HoG: a full cue.
+      assert.are.equal("ROTATION", m["34991"].emphasis)
+      assert.are.equal("R", m["34991"].keybind)
+      -- SB: an empty cue — key hint, no emphasis, no glow.
+      assert.is_not_nil(m["34990"])
+      assert.is_nil(m["34990"].emphasis)
+      assert.is_nil(m["34990"].glow)
+      assert.are.equal("Q", m["34990"].keybind)
+    end)
+
+    it("still draws a keybind-only cue for an icon whose Coach cue is draw=false", function()
+      local b = Binder.New({ keybindFor = keybindsFrom({ [105174] = "R" }) })
+      local drawList = b:Bind(
+        { cues = { ["34991"] = { draw = false, emphasis = "ROTATION" } } },
+        { ["34991"] = { spellID = 105174 } })
+      assert.are.equal(1, #drawList.cues)
+      assert.is_nil(drawList.cues[1].emphasis)     -- draw=false demotes to no dot...
+      assert.are.equal("R", drawList.cues[1].keybind)  -- ...but the key still rides
+    end)
+
+    it("omits a displayed icon with neither emphasis nor keybind", function()
+      local b = Binder.New({ keybindFor = keybindsFrom({}) })   -- unbound
+      local drawList = b:Bind({ cues = {} }, { ["34990"] = { spellID = 686 } })
       assert.are.equal(0, #drawList.cues)
     end)
   end)
@@ -273,7 +306,12 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
         local drawList = b:Bind(guidance, layoutFromState(state))
         local fixture = Fixtures[scenario].drawList
 
-        assertEqual(expectedCues(scenario), byAnchor(drawList.cues), scenario .. ".cues")
+        -- The Binder now also emits keybind-only (empty) cues for displayed icons the
+        -- Coach didn't signal (P5d); the rendertest fixtures carry only the emphasis-
+        -- bearing dots, so compare that subset. (The empty-cue path has its own tests.)
+        local dots = {}
+        for _, c in ipairs(drawList.cues) do if c.emphasis then dots[#dots + 1] = c end end
+        assertEqual(expectedCues(scenario), byAnchor(dots), scenario .. ".cues")
         assertEqual(fixture.panel, drawList.panel, scenario .. ".panel")
         assertEqual(fixture.resourceBar, drawList.resourceBar, scenario .. ".resourceBar")
       end)
