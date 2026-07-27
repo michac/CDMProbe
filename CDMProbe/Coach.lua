@@ -194,16 +194,21 @@ function C.Classify(cd, state)
     reasons = {},                  -- the "auditable, not an oracle" contract
   }
 
-  -- Cooldown state, distilled to the three cases the cascade reads:
-  --   napkinProbablyUp — estimate ELAPSED (unknown + source napkin): ROTATION-eligible
-  --   anticipated      — counting down (has remaining); SOON when within the lead
-  --   cooling          — on cooldown, far — not a candidate
-  rec.napkinProbablyUp = (c.state == "unknown" and c.source == "napkin") or false
-  rec.anticipated      = (c.state == "anticipated") or false
-  rec.remaining        = num(c.remaining)
-  rec.cooling          = (c.state == "cooling") or false
-  rec.cdChangedAt      = num(c.changedAt)
-  rec.cdSource         = c.source
+  -- Cooldown state, derived off the 3-state contract (W4 Phase 7): state is
+  -- ready | on-cooldown | unknown, `source` a trust annotation on `remaining`.
+  --   ready       — observed up (OOC baseline / an Available edge): a hard press.
+  --   probablyUp  — ready, OR on-cooldown with the napkin estimate exhausted
+  --                 (remaining <= 0, source napkin): ROTATION-eligible.
+  --   anticipated — on-cooldown with a positive remaining: SOON when within the lead.
+  rec.ready       = (c.state == "ready") or false
+  rec.onCd        = (c.state == "on-cooldown") or false
+  rec.remaining   = num(c.remaining)
+  rec.probablyUp  = rec.ready
+    or (rec.onCd and c.source == "napkin" and (rec.remaining or 0) <= 0)
+    or false
+  rec.anticipated = (rec.onCd and (rec.remaining or 0) > 0) or false
+  rec.cdChangedAt = num(c.changedAt)
+  rec.cdSource    = c.source
 
   -- Armed proc / transform.  A live override whose spell `spends == "art"` IS the
   -- Demonic Art transform (Ruination on the HoG frame, Infernal Bolt on the SB
@@ -215,7 +220,7 @@ function C.Classify(cd, state)
 
   -- overdue — a probably-up press that has SAT elapsed past the lead (readable off
   -- cd.changedAt).  Only meaningful for the winner (Escalate drives the clock).
-  rec.overdue = rec.napkinProbablyUp and rec.cdChangedAt
+  rec.overdue = rec.probablyUp and rec.cdChangedAt
     and (now - rec.cdChangedAt) >= LATE_LEAD or false
 
   return rec
@@ -278,10 +283,10 @@ function C:Context(state)
   ctx.tyrantWindowActive = buffActive(S.TYRANT)
   local ty = S.TYRANT and cidByBase[S.TYRANT] and factsByCid[cidByBase[S.TYRANT]]
   ctx.tyrant = ty
-  -- Off cooldown = napkin probably-up OR NEVER CAST (cdSource "none": pre-first-Tyrant,
-  -- the opener).  Only Tyrant carries a real 60s CD, so source "none" here means "ready",
-  -- not "no data" — that's what makes the pull's opener a burst (Tyrant off cd => TCT).
-  ctx.tyrantProbablyUp = (ty and (ty.napkinProbablyUp or ty.cdSource == "none")) or false
+  -- Off cooldown = probably-up.  A never-cast Tyrant now reads `ready` off the OOC
+  -- baseline (Phase 7), so the pre-first-Tyrant opener is a burst WITHOUT a per-ability
+  -- carve-out — the old `cdSource == "none"` special-case is deleted.
+  ctx.tyrantProbablyUp = (ty and ty.probablyUp) or false
   ctx.tyrantAnticipated = ty and ty.anticipated or false
   ctx.tyrantRemaining = ty and ty.remaining or nil
   ctx.tyrantSource = ty and ty.cdSource or nil
@@ -296,18 +301,18 @@ function C:Context(state)
   -- demon is pressed, without waiting for the summon to land (the "next move" rule).
   local dr = S.DREADSTALKERS and cidByBase[S.DREADSTALKERS] and factsByCid[cidByBase[S.DREADSTALKERS]]
   ctx.dread = dr
-  ctx.dreadProbablyUp = dr and dr.napkinProbablyUp or false
+  ctx.dreadProbablyUp = dr and dr.probablyUp or false
   ctx.dreadCommitted = committedWithin(state, S.DREADSTALKERS, 3.0)
   local gr = S.IMP_LORD and cidByBase[S.IMP_LORD] and factsByCid[cidByBase[S.IMP_LORD]]
   ctx.grimoire = gr
-  ctx.grimoireProbablyUp = gr and gr.napkinProbablyUp or false
+  ctx.grimoireProbablyUp = gr and gr.probablyUp or false
   ctx.grimoireCommitted = committedWithin(state, S.IMP_LORD, 3.0)
 
   -- Implosion — its true gate (Wild Imps >= 6) is secret, so it is never a plain
   -- press; the cascade only promotes it on the napkin heuristic, else it JUDGEs.
   local im = S.IMPLOSION and cidByBase[S.IMPLOSION] and factsByCid[cidByBase[S.IMPLOSION]]
   ctx.implosion = im
-  ctx.implosionProbablyUp = im and im.napkinProbablyUp or false
+  ctx.implosionProbablyUp = im and im.probablyUp or false
 
   -- The imp-napkin confident promote (implosion-primed): 2+ full HoGs banked recently
   -- with no Implosion since AND imps to spend (Implosion probably-up).  A readable
@@ -449,8 +454,15 @@ function C:Escalate(winnerKey, level, ctx)
   local S = ids()
   local rec = ctx.facts[winnerKey]
   if not rec then return level end
-  -- A probably-up summon (Dreadstalkers) left sitting past the lead.
-  if rec.base == S.DREADSTALKERS and rec.overdue then return "LATE" end
+  -- A probably-up summon (Dreadstalkers) left sitting past the lead.  Suppressed in
+  -- the burst/window, where a ready summon is a STAGED press, not a forgotten one:
+  -- since Phase 7 the OOC baseline makes a never-cast summon read `ready` (with an
+  -- OOC-old changedAt) at pull start, so the burst walk must not escalate its staged
+  -- Dreadstalkers to LATE (mirrors the HoG-at-cap guard below).
+  if rec.base == S.DREADSTALKERS and rec.overdue
+      and not ctx.tct and not ctx.tyrantWindowActive then
+    return "LATE"
+  end
   -- HoG parked at a FULL bar (actual shards, not the projection) — the readable dump.
   -- Suppressed during the burst / window, where a full bar is intentional pooling for
   -- the flood, not overcap-parking.
@@ -471,7 +483,7 @@ local function transientFor(state, rec)
   if landedThisPulse(state, rec.base) then return "cast_ended" end
   if castingFresh(state, rec.base) then return "cast_started" end
   if rec.glowActive and rec.glowChangedAt == now then return "proc" end
-  if rec.napkinProbablyUp and rec.cdChangedAt == now then return "ready" end
+  if rec.probablyUp and rec.cdChangedAt == now then return "ready" end
   return nil
 end
 

@@ -33,10 +33,13 @@
 --      single `liveSpellID` the whole pipeline reads, with its inverse `BaseOfCast`
 --      (B3) beside it.  Keybinds still resolve off the BASE (the v0.7.0 finding-3
 --      rule); the two resolutions are deliberately NOT unified.
---   4. THE NAPKIN AND KEYBINDS ARE CONSULTED THROUGH State, not ad-hoc.  A cd we
---      cannot read live falls to the napkin's anticipation (`source="napkin"`,
---      state="anticipated"); an expired estimate stays "unknown", never "ready" (the
---      napkin honesty rule).  The keybind is the OOC-resolved base-id binding.
+--   4. READINESS IS OBSERVED, NOT GUESSED (W4 Phase 7).  The cd model is THREE
+--      honest states — ready | on-cooldown | unknown — with `source` (live|napkin|
+--      none) a trust annotation on `remaining`, not a second axis.  Readiness rests
+--      on an OOC read, the OOC baseline carried across combat entry, or an OBSERVED
+--      CDM alert edge (Available/OnCooldown) — never a bare estimate; the napkin
+--      supplies only the *remaining* seconds while on cooldown.  The keybind is the
+--      OOC-resolved base-id binding.
 --
 -- NOT IN THIS FILE: any consumer of State.  Build() emits a table; nothing scores
 -- it.  The `/cdmp statelog` capture at the bottom records pulses to disk so the
@@ -159,36 +162,109 @@ end
 -- Each returns a table that is ALWAYS shaped the same: a value plus `readable`, or
 -- `readable=false` with the value fields absent.  No raw secret ever leaves here.
 
--- cd{state, remaining, readable, source}.  Reuses ns.ReadCooldown (the GCD-trap-
--- aware live read) and falls to the napkin when the client won't tell us live.
---   state ∈ ready | cooling | anticipated | unknown
---   source ∈ live | napkin | none
-local function readCd(live, base)
-  local isReady, remaining = ns.ReadCooldown(live)
+-- OOC-readiness BASELINE (W4 Phase 7a), keyed by cooldownID.  On every readable
+-- (OOC) cd read we stash the truth — ready plus the raw duration/startTime the
+-- read already carries — so a never-cast/ready ability SURVIVES combat entry
+-- instead of collapsing to `source:none` the instant the live read goes secret.
+-- The combat path projects this forward when nothing more recent (an edge or a
+-- napkin cast) is known.
+local cdBaseline = {}    -- cooldownID -> { ready, duration, startTime, at }
+
+-- OBSERVED ready-edge truth (W4 Phase 7b), keyed by cooldownID.  Filled by the
+-- CDM alert hook (onAlert): an `Available` edge => ready-at-now, an `OnCooldown`
+-- edge => on-cooldown-at-now.  These fire IN COMBAT off the item's own alert
+-- choke point (not a secret-guarded API read), so readiness becomes OBSERVED,
+-- not guessed.  readCd's combat path consults this as ground truth.
+local readyEdge = {}     -- cooldownID -> { ready = bool, at }
+
+-- The napkin's anticipation for a cd, queried under the live identity first, the
+-- base second (a transformed button's cast filed the napkin under whichever id
+-- fired SUCCEEDED).  Returns the estimated remaining (may be <= 0 when elapsed),
+-- or nil when the napkin has no record.  The napkin supplies only the *remaining*
+-- number now — readiness itself comes from the read/baseline/edge.
+local function napkinRemaining(live, base)
+  local N = ns.HudNapkin
+  if not (N and N.Remaining) then return nil end
+  local rem = N.Remaining(live)
+  if rem == nil and base and base ~= live then rem = N.Remaining(base) end
+  return rem
+end
+
+-- cd{state, remaining, readable, source} — the THREE honest states (W4 Phase 7).
+--   state ∈ ready | on-cooldown | unknown
+--   source ∈ live | napkin | none      (a TRUST annotation on `remaining`, not a
+--                                        second state axis)
+-- Readiness is OBSERVED: an OOC live read, or an in-combat `Available`/`OnCooldown`
+-- alert edge, or the OOC baseline projected forward with no cast since.  The napkin
+-- supplies only the *remaining* estimate while on cooldown.  `readable` mirrors
+-- `source == "live"` — true when the number is a read/observation, false when it is
+-- an estimate or absent.
+local function readCd(live, base, cooldownID)
+  local isReady, remaining, duration, startTime = ns.ReadCooldown(live)
   if isReady ~= nil then
+    -- Readable (OOC): the precise truth, AND the baseline stash that outlives combat.
+    if cooldownID then
+      if readable(duration) and readable(startTime) then
+        cdBaseline[cooldownID] = { ready = isReady and true or false,
+          duration = duration, startTime = startTime, at = GetTime() }
+      else
+        cdBaseline[cooldownID] = { ready = isReady and true or false, at = GetTime() }
+      end
+    end
     if isReady then
       return { state = "ready", remaining = 0, readable = true, source = "live" }
     end
-    return { state = "cooling", remaining = ns.Stash(remaining),
+    return { state = "on-cooldown", remaining = ns.Stash(remaining),
              readable = true, source = "live" }
   end
-  -- Not readable live (combat/secret) — consult the napkin's anticipation.  Query
-  -- the live identity first, the base second (a transformed button's cast filed the
-  -- napkin under whichever id fired SUCCEEDED).
-  local N = ns.HudNapkin
-  if N and N.Remaining then
-    local rem = N.Remaining(live)
-    if rem == nil and base and base ~= live then rem = N.Remaining(base) end
-    if rem ~= nil then
-      if rem > 0 then
-        return { state = "anticipated", remaining = ns.Stash(rem),
-                 readable = false, source = "napkin" }
-      end
-      -- Expired estimate: "should be up, unconfirmed" — NEVER "ready".  The one
-      -- rule that keeps the napkin from lying (HudNapkin honesty rule).
-      return { state = "unknown", readable = false, source = "napkin" }
-    end
+
+  -- Not readable live (combat/secret).  Determine readiness WITHOUT guessing.
+  local now = GetTime()
+  local rem = napkinRemaining(live, base)
+
+  -- A live napkin countdown means a cast filed this recently -> ON COOLDOWN NOW,
+  -- which OUTRANKS a stale `Available` edge (the just-cast race the doc names).
+  if rem and rem > 0 then
+    return { state = "on-cooldown", remaining = ns.Stash(rem), readable = false, source = "napkin" }
   end
+
+  -- Observed alert edge = ground truth for readiness (Phase 7b).
+  local edge = cooldownID and readyEdge[cooldownID] or nil
+  if edge then
+    if edge.ready then
+      return { state = "ready", remaining = 0, readable = true, source = "live" }
+    end
+    -- Observed on cooldown; no live estimate (or it has run out).  "napkin says
+    -- zero, unconfirmed" — probably-up, but not a laundered `ready`.
+    return { state = "on-cooldown", remaining = 0, readable = false, source = "napkin" }
+  end
+
+  -- No edge — the napkin's own estimate, if it had a record (rem <= 0 here means
+  -- the estimate has run out: on cooldown, remaining 0, unconfirmed).
+  if rem ~= nil then
+    return { state = "on-cooldown", remaining = 0, readable = false, source = "napkin" }
+  end
+
+  -- No edge, no napkin — project the OOC baseline forward across combat entry (7a).
+  local b = cooldownID and cdBaseline[cooldownID] or nil
+  if b then
+    if b.ready then
+      -- The OOC read said ready and nothing has cast since (no napkin record) ->
+      -- still ready.  This is the never-cast-summon fix.
+      return { state = "ready", remaining = 0, readable = true, source = "live" }
+    end
+    if readable(b.duration) and readable(b.startTime) then
+      local rem2 = b.startTime + b.duration - now
+      if rem2 > 0 then
+        return { state = "on-cooldown", remaining = ns.Stash(rem2), readable = false, source = "napkin" }
+      end
+    end
+    -- Baseline was cooling but has since elapsed (or carried no timing) -> on
+    -- cooldown, estimate exhausted, unconfirmed.
+    return { state = "on-cooldown", remaining = 0, readable = false, source = "napkin" }
+  end
+
+  -- No baseline AND never observed -> genuine no-data.
   return { state = "unknown", readable = false, source = "none" }
 end
 
@@ -416,6 +492,66 @@ local function pushEvent(e)
 end
 
 --------------------------------------------------------------------------------
+-- The CDM alert edges — in-combat readiness, OBSERVED not guessed (W4 Phase 7b)
+--------------------------------------------------------------------------------
+-- The Cooldown Manager fires `Enum.CooldownViewerAlertEventType.Available` (a
+-- cooldown FINISHED) and `.OnCooldown` (WENT on cooldown) through each item's own
+-- `TriggerAlertEvent`, and these fire IN COMBAT — off the item's alert choke point,
+-- not a secret-guarded API read.  We hook that choke point per item and record the
+-- observed edge in `readyEdge`, which readCd consults as ground truth.  CLEAN-ROOM:
+-- State ports the HOOK PATTERN from HudState (the old HUD's S.Install/onAlert) but
+-- owns its own edge store and never reads HudState's S.readyAt/HudChrome — the
+-- separation wowkb.cdmp's statelog denylist enforces.
+local function onAlert(item, event)
+  if St.consumers <= 0 then return end   -- gated like the old HUD's ns.Hud.on
+  local A = Enum and Enum.CooldownViewerAlertEventType
+  if not A then return end
+  -- A Secret Value must never be compared; if the event arg is ever restricted we
+  -- drop it rather than taint on the ==.
+  if ns.IsSecret(event) then return end
+  if event ~= A.Available and event ~= A.OnCooldown then return end
+  -- Resolve the item's cooldownID, guarded (an unreadable id is dropped, not keyed).
+  local cid = readable(item.cooldownID) and item.cooldownID or nil
+  if not cid and ns.HasMethod(item, "GetCooldownID") then
+    local ok, id = pcall(item.GetCooldownID, item)
+    if ok and readable(id) then cid = id end
+  end
+  if not cid then return end
+  local now = GetTime()
+  local ready = (event == A.Available)
+  readyEdge[cid] = { ready = ready, at = now }
+  pushEvent({ kind = "ready_edge", cooldownID = cid, ready = ready, at = now })
+  markCapture("edge")
+end
+
+-- One hook per item INSTANCE (the methods are Mixin()-copied, so a hook on the
+-- shared mixin table would miss every already-created frame).  hooksecurefunc can
+-- never be undone, so the callback is gated on St.consumers inside onAlert.
+local function installAlertHook(item)
+  if not item or item.__stateAlertHooked then return end
+  if not ns.HasMethod(item, "TriggerAlertEvent") then return end
+  item.__stateAlertHooked = true
+  hooksecurefunc(item, "TriggerAlertEvent", function(self, event)
+    pcall(onAlert, self, event)
+  end)
+end
+
+-- Hook every CDM item across all viewers.  Idempotent (per-instance flag) and
+-- cheap enough to run each Build, so re-pooled/newly-created frames are covered
+-- without a dedicated layout event.
+local function installAlertHooks()
+  if not ns.VIEWERS then return end
+  for _, v in ipairs(ns.VIEWERS) do
+    local viewer = ns.GetViewer(v.frame)
+    if viewer then
+      for _, item in ipairs(ns.GetItemFrames(viewer)) do
+        installAlertHook(item)
+      end
+    end
+  end
+end
+
+--------------------------------------------------------------------------------
 -- Cast history — a bounded, timestamped window of recent casts (sequence memory)
 --------------------------------------------------------------------------------
 -- A single State pulse is a snapshot; to know we're PARTWAY THROUGH A SEQUENCE the
@@ -465,11 +601,11 @@ St.combatStartedAt = nil        -- GetTime() when combat last began; nil = never
 -- Per-cooldown last-transition stamp (NOT a history — the Coach only ever needs "when
 -- did this last change", e.g. how long it has sat ready for a LATE cue).  We remember
 -- the previous observed cd.state per cooldownID and stamp `cd.changedAt` when it flips.
--- ⚠ Honest caveat: this is when STATE'S VIEW changed, ~poll-granular, and it counts
--- readability transitions too (a live 'ready' -> secret 'unknown' on combat entry is a
--- flip here, not a real cooldown event) — the Coach discounts those using `cd.source`
--- + `combatStartedAt`.  The reliable in-combat readiness edge is a later alert-hook
--- upgrade, same shape as the buff.isActive proc finding.
+-- ⚠ Honest caveat: this is when STATE'S VIEW changed, ~poll-granular.  Since Phase 7
+-- the model no longer collapses ready->unknown on combat entry (the OOC baseline +
+-- the observed alert edges keep readiness honest in combat), so a spurious flip on
+-- the combat seam is far rarer; the Coach still reads `cd.source` + `combatStartedAt`
+-- to discount any residual poll-granular jitter.
 local cdPrevState = {}
 local cdChangedAt = {}
 
@@ -633,6 +769,7 @@ end
 -- for the next real capture so "delta since last pulse" stays honest.
 function St.Build(drain)
   local now = GetTime()
+  installAlertHooks()            -- keep the CDM alert edges wired (idempotent)
   local set = enumerate()
   wipe(St.baseOfCast)
   -- ONE full active-buff scan for the whole pulse — the spec-agnostic proc source.
@@ -680,7 +817,7 @@ function St.Build(drain)
       isKnown    = info and (info.isKnown and true or false) or nil,
       flags      = info and ns.Stash(info.flags) or nil,
       -- live facts (secrecy first-class)
-      cd     = stampCd(cooldownID, readCd(live, base), now),
+      cd     = stampCd(cooldownID, readCd(live, base, cooldownID), now),
       charge = readCharge(live, hasCharges),
       aura   = readAura(hasAura, selfAura, activeByID, auraIds, auraSecret),
       glow   = readGlow(live),   -- the combat-readable proc-highlight signal
@@ -874,6 +1011,8 @@ local function clearStatelog()
   wipe(history)
   wipe(cdPrevState)
   wipe(cdChangedAt)
+  wipe(cdBaseline)
+  wipe(readyEdge)
   captureReason = nil
   lastSig = nil
   lastSample = 0

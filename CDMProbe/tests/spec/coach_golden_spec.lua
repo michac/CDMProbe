@@ -22,10 +22,10 @@ local SCENARIOS = {
   "grimoire-available", "hand-of-guldan", "hog-inflight", "hog-overcap-late",
   "implosion", "implosion-primed", "in-tyrant-window", "incoming-overcap", "infernal-bolt",
   "opener-midflight", "opener-ooc", "opener-ooc-casting", "overcap-soften",
-  "overdue-late", "resource-states", "ruination", "secrecy-combat",
+  "overdue-late", "ready-edge-observed", "resource-states", "ruination", "secrecy-combat",
   "shadow-bolt-filler", "soon-anticipated", "soon-incoming", "transient-edges",
-  "tyrant-hog-spam", "tyrant-pool", "tyrant-ready", "tyrant-stage-dread",
-  "tyrant-stage-grimoire",
+  "tyrant-hog-spam", "tyrant-pool", "tyrant-pullstart-dbcast", "tyrant-pullstart-dread",
+  "tyrant-ready", "tyrant-stage-dread", "tyrant-stage-grimoire",
 }
 
 --------------------------------------------------------------------------------
