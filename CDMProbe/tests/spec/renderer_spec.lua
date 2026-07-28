@@ -38,7 +38,10 @@ describe("Renderer", function()
   ------------------------------------------------------------------------------
   -- Factory + theme
   ------------------------------------------------------------------------------
-  it("resolves the five emphasis tokens to five DISTINCT, glanceable colours", function()
+  it("resolves the DISTINCT emphasis tokens to glanceable, separable colours", function()
+    -- ROTATION_FALLBACK is DELIBERATELY excluded: it is a dim green in ROTATION's own
+    -- family (subordinate by brightness, not a distinct hue), so it must NOT satisfy the
+    -- separation bound below.  Its subordination is asserted by its own test instead.
     local t = Rr.New().theme
     local toks = { "ROTATION", "LATE", "SOON", "JUDGE", "SEQUENCE" }
     for i = 1, #toks do
@@ -48,6 +51,19 @@ describe("Renderer", function()
         assert.is_true(dist > 0.30, toks[i] .. " and " .. toks[j] .. " are too similar (" .. dist .. ")")
       end
     end
+  end)
+
+  it("gives ROTATION_FALLBACK a dim green in ROTATION's family (subordinate, not distinct)", function()
+    local t = Rr.New().theme
+    local rot, fb = t.ROTATION, t.ROTATION_FALLBACK
+    assert.is_not_nil(fb, "ROTATION_FALLBACK missing from the theme (would render as an empty cue)")
+    -- Same hue family: close to ROTATION (the opposite of the >0.30 separation bound).
+    local dist = math.abs(rot[1] - fb[1]) + math.abs(rot[2] - fb[2]) + math.abs(rot[3] - fb[3])
+    assert.is_true(dist < 0.75, "fallback should read as related to ROTATION, not a new hue")
+    -- Subordinate: dimmer overall than the real press.
+    assert.is_true(fb[1] + fb[2] + fb[3] < rot[1] + rot[2] + rot[3], "fallback should be dimmer than ROTATION")
+    -- Green stays dominant so it still reads as a press-family cue.
+    assert.is_true(fb[2] > fb[1] and fb[2] > fb[3])
   end)
 
   it("takes an injected theme through cfg", function()
@@ -70,6 +86,18 @@ describe("Renderer", function()
     assert.equals("CENTER", pt.point)
     assert.equals(icons[1], pt.rel)          -- anchored to the registered frame
     assert.equals(-28, pt.dy)
+  end)
+
+  it("paints a ROTATION_FALLBACK dot (dim green) and does NOT glow it", function()
+    local r = rigged(1)
+    -- The Binder never sets glow on a fallback (glow is press-only), so no glow flag here.
+    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION_FALLBACK" } } })
+    local dot = r.cueFrames["fake1"]
+    assert.is_not_nil(dot, "fallback fell into the empty-cue path — no theme colour")
+    assert.is_true(dot._shown)
+    assert.is_true(colorEq(dot._color, theme.ROTATION_FALLBACK[1],
+                           theme.ROTATION_FALLBACK[2], theme.ROTATION_FALLBACK[3]))
+    assert.is_falsy(r.glowing["fake1"])   -- a runner-up never glows
   end)
 
   -- P5d strata fix: decorations ride a per-icon holder that sits ABOVE the icon (so a

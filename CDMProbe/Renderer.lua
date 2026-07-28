@@ -48,11 +48,17 @@ R.__index = R
 -- separation — the Renderer owns token->pixels, so this is a local dial-in.
 local function defaultTheme()
   return {
-    ROTATION = { 0.30, 1.00, 0.48, 1.00 },  -- green:  press now
-    LATE     = { 1.00, 0.42, 0.10, 1.00 },  -- amber:  overdue, catch up
-    SOON     = { 1.00, 0.86, 0.15, 1.00 },  -- yellow: anticipation
-    JUDGE    = { 0.27, 0.88, 1.00, 1.00 },  -- cyan:   your-call
-    SEQUENCE = { 0.64, 0.42, 1.00, 1.00 },  -- violet: look at the panel
+    ROTATION          = { 0.30, 1.00, 0.48, 1.00 },  -- green:      press now
+    -- ROTATION_FALLBACK (W4 Phase 8): the honest runner-up.  A dimmer, desaturated
+    -- green — same hue family as ROTATION but clearly subordinate ("what I'd press
+    -- instead").  Never glows (glow stays reserved for the real press, set by the
+    -- Binder for ROTATION/LATE only), so a nil-col miss is the only way it vanishes —
+    -- which is exactly the bug this entry closes.
+    ROTATION_FALLBACK = { 0.20, 0.55, 0.32, 1.00 },  -- dim green:  the runner-up press
+    LATE              = { 1.00, 0.42, 0.10, 1.00 },  -- amber:      overdue, catch up
+    SOON              = { 1.00, 0.86, 0.15, 1.00 },  -- yellow:     anticipation
+    JUDGE             = { 0.27, 0.88, 1.00, 1.00 },  -- cyan:       your-call (retired)
+    SEQUENCE          = { 0.64, 0.42, 1.00, 1.00 },  -- violet:     look at the panel (retired)
   }
 end
 
