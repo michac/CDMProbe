@@ -16,7 +16,6 @@
 --                         map (the Renderer keys by anchorTo too — order is moot).
 local dir = (debug.getinfo(1, "S").source:match("^@(.*[/\\])")) or "./"
 local H = dofile(dir .. "../mock_ns.lua")
-local FIX = dofile(dir .. "../json_fixture.lua")
 
 --------------------------------------------------------------------------------
 -- Deep equality that reports the first-divergence PATH (a RED points at the field).
@@ -275,27 +274,71 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
       Fixtures = ns.RenderTestFixtures
     end)
 
-    -- Displayed handles = the Essential-category icons (the CDM's pressable row).
-    -- The Layout carries each displayed cooldownID -> its spellID (the id bridge).
-    local function layoutFromState(state)
-      local layout = {}
-      for cid, cd in pairs(state.cooldowns or {}) do
-        if cd.category == "Essential" then layout[cid] = { spellID = cd.spellID } end
-      end
-      return layout
-    end
-
-    -- The keybind seam, built from the SAME golden state (spellID -> keybind).
-    local function keybindsFromState(state)
-      local map = {}
-      for _, cd in pairs(state.cooldowns or {}) do
-        if cd.spellID and cd.keybind then map[cd.spellID] = cd.keybind end
-      end
-      return keybindsFrom(map)
-    end
+    -- INLINE fixtures (W4 Phase 8 — the golden corpus is retired).  Each scenario is a
+    -- self-contained {guidance, layout, keybinds} triple, authored to the Guidance
+    -- contract, standing in for what the (now-deleted) golden state.json/guidance.json
+    -- carried.  `layout` = displayed cooldownID -> spellID (the CDM's Essential row);
+    -- `keybinds` = spellID -> key (the HudBinds stand-in).  These are Binder INPUTS —
+    -- the Binder doesn't judge whether the rotation call is right, only that it maps
+    -- Guidance+Layout onto the exact DrawList the Renderer was dialled in against.
+    -- (burst-hold keeps a JUDGE cue on purpose: the token is retired from the Coach but
+    -- still lives in the contract, and the Binder must map it.)
+    local SCENARIOS = {
+      ["opener-midflight"] = {
+        guidance = {
+          resourceBar = { value = 3, max = 5, incoming = 0, display = "discrete", powerType = "SOUL_SHARDS" },
+          cues = {
+            ["34990"] = { draw = true, emphasis = "ROTATION", note = "pool to 5 for the flood" },
+            ["2742"]  = { draw = true, emphasis = "SOON" },
+          },
+          sequence = { show = false },
+        },
+        layout = {
+          ["2742"] = { spellID = 265187 }, ["671"] = { spellID = 104316 },
+          ["135056"] = { spellID = 1276452 }, ["34991"] = { spellID = 105174 },
+          ["34990"] = { spellID = 686 }, ["149122"] = { spellID = 196277 },
+        },
+        keybinds = { [265187] = "sQ", [104316] = "E", [1276452] = "sE",
+                     [105174] = "R", [686] = "Q", [196277] = "1" },
+      },
+      ["burst-hold"] = {
+        guidance = {
+          resourceBar = { value = 3, max = 5, incoming = 0, display = "discrete", powerType = "SOUL_SHARDS" },
+          cues = {
+            ["671"]    = { draw = true, emphasis = "LATE" },
+            ["149122"] = { draw = true, emphasis = "JUDGE", note = "imps uncertain — your call" },
+          },
+          sequence = { show = false },
+        },
+        layout = {
+          ["2742"] = { spellID = 265187 }, ["671"] = { spellID = 104316 },
+          ["34991"] = { spellID = 105174 }, ["1979"] = { spellID = 264178 },
+          ["34990"] = { spellID = 686 }, ["149122"] = { spellID = 196277 },
+        },
+        keybinds = { [265187] = "sQ", [104316] = "E", [105174] = "R",
+                     [264178] = "F", [686] = "Q", [196277] = "1" },
+      },
+      ["secrecy-combat"] = {
+        guidance = {
+          resourceBar = { value = 2, max = 5, incoming = 0, display = "discrete", powerType = "SOUL_SHARDS" },
+          cues = {
+            ["1979"] = { draw = true, emphasis = "ROTATION" },
+            ["2742"] = { draw = true, emphasis = "SOON" },
+          },
+          sequence = { show = false },
+        },
+        layout = {
+          ["2742"] = { spellID = 265187 }, ["671"] = { spellID = 104316 },
+          ["34991"] = { spellID = 105174 }, ["1979"] = { spellID = 264178 },
+          ["34990"] = { spellID = 686 }, ["149122"] = { spellID = 196277 },
+        },
+        keybinds = { [265187] = "sQ", [104316] = "E", [105174] = "R",
+                     [264178] = "F", [686] = "Q", [196277] = "1" },
+      },
+    }
 
     -- fake<N> (fixture handle) -> cooldownID (Binder handle), per scenario.  The
-    -- fixture author mapped each golden cue onto an icon; this is the inverse.
+    -- fixture author mapped each cue onto an icon; this is the inverse.
     local HANDLE_MAP = {
       ["opener-midflight"] = { fake1 = "34990", fake2 = "2742" },
       ["burst-hold"]       = { fake1 = "34991", fake2 = "671", fake3 = "149122" },
@@ -319,11 +362,10 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
 
     for _, scenario in ipairs({ "opener-midflight", "burst-hold", "secrecy-combat" }) do
       it(scenario, function()
-        local state = FIX.state(scenario)
-        local guidance = FIX.guidance(scenario)
-        local b = Binder.New({ keybindFor = keybindsFromState(state) })
+        local sc = SCENARIOS[scenario]
+        local b = Binder.New({ keybindFor = keybindsFrom(sc.keybinds) })
 
-        local drawList = b:Bind(guidance, layoutFromState(state))
+        local drawList = b:Bind(sc.guidance, sc.layout)
         local fixture = Fixtures[scenario].drawList
 
         -- The Binder now also emits keybind-only (empty) cues for displayed icons the

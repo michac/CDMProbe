@@ -161,12 +161,17 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   state -> (level, reasons).  NEVER / AVAILABLE /
                                   ROTATION / LATE, plus the judgeable=false cap.
                                   Owns no frames and reads nothing secret.
-    Coach.lua                     W4 pipeline Stage 2 (NEW, not wired live yet):
+    Coach.lua                     W4 pipeline Stage 2 (live behind /cdmp hud2, the
+                                  Phase-5c driver — parallel to the old default
+                                  /cdmp hud; not yet default/released):
                                   Coach.Compute(state) -> Guidance, the SINGLE-TOP-
                                   PRESS ranked winner.  Classify (reuse HudScore's
-                                  readable facts) + Context/RankWinner/Escalate/Emit
-                                  (redesigned priority cascade).  Pure factory like
-                                  HudBoard; greened against the 23-golden corpus.
+                                  readable facts) + Context/RankWinner/Escalate/Emit.
+                                  RankWinner is a FLAT priority list (W4 Phase 8,
+                                  apl-prototype/pseudocode.md) — no phase machine;
+                                  emits winner + ROTATION_FALLBACK runner-up + dumb
+                                  per-ability SOON.  Pure factory like HudBoard; greened
+                                  against coach_apl_spec (the Tier-1 branch oracle).
                                   See docs/w4-phase2-coach-notes.md.
     HudNapkin.lua                 anticipation: SUCCEEDED cast -> base-cooldown
                                   countdown.  The only DRIFTING input in the
@@ -184,11 +189,14 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
       mock_ns.lua                 the harness: CreateFrame stub + fake clock +
                                   global fakes + real Util/SpecDemonology + a
                                   fixture-settable HudState/ShardCost/napkin surface
-      json_fixture.lua            dkjson loader for the wow-repo golden corpus
-                                  (configurable path; $CDMP_GOLDENS_DIR override)
-      spec/coach_golden_spec.lua  the ⛔ gate arbiter: Coach.Compute diffed against
-                                  all 23 corpus/goldens/*/guidance.json (23/23)
-      spec/coach_classify_spec.lua Classify in isolation (probably-up, transforms)
+      spec/coach_apl_spec.lua     the Tier-1 ROTATION gate (W4 Phase 8): minimal
+                                  hand-built State pulses assert winner + fallback +
+                                  SOON per BRANCH of the flat list + shard boundaries,
+                                  authored from apl-prototype/pseudocode.md (the
+                                  independent oracle; replaced the retired golden
+                                  corpus + coach_golden_spec + json_fixture)
+      spec/coach_classify_spec.lua Classify in isolation (probably-up, transforms) —
+                                  inline State fragments (was golden state.json)
       spec/hudscore_spec.lua      dot-score rules (strictness, judgeable, prunes)
       spec/hudqueue_spec.lua      sequence widget (C1, prime, drop-through, +N)
       spec/hudnapkin_spec.lua     anticipation countdown + honesty rules

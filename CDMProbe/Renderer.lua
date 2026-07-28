@@ -411,7 +411,8 @@ end
 --------------------------------------------------------------------------------
 
 -- Hand-authored DrawList fixtures, each mapped BY HAND from a representative
--- golden state (corpus/goldens/<name>/guidance.json).  The Guidance keys cues by
+-- Guidance shape (originally the golden corpus, retired W4 Phase 8; these fixtures are
+-- now self-contained here and mirrored inline by binder_spec).  The Guidance keys cues by
 -- cooldownID; mapping those to fake icon handles fake1..fakeN is exactly the
 -- Binder's Phase-4 job, done by hand here for the test.  `icons` = how many
 -- placeholder squares the row needs.
