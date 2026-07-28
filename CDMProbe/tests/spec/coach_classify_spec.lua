@@ -41,9 +41,10 @@ describe("Coach.Classify", function()
     H.load("Coach.lua")
   end)
 
-  -- Classify one entry against a one-entry pulse.
+  -- Classify one entry against a one-entry domain-view pulse (abilities keyed by base
+  -- spellID — Classify reads only the entry + state.at, so the wrapper shape is cosmetic).
   local function classify(entry)
-    local state = { at = NOW, cooldowns = { [entry.cooldownID] = entry } }
+    local state = { at = NOW, abilities = { [entry.spellID] = entry } }
     return ns.Coach.Classify(entry, state)
   end
 

@@ -30,48 +30,56 @@ local function cdProbably() return { state = "on-cooldown", remaining = 0 } end
 local function cdSoon(n)   return { state = "on-cooldown", remaining = n } end
 local function cdUnknown() return { state = "unknown" } end
 
-local function frame(cid, spellID, cd, extra)
+-- An `abilities` domain-view row keyed by base spellID, carrying a `display` cooldownID
+-- (the Binder's anchor — what B{} checks the DrawList against).
+local function ability(base, cid, cd, extra)
   extra = extra or {}
   return {
-    cooldownID = cid, spellID = spellID,
-    liveSpellID = extra.live or spellID,
+    cooldownID = cid, spellID = base,
+    liveSpellID = extra.live or base,
     cd = cd or cdUnknown(),
     glow = { active = extra.glow or false, readable = true },
-    buff = extra.buff,
+    display = { cooldownID = cid, category = extra.category or "Essential" },
   }
 end
 
--- A pulse with the four summons + HoG/DB/SB fillers, defaults "not usable".
+-- A pulse with the four summons + HoG/DB/SB fillers, defaults "not usable".  The DOMAIN
+-- VIEW: `abilities` keyed by base spellID (folded), `buffs` by spellID, `resources.shards`.
 local function build(f)
   f = f or {}
-  local cds = {}
-  cds[CID.TYRANT]    = frame(CID.TYRANT, ID.TYRANT, f.tyrant or cdSoon(30))
-  cds[CID.DREAD]     = frame(CID.DREAD, ID.DREAD, f.dread or cdSoon(30))
-  cds[CID.IMPLOSION] = frame(CID.IMPLOSION, ID.IMPLOSION, f.implosion or cdSoon(30))
-  cds[CID.GRIM]      = frame(CID.GRIM, ID.GRIM, f.grimoire or cdSoon(30))
+  local abilities = {}
+  abilities[ID.TYRANT]    = ability(ID.TYRANT, CID.TYRANT, f.tyrant or cdSoon(30))
+  abilities[ID.DREAD]     = ability(ID.DREAD, CID.DREAD, f.dread or cdSoon(30))
+  abilities[ID.IMPLOSION] = ability(ID.IMPLOSION, CID.IMPLOSION, f.implosion or cdSoon(30))
+  abilities[ID.GRIM]      = ability(ID.GRIM, CID.GRIM, f.grimoire or cdSoon(30))
 
   local hogExtra, sbExtra = {}, {}
   if f.art == "ruination" then hogExtra = { live = ID.RUINATION, glow = true } end
   if f.art == "infernal"  then sbExtra  = { live = ID.INFERNAL, glow = true } end
-  cds[CID.HOG] = frame(CID.HOG, ID.HOG, cdUnknown(), hogExtra)
-  cds[CID.SB]  = frame(CID.SB, ID.SB, cdUnknown(), sbExtra)
-  cds[CID.DB]  = frame(CID.DB, ID.DB, cdUnknown(), { glow = f.core or false })
-  cds[CID.CORE] = frame(CID.CORE, ID.CORE, cdUnknown(), { buff = { isActive = f.core or false } })
+  abilities[ID.HOG] = ability(ID.HOG, CID.HOG, cdUnknown(), hogExtra)
+  abilities[ID.SB]  = ability(ID.SB, CID.SB, cdUnknown(), sbExtra)
+  abilities[ID.DB]  = ability(ID.DB, CID.DB, cdUnknown(), { glow = f.core or false })
+
+  -- Demonic Core is tracked-only (no pressable twin): presence rides `buffs`, keyed by
+  -- spellID, not `abilities`.
+  local buffs = {}
+  if f.core then buffs[ID.CORE] = true end
 
   return {
     at = 1000, combat = true,
-    power = { SoulShards = { value = f.shards or 0, incoming = f.incoming or 0, max = 5 } },
+    resources = { shards = { value = f.shards or 0, incoming = f.incoming or 0, max = 5 } },
+    buffs = buffs,
     history = f.history or {},
-    cooldowns = cds,
+    abilities = abilities,
   }
 end
 
--- A guidance whose cues carry an emphasis per cid.  `cues = { [cid] = "ROTATION", … }`.
+-- A guidance whose cues carry an emphasis per BASE spellID.  `cues = { [spellID] = "ROTATION", … }`.
 local function guidance(cues, notes)
   notes = notes or {}
   local out = {}
-  for cid, emph in pairs(cues) do
-    out[cid] = { draw = true, emphasis = emph, note = notes[cid] }
+  for spellID, emph in pairs(cues) do
+    out[spellID] = { draw = true, emphasis = emph, note = notes[spellID] }
   end
   return { cues = out }
 end
@@ -94,8 +102,8 @@ describe("Hud2Log.Render", function()
 
   it("renders a normal winner line: w:SB + note, B{SB:ROT}", function()
     local pulse = build{ shards = 2 }
-    local g = guidance({ [CID.SB] = "ROTATION" }, { [CID.SB] = "pool to 5" })
-    local s = ns.Hud2Log.Render(pulse, g, drawList{ CID.SB })
+    local g = guidance({ [ID.SB] = "ROTATION" }, { [ID.SB] = "pool to 5" })   -- cue keyed by spellID
+    local s = ns.Hud2Log.Render(pulse, g, drawList{ CID.SB })                 -- Binder anchors the cid
     assert.truthy(s:find("G{w:SB:pool_to_5", 1, true), s)
     assert.truthy(s:find("B{SB:ROT}", 1, true), s)
     assert.is_nil(s:find("×", 1, true))          -- SB was drawn, not dropped
@@ -109,7 +117,7 @@ describe("Hud2Log.Render", function()
 
   it("dropped cue (in guidance, absent from drawList) ⇒ ×", function()
     local pulse = build{ shards = 1 }
-    local g = guidance({ [CID.SB] = "ROTATION" })
+    local g = guidance({ [ID.SB] = "ROTATION" })
     local s = ns.Hud2Log.Render(pulse, g, drawList{})   -- Binder anchored nothing
     assert.truthy(s:find("B{SB:ROT×}", 1, true), s)
   end)
@@ -117,10 +125,10 @@ describe("Hud2Log.Render", function()
   it("LATE winner renders w! ; fallback and sorted soon list", function()
     local pulse = build{ shards = 5 }
     local g = guidance({
-      [CID.TYRANT] = "LATE",
-      [CID.HOG]    = "ROTATION_FALLBACK",
-      [CID.DREAD]  = "SOON",
-      [CID.IMPLOSION] = "SOON",
+      [ID.TYRANT] = "LATE",
+      [ID.HOG]    = "ROTATION_FALLBACK",
+      [ID.DREAD]  = "SOON",
+      [ID.IMPLOSION] = "SOON",
     })
     local s = ns.Hud2Log.Render(pulse, g, drawList{ CID.TYRANT, CID.HOG, CID.DREAD, CID.IMPLOSION })
     assert.truthy(s:find("w!T", 1, true), s)
@@ -144,7 +152,7 @@ describe("Hud2Log.Render", function()
 
   it("guards a <secret> shard value → ?", function()
     local pulse = build{}
-    pulse.power.SoulShards.value = "<secret>"
+    pulse.resources.shards.value = "<secret>"
     local s = ns.Hud2Log.Render(pulse, { cues = {} }, { cues = {} })
     assert.truthy(s:find("PW:?/", 1, true), s)
   end)
@@ -170,11 +178,11 @@ describe("Hud2Log.Render", function()
     -- Two guidances with the SAME cues inserted in opposite order must render identical
     -- strings — otherwise the change-only dedup misfires and the log fills with dupes.
     local pulse = build{ shards = 4 }
-    local g1 = guidance({ [CID.DREAD] = "SOON", [CID.IMPLOSION] = "SOON", [CID.TYRANT] = "ROTATION" })
+    local g1 = guidance({ [ID.DREAD] = "SOON", [ID.IMPLOSION] = "SOON", [ID.TYRANT] = "ROTATION" })
     local g2 = { cues = {} }
-    g2.cues[CID.TYRANT]    = { draw = true, emphasis = "ROTATION" }
-    g2.cues[CID.IMPLOSION] = { draw = true, emphasis = "SOON" }
-    g2.cues[CID.DREAD]     = { draw = true, emphasis = "SOON" }
+    g2.cues[ID.TYRANT]    = { draw = true, emphasis = "ROTATION" }
+    g2.cues[ID.IMPLOSION] = { draw = true, emphasis = "SOON" }
+    g2.cues[ID.DREAD]     = { draw = true, emphasis = "SOON" }
     local dl = drawList{ CID.TYRANT, CID.DREAD, CID.IMPLOSION }
     assert.are.equal(ns.Hud2Log.Render(pulse, g1, dl), ns.Hud2Log.Render(pulse, g2, dl))
   end)

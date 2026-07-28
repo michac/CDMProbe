@@ -81,7 +81,7 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
     it("stamps corner geometry + emphasis + keybind + glow for a displayed cue", function()
       local b = Binder.New({ keybindFor = keybindsFrom({ [105174] = "R" }) })
       local drawList = b:Bind(
-        { cues = { ["34991"] = { draw = true, emphasis = "ROTATION" } } },
+        { cues = { [105174] = { draw = true, emphasis = "ROTATION" } } },   -- keyed by spellID
         { ["34991"] = { spellID = 105174 } })
 
       assert.are.equal(1, #drawList.cues)
@@ -95,14 +95,14 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
       local b = Binder.New({ keybindFor = keybindsFrom({}) })
       local drawList = b:Bind(
         { cues = {
-            ["34991"] = { draw = true, emphasis = "ROTATION" },   -- displayed
-            ["671"]   = { draw = true, emphasis = "JUDGE" },      -- NOT in layout
+            [105174] = { draw = true, emphasis = "ROTATION" },   -- HoG, displayed
+            [104316] = { draw = true, emphasis = "JUDGE" },      -- Dreadstalkers, NOT in layout
           } },
         { ["34991"] = { spellID = 105174 } })
 
       local m = byAnchor(drawList.cues)
       assert.is_not_nil(m["34991"])
-      assert.is_nil(m["671"])          -- dropped: the CDM isn't showing that icon
+      assert.is_nil(m["671"])          -- dropped: the CDM isn't showing that icon (no anchor)
     end)
 
     it("glows only the press-level emphases (ROTATION/LATE), not JUDGE/SOON/SEQUENCE", function()
@@ -112,11 +112,11 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
         ["4"] = { spellID = 4 }, ["5"] = { spellID = 5 },
       }
       local drawList = b:Bind({ cues = {
-        ["1"] = { draw = true, emphasis = "ROTATION" },
-        ["2"] = { draw = true, emphasis = "LATE" },
-        ["3"] = { draw = true, emphasis = "SOON" },
-        ["4"] = { draw = true, emphasis = "JUDGE" },
-        ["5"] = { draw = true, emphasis = "SEQUENCE" },
+        [1] = { draw = true, emphasis = "ROTATION" },   -- keyed by spellID (== layout spellID)
+        [2] = { draw = true, emphasis = "LATE" },
+        [3] = { draw = true, emphasis = "SOON" },
+        [4] = { draw = true, emphasis = "JUDGE" },
+        [5] = { draw = true, emphasis = "SEQUENCE" },
       } }, layout)
       local m = byAnchor(drawList.cues)
       assert.is_true(m["1"].glow)
@@ -129,7 +129,7 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
     it("carries no keybind when the spell is unbound (never a placeholder)", function()
       local b = Binder.New({ keybindFor = keybindsFrom({}) })   -- nothing bound
       local drawList = b:Bind(
-        { cues = { ["34991"] = { draw = true, emphasis = "ROTATION" } } },
+        { cues = { [105174] = { draw = true, emphasis = "ROTATION" } } },
         { ["34991"] = { spellID = 105174 } })
       assert.is_nil(drawList.cues[1].keybind)
     end)
@@ -137,7 +137,7 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
     it("passes the emphasis token through without resolving colour", function()
       local b = Binder.New({ keybindFor = keybindsFrom({}) })
       local drawList = b:Bind(
-        { cues = { ["671"] = { draw = true, emphasis = "JUDGE" } } },
+        { cues = { [104316] = { draw = true, emphasis = "JUDGE" } } },
         { ["671"] = { spellID = 104316 } })
       assert.are.equal("JUDGE", drawList.cues[1].emphasis)
       assert.is_nil(drawList.cues[1].color)   -- colour stays the Renderer's job
@@ -146,7 +146,7 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
     it("respects an explicit draw=false", function()
       local b = Binder.New({ keybindFor = keybindsFrom({}) })   -- nothing bound
       local drawList = b:Bind(
-        { cues = { ["34991"] = { draw = false, emphasis = "ROTATION" } } },
+        { cues = { [105174] = { draw = false, emphasis = "ROTATION" } } },
         { ["34991"] = { spellID = 105174 } })
       assert.are.equal(0, #drawList.cues)   -- no emphasis, no keybind -> nothing
     end)
@@ -155,7 +155,7 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
     it("emits a keybind-only (empty) cue for a displayed icon the Coach didn't signal", function()
       local b = Binder.New({ keybindFor = keybindsFrom({ [686] = "Q", [105174] = "R" }) })
       local drawList = b:Bind(
-        { cues = { ["34991"] = { draw = true, emphasis = "ROTATION" } } },   -- only HoG cued
+        { cues = { [105174] = { draw = true, emphasis = "ROTATION" } } },   -- only HoG cued
         { ["34991"] = { spellID = 105174 }, ["34990"] = { spellID = 686 } }) -- SB displayed too
       local m = byAnchor(drawList.cues)
       -- HoG: a full cue.
@@ -171,7 +171,7 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
     it("still draws a keybind-only cue for an icon whose Coach cue is draw=false", function()
       local b = Binder.New({ keybindFor = keybindsFrom({ [105174] = "R" }) })
       local drawList = b:Bind(
-        { cues = { ["34991"] = { draw = false, emphasis = "ROTATION" } } },
+        { cues = { [105174] = { draw = false, emphasis = "ROTATION" } } },
         { ["34991"] = { spellID = 105174 } })
       assert.are.equal(1, #drawList.cues)
       assert.is_nil(drawList.cues[1].emphasis)     -- draw=false demotes to no dot...
@@ -189,7 +189,7 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
     it("prefers the layout's State-resolved keybind over the cfg seam", function()
       local b = Binder.New({ keybindFor = keybindsFrom({ [105174] = "WRONG" }) })
       local drawList = b:Bind(
-        { cues = { ["34991"] = { draw = true, emphasis = "ROTATION" } } },
+        { cues = { [105174] = { draw = true, emphasis = "ROTATION" } } },
         { ["34991"] = { spellID = 105174, keybind = "R" } })   -- State said R
       assert.are.equal("R", byAnchor(drawList.cues)["34991"].keybind)
     end)
@@ -287,9 +287,9 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
       ["opener-midflight"] = {
         guidance = {
           resourceBar = { value = 3, max = 5, incoming = 0, display = "discrete", powerType = "SOUL_SHARDS" },
-          cues = {
-            ["34990"] = { draw = true, emphasis = "ROTATION", note = "pool to 5 for the flood" },
-            ["2742"]  = { draw = true, emphasis = "SOON" },
+          cues = {   -- keyed by base spellID (686 = Shadow Bolt, 265187 = Tyrant)
+            [686]    = { draw = true, emphasis = "ROTATION", note = "pool to 5 for the flood" },
+            [265187] = { draw = true, emphasis = "SOON" },
           },
           sequence = { show = false },
         },
@@ -304,9 +304,9 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
       ["burst-hold"] = {
         guidance = {
           resourceBar = { value = 3, max = 5, incoming = 0, display = "discrete", powerType = "SOUL_SHARDS" },
-          cues = {
-            ["671"]    = { draw = true, emphasis = "LATE" },
-            ["149122"] = { draw = true, emphasis = "JUDGE", note = "imps uncertain — your call" },
+          cues = {   -- keyed by base spellID (104316 = Dreadstalkers, 196277 = Implosion)
+            [104316] = { draw = true, emphasis = "LATE" },
+            [196277] = { draw = true, emphasis = "JUDGE", note = "imps uncertain — your call" },
           },
           sequence = { show = false },
         },
@@ -321,9 +321,9 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
       ["secrecy-combat"] = {
         guidance = {
           resourceBar = { value = 2, max = 5, incoming = 0, display = "discrete", powerType = "SOUL_SHARDS" },
-          cues = {
-            ["1979"] = { draw = true, emphasis = "ROTATION" },
-            ["2742"] = { draw = true, emphasis = "SOON" },
+          cues = {   -- keyed by base spellID (264178 = Demonbolt, 265187 = Tyrant)
+            [264178] = { draw = true, emphasis = "ROTATION" },
+            [265187] = { draw = true, emphasis = "SOON" },
           },
           sequence = { show = false },
         },

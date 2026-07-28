@@ -28,16 +28,19 @@ local H = dofile(dir .. "../mock_ns.lua")
 --------------------------------------------------------------------------------
 local NOW = 1000
 
--- Base spellIDs (SpecDemonology.SpecIDs) + the two Demonic Art override IDs.
+-- Base spellIDs (SpecDemonology.SpecIDs) + the two Demonic Art override IDs.  Since the
+-- W4 re-layer the Coach consumes the DOMAIN VIEW keyed by base spellID, so these ARE the
+-- cue keys (winner/fallback/soon assert against ID.*, not a cooldownID).
 local ID = {
   TYRANT = 265187, DREAD = 104316, HOG = 105174, DB = 264178, SB = 686,
   IMPLOSION = 196277, GRIM = 1276452, CORE = 264173, UTILITY = 104773,
   RUINATION = 434635, INFERNAL = 434506,
 }
--- Distinct cooldownID frame handles (decoupled from spellIDs, as in a live pulse).
+-- Distinct cooldownID display handles, carried on each ability's `display` (decoupled from
+-- spellIDs, as in a live pulse — the Binder's anchor, reference only for these Coach tests).
 local CID = {
   TYRANT = 2742, DREAD = 671, HOG = 34991, DB = 1979, SB = 34990,
-  IMPLOSION = 149122, GRIM = 888, CORE = 777, UTILITY = 555,
+  IMPLOSION = 149122, GRIM = 888, UTILITY = 555,
 }
 
 -- cd sub-tables per the W4 Phase-7 3-state contract (state + a trust `source`).
@@ -53,81 +56,91 @@ local function cdSoon(n)       return { state = "on-cooldown", remaining = n, re
 local function cdFar()         return { state = "on-cooldown", remaining = 30, readable = false, source = "napkin", changedAt = NOW - 1 } end
 local function cdUnknown()     return { state = "unknown", readable = false, source = "none" } end
 
-local function frame(cid, spellID, cd, extra)
+-- An `abilities` entry keyed by BASE spellID — the domain-view row the Coach classifies:
+-- every field Classify reads, plus `display` (the cooldownID/category the Binder anchors).
+local function ability(base, cid, cd, extra)
   extra = extra or {}
+  local category = extra.category or "Essential"
   return {
-    cooldownID = cid, spellID = spellID,
-    overrideSpellID = extra.override or spellID,
-    liveSpellID = extra.live or spellID,
-    category = extra.category or "Essential",
+    cooldownID = cid, spellID = base,
+    overrideSpellID = extra.override or base,
+    liveSpellID = extra.live or base,
+    category = category,
     cd = cd or cdUnknown(),
     glow = { active = extra.glow or false, readable = true },
-    buff = extra.buff,
+    display = { cooldownID = cid, category = category },
   }
 end
 
 -- Build a pulse from high-level facts.  Abilities default to "not usable" (cdFar /
 -- unknown), the safe reading, so a test only sets what its branch needs.
 --   shards, incoming        projected = shards + incoming
---   core (bool)             a Demonic Core proc (Demonbolt glow + Core buff)
+--   core (bool)             a Demonic Core proc (Demonbolt glow + Core buff present)
 --   art  "ruination"|"infernal"  the armed Demonic Art (override on HoG / SB frame)
 --   tyrant/dread/grimoire/implosion   a cd sub-table (ready/probably/soon/far/unknown)
 --   dreadCommitted/grimoireCommitted  a fresh cast-start in history (staging walk)
 --   utility                 a cd for a utility button (SOON-exclusion check)
 local function build(f)
   f = f or {}
-  local cds = {}
-  cds[CID.TYRANT]    = frame(CID.TYRANT, ID.TYRANT, f.tyrant or cdFar())
-  cds[CID.DREAD]     = frame(CID.DREAD, ID.DREAD, f.dread or cdFar())
-  cds[CID.IMPLOSION] = frame(CID.IMPLOSION, ID.IMPLOSION, f.implosion or cdFar())
-  cds[CID.GRIM]      = frame(CID.GRIM, ID.GRIM, f.grimoire or cdFar())
+  local abilities = {}
+  abilities[ID.TYRANT]    = ability(ID.TYRANT, CID.TYRANT, f.tyrant or cdFar())
+  abilities[ID.DREAD]     = ability(ID.DREAD, CID.DREAD, f.dread or cdFar())
+  abilities[ID.IMPLOSION] = ability(ID.IMPLOSION, CID.IMPLOSION, f.implosion or cdFar())
+  abilities[ID.GRIM]      = ability(ID.GRIM, CID.GRIM, f.grimoire or cdFar())
 
   local hogExtra, sbExtra = {}, {}
   if f.art == "ruination" then hogExtra = { override = ID.RUINATION, live = ID.RUINATION, glow = true } end
   if f.art == "infernal"  then sbExtra  = { override = ID.INFERNAL, live = ID.INFERNAL, glow = true } end
-  cds[CID.HOG] = frame(CID.HOG, ID.HOG, cdUnknown(), hogExtra)
-  cds[CID.SB]  = frame(CID.SB, ID.SB, cdUnknown(), sbExtra)
-  cds[CID.DB]  = frame(CID.DB, ID.DB, cdUnknown(), { glow = f.core or false })
-  cds[CID.CORE] = frame(CID.CORE, ID.CORE, cdUnknown(),
-                        { category = "TrackedBuff", buff = { isActive = f.core or false } })
-  if f.utility then cds[CID.UTILITY] = frame(CID.UTILITY, ID.UTILITY, f.utility) end
+  abilities[ID.HOG] = ability(ID.HOG, CID.HOG, cdUnknown(), hogExtra)
+  abilities[ID.SB]  = ability(ID.SB, CID.SB, cdUnknown(), sbExtra)
+  abilities[ID.DB]  = ability(ID.DB, CID.DB, cdUnknown(), { glow = f.core or false })
+  if f.utility then abilities[ID.UTILITY] = ability(ID.UTILITY, CID.UTILITY, f.utility) end
+
+  -- Demonic Core is a TRACKED-ONLY ability (no pressable twin): it lives in `buffs`, keyed
+  -- by its spellID, NOT in `abilities`.  Its proc is the window-active/presence signal.
+  local buffs = {}
+  if f.core then buffs[ID.CORE] = true end
 
   local history = {}
   if f.dreadCommitted then history[#history + 1] = { phase = "start", base = ID.DREAD, at = NOW - 1 } end
   if f.grimoireCommitted then history[#history + 1] = { phase = "start", base = ID.GRIM, at = NOW - 1 } end
 
+  local shardBar = { value = f.shards or 0, incoming = f.incoming or 0, max = 5, readable = true }
   return {
     at = NOW, combat = (f.combat ~= false), combatStartedAt = NOW - 60,
     mode = f.mode or "st",
-    power = { SoulShards = { value = f.shards or 0, incoming = f.incoming or 0, max = 5, readable = true } },
+    power = { SoulShards = shardBar },
+    resources = { shards = shardBar },
+    buffs = buffs,
     history = history,
-    cooldowns = cds,
+    abilities = abilities,
   }
 end
 
 --------------------------------------------------------------------------------
--- Guidance readers.  A cue is keyed by cooldownID; these pull the decision surface.
+-- Guidance readers.  A cue is keyed by BASE spellID (the re-layer); these pull the
+-- decision surface.  `.cid` holds that base-spellID key (asserts against ID.*).
 --------------------------------------------------------------------------------
 local function pressOf(g)  -- the single ROTATION/LATE cue (cid, cue) — asserts exactly one
   local found
-  for cid, cue in pairs(g.cues) do
+  for spellID, cue in pairs(g.cues) do
     if cue.emphasis == "ROTATION" or cue.emphasis == "LATE" then
       assert.is_nil(found, "more than one top press emitted")
-      found = { cid = cid, cue = cue }
+      found = { cid = spellID, cue = cue }
     end
   end
   return found
 end
 
-local function fallbackOf(g)  -- the ROTATION_FALLBACK cue (cid, cue) or nil
-  for cid, cue in pairs(g.cues) do
-    if cue.emphasis == "ROTATION_FALLBACK" then return { cid = cid, cue = cue } end
+local function fallbackOf(g)  -- the ROTATION_FALLBACK cue (base spellID, cue) or nil
+  for spellID, cue in pairs(g.cues) do
+    if cue.emphasis == "ROTATION_FALLBACK" then return { cid = spellID, cue = cue } end
   end
 end
 
-local function soonSet(g)  -- set of cooldownIDs carrying SOON
+local function soonSet(g)  -- set of base spellIDs carrying SOON
   local t = {}
-  for cid, cue in pairs(g.cues) do if cue.emphasis == "SOON" then t[cid] = true end end
+  for spellID, cue in pairs(g.cues) do if cue.emphasis == "SOON" then t[spellID] = true end end
   return t
 end
 
@@ -148,7 +161,7 @@ describe("Coach rotation list (Tier-1, from apl-prototype/pseudocode.md)", funct
   describe("L1 Ruination", function()
     it("wins outright whenever the Ruination Art is armed", function()
       local w = winner({ art = "ruination", shards = 3, dread = cdProbably() })
-      assert.equals(CID.HOG, w.cid)  -- Ruination rides the HoG frame
+      assert.equals(ID.HOG, w.cid)  -- Ruination rides the HoG frame
       assert.equals("ROTATION", w.cue.emphasis)
     end)
   end)
@@ -159,48 +172,48 @@ describe("Coach rotation list (Tier-1, from apl-prototype/pseudocode.md)", funct
   describe("L2 Tyrant-window setup block", function()
     it("IB leads the block when shard-starved and the Infernal Art is armed", function()
       local w = winner({ tyrant = cdReady(), art = "infernal", shards = 1 })
-      assert.equals(CID.SB, w.cid)  -- Infernal Bolt rides the Shadow-Bolt frame
+      assert.equals(ID.SB, w.cid)  -- Infernal Bolt rides the Shadow-Bolt frame
       assert.equals("Infernal Bolt", w.cue.note)
     end)
 
     it("dumps a Core with Demonbolt below 4 shards inside the window", function()
       local w = winner({ tyrant = cdReady(), shards = 3, core = true })
-      assert.equals(CID.DB, w.cid)
+      assert.equals(ID.DB, w.cid)
     end)
 
     it("pools with Shadow Bolt below the cap (note: pool to 5)", function()
       local w = winner({ tyrant = cdReady(), shards = 4 })
-      assert.equals(CID.SB, w.cid)
+      assert.equals(ID.SB, w.cid)
       assert.equals("pool to 5 for the flood", w.cue.note)
     end)
 
     it("stages Dreadstalkers once capped, before Tyrant", function()
       local w = winner({ tyrant = cdReady(), shards = 5, dread = cdReady() })
-      assert.equals(CID.DREAD, w.cid)
+      assert.equals(ID.DREAD, w.cid)
       assert.equals("stage — last summon before Tyrant", w.cue.note)
     end)
 
     it("does NOT re-stage a Dreadstalkers already committed (advances to Grimoire)", function()
       local w = winner({ tyrant = cdReady(), shards = 5,
                          dread = cdReady(), dreadCommitted = true, grimoire = cdReady() })
-      assert.equals(CID.GRIM, w.cid)
+      assert.equals(ID.GRIM, w.cid)
     end)
 
     it("stages the Grimoire when Dreadstalkers is down", function()
       local w = winner({ tyrant = cdReady(), shards = 5, grimoire = cdReady() })
-      assert.equals(CID.GRIM, w.cid)
+      assert.equals(ID.GRIM, w.cid)
     end)
 
     it("casts Tyrant once the board is staged", function()
       local w = winner({ tyrant = cdReady(), shards = 5 })
-      assert.equals(CID.TYRANT, w.cid)
+      assert.equals(ID.TYRANT, w.cid)
     end)
 
     it("window open but Tyrant ~3s out and nothing to pool -> Hand of Gul'dan", function()
       -- tct via a 2s napkin (anticipated, NOT probably-up): the Tyrant cast step is
       -- gated on tyrantProbablyUp, so the block falls through to the HoG floor.
       local w = winner({ tyrant = cdSoon(2), shards = 5 })
-      assert.equals(CID.HOG, w.cid)
+      assert.equals(ID.HOG, w.cid)
     end)
   end)
 
@@ -210,24 +223,24 @@ describe("Coach rotation list (Tier-1, from apl-prototype/pseudocode.md)", funct
   describe("L3/L4 steady-state cooldowns", function()
     it("Dreadstalkers off cd outside the window is the press", function()
       local w = winner({ dread = cdProbably(), shards = 3 })
-      assert.equals(CID.DREAD, w.cid)
+      assert.equals(ID.DREAD, w.cid)
     end)
 
     it("Implosion off cd (below Dreadstalkers) is the press", function()
       local w = winner({ implosion = cdProbably(), shards = 3 })
-      assert.equals(CID.IMPLOSION, w.cid)
+      assert.equals(ID.IMPLOSION, w.cid)
     end)
 
     it("Dreadstalkers outranks Implosion when both are up", function()
       local w = winner({ dread = cdProbably(), implosion = cdProbably(), shards = 3 })
-      assert.equals(CID.DREAD, w.cid)
+      assert.equals(ID.DREAD, w.cid)
     end)
 
     it("a no-shard-cost cooldown beats the build outside the window", function()
       -- shards 2 (< 3) with Implosion up: the build would fire, but Implosion (L4)
       -- outranks it per pseudocode.md.
       local w = winner({ implosion = cdProbably(), shards = 2 })
-      assert.equals(CID.IMPLOSION, w.cid)
+      assert.equals(ID.IMPLOSION, w.cid)
     end)
   end)
 
@@ -237,12 +250,12 @@ describe("Coach rotation list (Tier-1, from apl-prototype/pseudocode.md)", funct
   describe("L5 build", function()
     it("dumps a Core with Demonbolt below 3 shards", function()
       local w = winner({ shards = 2, core = true })
-      assert.equals(CID.DB, w.cid)
+      assert.equals(ID.DB, w.cid)
     end)
 
     it("builds with Shadow Bolt below 3 shards with no Core", function()
       local w = winner({ shards = 2, core = false })
-      assert.equals(CID.SB, w.cid)
+      assert.equals(ID.SB, w.cid)
     end)
   end)
 
@@ -252,7 +265,7 @@ describe("Coach rotation list (Tier-1, from apl-prototype/pseudocode.md)", funct
   describe("L6 Hand of Gul'dan / floor", function()
     it("Hand of Gul'dan is the spender at/above cost with nothing higher", function()
       local w = winner({ shards = 3 })
-      assert.equals(CID.HOG, w.cid)
+      assert.equals(ID.HOG, w.cid)
     end)
 
     it("Shadow Bolt is the floor when HoG is unaffordable (higher-cost talent)", function()
@@ -260,7 +273,7 @@ describe("Coach rotation list (Tier-1, from apl-prototype/pseudocode.md)", funct
       local ns = H.fresh(); H.load("Coach.lua")
       local coach = ns.Coach.New({ shardCost = function() return 4 end })
       local w = pressOf(coach:Compute(build({ shards = 3 })))
-      assert.equals(CID.SB, w.cid)
+      assert.equals(ID.SB, w.cid)
     end)
   end)
 
@@ -269,24 +282,24 @@ describe("Coach rotation list (Tier-1, from apl-prototype/pseudocode.md)", funct
   ----------------------------------------------------------------------------
   describe("shard boundaries", function()
     it("<2 (block IB): 1 shard fires IB, 2 shards does not", function()
-      assert.equals(CID.SB, winner({ tyrant = cdReady(), art = "infernal", shards = 1 }).cid)  -- IB on SB frame
+      assert.equals(ID.SB, winner({ tyrant = cdReady(), art = "infernal", shards = 1 }).cid)  -- IB on SB frame
       -- at 2 shards the IB branch is skipped; with a Core the DB dump takes it.
-      assert.equals(CID.DB, winner({ tyrant = cdReady(), art = "infernal", shards = 2, core = true }).cid)
+      assert.equals(ID.DB, winner({ tyrant = cdReady(), art = "infernal", shards = 2, core = true }).cid)
     end)
 
     it("<3 (build): 2 shards builds, 3 shards spends HoG", function()
-      assert.equals(CID.SB, winner({ shards = 2 }).cid)
-      assert.equals(CID.HOG, winner({ shards = 3 }).cid)
+      assert.equals(ID.SB, winner({ shards = 2 }).cid)
+      assert.equals(ID.HOG, winner({ shards = 3 }).cid)
     end)
 
     it("<4 (block DB): 3 shards+Core dumps, 4 shards pools SB", function()
-      assert.equals(CID.DB, winner({ tyrant = cdReady(), shards = 3, core = true }).cid)
-      assert.equals(CID.SB, winner({ tyrant = cdReady(), shards = 4, core = true }).cid)
+      assert.equals(ID.DB, winner({ tyrant = cdReady(), shards = 3, core = true }).cid)
+      assert.equals(ID.SB, winner({ tyrant = cdReady(), shards = 4, core = true }).cid)
     end)
 
     it("<5 (block SB pool): 4 shards pools, 5 shards stages/casts", function()
-      assert.equals(CID.SB, winner({ tyrant = cdReady(), shards = 4 }).cid)
-      assert.equals(CID.TYRANT, winner({ tyrant = cdReady(), shards = 5 }).cid)
+      assert.equals(ID.SB, winner({ tyrant = cdReady(), shards = 4 }).cid)
+      assert.equals(ID.TYRANT, winner({ tyrant = cdReady(), shards = 5 }).cid)
     end)
   end)
 
@@ -297,33 +310,33 @@ describe("Coach rotation list (Tier-1, from apl-prototype/pseudocode.md)", funct
   describe("fallback (ROTATION_FALLBACK)", function()
     it("Ruination winner -> Dreadstalkers surfaces as the fallback", function()
       local g = Coach:Compute(build({ art = "ruination", shards = 3, dread = cdProbably() }))
-      assert.equals(CID.HOG, pressOf(g).cid)
-      assert.equals(CID.DREAD, fallbackOf(g).cid)
+      assert.equals(ID.HOG, pressOf(g).cid)
+      assert.equals(ID.DREAD, fallbackOf(g).cid)
     end)
 
     it("Demonbolt (L5) winner -> the Shadow Bolt build branch is the fallback", function()
       local g = Coach:Compute(build({ shards = 2, core = true }))
-      assert.equals(CID.DB, pressOf(g).cid)
-      assert.equals(CID.SB, fallbackOf(g).cid)  -- the skipped-then-reachable L5 SB
+      assert.equals(ID.DB, pressOf(g).cid)
+      assert.equals(ID.SB, fallbackOf(g).cid)  -- the skipped-then-reachable L5 SB
     end)
 
     it("Dreadstalkers winner -> Implosion is the fallback when both are up", function()
       local g = Coach:Compute(build({ dread = cdProbably(), implosion = cdProbably(), shards = 3 }))
-      assert.equals(CID.DREAD, pressOf(g).cid)
-      assert.equals(CID.IMPLOSION, fallbackOf(g).cid)
+      assert.equals(ID.DREAD, pressOf(g).cid)
+      assert.equals(ID.IMPLOSION, fallbackOf(g).cid)
     end)
 
     it("Hand of Gul'dan winner -> the Shadow Bolt floor is shown as the fallback", function()
       -- Always-show-any-castable: even a filler<->filler pairing surfaces.
       local g = Coach:Compute(build({ shards = 3 }))
-      assert.equals(CID.HOG, pressOf(g).cid)
-      assert.equals(CID.SB, fallbackOf(g).cid)
+      assert.equals(ID.HOG, pressOf(g).cid)
+      assert.equals(ID.SB, fallbackOf(g).cid)
     end)
 
     it("no fallback when removing the winner leaves nothing castable", function()
       -- Winner is the Shadow Bolt floor itself; removing it, no line fires.
       local g = Coach:Compute(build({ shards = 2, core = false }))
-      assert.equals(CID.SB, pressOf(g).cid)
+      assert.equals(ID.SB, pressOf(g).cid)
       assert.is_nil(fallbackOf(g))
     end)
   end)
@@ -334,33 +347,33 @@ describe("Coach rotation list (Tier-1, from apl-prototype/pseudocode.md)", funct
   describe("SOON decoration", function()
     it("a tracked cooldown anticipated within the lead lights SOON", function()
       local g = Coach:Compute(build({ shards = 3, implosion = cdSoon(2) }))
-      assert.equals(CID.HOG, pressOf(g).cid)
-      assert.is_true(soonSet(g)[CID.IMPLOSION])
+      assert.equals(ID.HOG, pressOf(g).cid)
+      assert.is_true(soonSet(g)[ID.IMPLOSION])
     end)
 
     it("multiple cooldowns can show SOON at once", function()
       local g = Coach:Compute(build({ shards = 3, implosion = cdSoon(2), dread = cdSoon(2) }))
       local s = soonSet(g)
-      assert.is_true(s[CID.IMPLOSION])
-      assert.is_true(s[CID.DREAD])
+      assert.is_true(s[ID.IMPLOSION])
+      assert.is_true(s[ID.DREAD])
     end)
 
     it("does NOT show SOON beyond the lead", function()
       local g = Coach:Compute(build({ shards = 3, implosion = cdSoon(5) }))
-      assert.is_nil(soonSet(g)[CID.IMPLOSION])
+      assert.is_nil(soonSet(g)[ID.IMPLOSION])
     end)
 
     it("excludes utility buttons from SOON (out of the damage rotation)", function()
       local g = Coach:Compute(build({ shards = 3, utility = cdSoon(2) }))
-      assert.is_nil(soonSet(g)[CID.UTILITY])
+      assert.is_nil(soonSet(g)[ID.UTILITY])
     end)
 
     it("Tyrant shows SOON while a staged summon is the press inside the window", function()
       -- tct via a 2s napkin; capped with Dreadstalkers ready -> stage Dreadstalkers,
       -- and Tyrant (anticipated within the lead) rides along as SOON.
       local g = Coach:Compute(build({ tyrant = cdSoon(2), shards = 5, dread = cdReady() }))
-      assert.equals(CID.DREAD, pressOf(g).cid)
-      assert.is_true(soonSet(g)[CID.TYRANT])
+      assert.equals(ID.DREAD, pressOf(g).cid)
+      assert.is_true(soonSet(g)[ID.TYRANT])
     end)
   end)
 
@@ -371,14 +384,14 @@ describe("Coach rotation list (Tier-1, from apl-prototype/pseudocode.md)", funct
     it("a Dreadstalkers left sitting past the lead outside the window goes LATE", function()
       local g = Coach:Compute(build({ dread = cdProbably(6), shards = 3 }))
       local w = pressOf(g)
-      assert.equals(CID.DREAD, w.cid)
+      assert.equals(ID.DREAD, w.cid)
       assert.equals("LATE", w.cue.emphasis)
     end)
 
     it("Hand of Gul'dan parked at a full bar goes LATE", function()
       local g = Coach:Compute(build({ shards = 5 }))
       local w = pressOf(g)
-      assert.equals(CID.HOG, w.cid)
+      assert.equals(ID.HOG, w.cid)
       assert.equals("LATE", w.cue.emphasis)
     end)
 
@@ -387,7 +400,7 @@ describe("Coach rotation list (Tier-1, from apl-prototype/pseudocode.md)", funct
       -- ROTATION — the burst suppresses the overdue clock.
       local g = Coach:Compute(build({ tyrant = cdReady(), shards = 5, dread = cdProbably(6) }))
       local w = pressOf(g)
-      assert.equals(CID.DREAD, w.cid)
+      assert.equals(ID.DREAD, w.cid)
       assert.equals("ROTATION", w.cue.emphasis)
     end)
   end)

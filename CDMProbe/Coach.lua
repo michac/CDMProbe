@@ -212,29 +212,27 @@ end
 --------------------------------------------------------------------------------
 -- 2. Context — the whole-board facts the cascade reads.
 --------------------------------------------------------------------------------
--- Returns ctx + the two index maps (facts by cooldownID key, cooldownID key by
--- base spellID) so RankWinner/Emit can address abilities by identity.
+-- Returns ctx + the facts index (records by BASE spellID) so RankWinner/Emit can
+-- address abilities by identity.  The Coach decides in spellID terms (the domain view);
+-- cooldownID is transport the Binder owns — it never appears in the Coach's vocabulary.
 function C:Context(state)
   local S = ids()
-  local factsByCid, cidByBase = {}, {}
-  for key, cd in pairs(state.cooldowns or {}) do
-    local rec = C.Classify(cd, state)
-    if rec then
-      factsByCid[key] = rec
-      if rec.base then cidByBase[rec.base] = key end
+  local factsByBase = {}
+  for _, entry in pairs(state.abilities or {}) do
+    local rec = C.Classify(entry, state)
+    if rec and rec.base then
+      -- One record per base spellID BY CONSTRUCTION: `abilities` already folded the CDM's
+      -- N rows of an ability into one pressable representative, so the buggy last-writer-
+      -- wins `cidByBase[rec.base] = key` is gone — there is nothing to overwrite.
+      factsByBase[rec.base] = rec
     end
   end
 
-  -- A raw self-aura buff read (Core presence, Tyrant-window, Wild Imps) straight off
-  -- the pulse — these entries are auras (skipped by Classify) but their buff.isActive
-  -- is the combat-readable presence signal.
+  -- Buff presence (Core, Tyrant-window, Wild Imps) straight off the domain view's
+  -- spellID-keyed `buffs` set — secrecy already folded in by State (an unreadable aura is
+  -- absence there, never a false true).
   local function buffActive(spellID)
-    for _, cd in pairs(state.cooldowns or {}) do
-      if num(cd.spellID) == spellID then
-        return cd.buff and cd.buff.isActive == true
-      end
-    end
-    return false
+    return (state.buffs and state.buffs[spellID] == true) or false
   end
 
   local ss = (state.power or {}).SoulShards or {}
@@ -244,7 +242,7 @@ function C:Context(state)
   local projected = shards and (shards + incoming) or nil
 
   local ctx = {
-    facts = factsByCid, cidByBase = cidByBase,
+    facts = factsByBase,
     mode = state.mode,
     shards = shards, incoming = incoming, smax = smax,
     projected = projected,
@@ -253,18 +251,18 @@ function C:Context(state)
   }
 
   -- Core proc: readable via the Demonbolt glow OR the Demonic Core buff presence.
-  local dbolt = S.DEMONBOLT and cidByBase[S.DEMONBOLT] and factsByCid[cidByBase[S.DEMONBOLT]]
+  local dbolt = S.DEMONBOLT and factsByBase[S.DEMONBOLT]
   ctx.coreUp = (dbolt and dbolt.glowActive) or buffActive(S.DEMONIC_CORE) or false
 
-  -- Demonic Art armed + which FRAME carries the transform (Ruination -> HoG frame,
-  -- Infernal Bolt -> SB frame).
-  for key, rec in pairs(factsByCid) do
-    if rec.transformed then ctx.artFrame = key; ctx.artInfo = rec.info; break end
+  -- Demonic Art armed + which ABILITY carries the transform (Ruination -> HoG, Infernal
+  -- Bolt -> SB).  `artFrame` is a BASE spellID key (the domain-view identity), not a cid.
+  for base, rec in pairs(factsByBase) do
+    if rec.transformed then ctx.artFrame = base; ctx.artInfo = rec.info; break end
   end
 
   -- Tyrant proximity + the window.
   ctx.tyrantWindowActive = buffActive(S.TYRANT)
-  local ty = S.TYRANT and cidByBase[S.TYRANT] and factsByCid[cidByBase[S.TYRANT]]
+  local ty = S.TYRANT and factsByBase[S.TYRANT]
   ctx.tyrant = ty
   -- Off cooldown = probably-up.  A never-cast Tyrant now reads `ready` off the OOC
   -- baseline (Phase 7), so the pre-first-Tyrant opener is a burst WITHOUT a per-ability
@@ -282,11 +280,11 @@ function C:Context(state)
   -- Dreadstalkers + Grimoire: Imp Lord — the two pre-Tyrant demon summons (SEQUENCE 2).
   -- `*Committed` reads the cast-START edge so the staging walk advances the instant a
   -- demon is pressed, without waiting for the summon to land (the "next move" rule).
-  local dr = S.DREADSTALKERS and cidByBase[S.DREADSTALKERS] and factsByCid[cidByBase[S.DREADSTALKERS]]
+  local dr = S.DREADSTALKERS and factsByBase[S.DREADSTALKERS]
   ctx.dread = dr
   ctx.dreadProbablyUp = dr and dr.probablyUp or false
   ctx.dreadCommitted = committedWithin(state, S.DREADSTALKERS, 3.0)
-  local gr = S.IMP_LORD and cidByBase[S.IMP_LORD] and factsByCid[cidByBase[S.IMP_LORD]]
+  local gr = S.IMP_LORD and factsByBase[S.IMP_LORD]
   ctx.grimoire = gr
   ctx.grimoireProbablyUp = gr and gr.probablyUp or false
   ctx.grimoireCommitted = committedWithin(state, S.IMP_LORD, 3.0)
@@ -294,7 +292,7 @@ function C:Context(state)
   -- Implosion — its true gate (Wild Imps >= 6) is secret.  The priority list treats it
   -- as castable-when-off-cooldown (pseudocode L3); the "your call" softening for the
   -- unreadable imp count is Emit's job, not a gate here.
-  local im = S.IMPLOSION and cidByBase[S.IMPLOSION] and factsByCid[cidByBase[S.IMPLOSION]]
+  local im = S.IMPLOSION and factsByBase[S.IMPLOSION]
   ctx.implosion = im
   ctx.implosionProbablyUp = im and im.probablyUp or false
 
@@ -316,16 +314,20 @@ end
 -- `excluded` (optional) — a cooldownID key removed from consideration at EVERY line
 -- that names it, so the caller can recompute the honest SECOND place (the winner's
 -- ability pulled, list re-run from the top — NOT "the next line").  Ported from
--- apl-prototype/apl.lua's evaluate_once(excluded).  Since each base spellID resolves
--- to ONE cooldownID key (cidByBase), excluding that key suppresses the ability
--- everywhere (Demonbolt in the block + L5; Dreadstalkers in the block + L3).
+-- apl-prototype/apl.lua's evaluate_once(excluded).  `excluded` is a BASE spellID (the
+-- winner), and since each ability is one base-keyed record, excluding it suppresses the
+-- ability everywhere (Demonbolt in the block + L5; Dreadstalkers in the block + L3).
 function C:RankWinner(ctx, excluded)
   local S = ids()
-  local B = ctx.cidByBase
   local projected = ctx.projected or ctx.shards or 0   -- value + signed incoming
   local cost = hogCost(self)
 
-  local function key(base) return B[base] end
+  -- The Coach decides in BASE spellIDs (the domain view), so `key()` is IDENTITY — the
+  -- winner IS a base spellID.  It still gates on the ability being TRACKED (present in
+  -- ctx.facts): an untracked line (e.g. Shadow Bolt when the CDM isn't tracking it) yields
+  -- nil and evaluation continues, exactly as the old `cidByBase[base]` lookup did.  The
+  -- Binder resolves the winning spellID to its display cooldownID.
+  local function key(base) return (base and ctx.facts[base]) and base or nil end
 
   -- pick — the line's candidate, or nil to keep evaluating: nil when the ability
   -- isn't tracked (key == nil) OR it is the excluded ability.  Callers do

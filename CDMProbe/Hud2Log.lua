@@ -22,9 +22,10 @@
 --     `date`/`ns.version` (mock_ns provides neither).
 --
 -- DETERMINISM is load-bearing for the change-only dedup.  `guidance.cues` and
--- `pulse.cooldowns` are MAPS; `pairs()` order is unstable.  Every map-derived list here
--- is emitted in a FIXED order (the summon order for CD/PR, sorted for the rest), so two
--- ticks with the identical decision render the identical string and the dedup holds.
+-- `pulse.abilities`/`.buffs` are MAPS; `pairs()` order is unstable.  Every map-derived
+-- list here is emitted in a FIXED order (CD/PR render orders, ability bases sorted, the
+-- rest sorted), so two ticks with the identical decision render the identical string and
+-- the dedup holds.
 --
 -- SECRETS.  In combat `power.SoulShards.value`, `remaining`, `liveSpellID` etc. can be
 -- the sentinel string "<secret>".  Every numeric read is `num()`-guarded and every
@@ -48,16 +49,19 @@ local SHORT = {
 }
 -- The armed-Demonic-Art override ids (live id ∈ this set ⇒ the transform is up).
 local ART = { [434506] = true, [433891] = true, [434635] = true, [434636] = true }
-local DEMONIC_CORE = 264173   -- buff isActive ⇒ core proc
-local DEMONBOLT    = 264178   -- glow.active   ⇒ core proc (the empowered button)
+local DEMONBOLT = 264178   -- glow.active ⇒ core proc (the empowered button)
 
--- The CD group is EXACTLY the summon / on-cd set — the cooldowns whose readiness drives
--- the list.  Fillers/spenders (SB/HoG/DB) don't get a CD token; their state shows via
--- PW/PR/CS.  Fixed render order (deterministic + matches the header example T D I G).
-local SUMMON_ORDER = { "T", "D", "I", "G" }
-local SUMMON_SET   = { T = true, D = true, I = true, G = true }
--- PR render order (deterministic).  Only one Art is ever up, so core-then-Art suffices.
-local PR_ORDER = { "core", "IB", "RU" }
+-- CD readiness render order (deterministic).  Since the re-layer the log encodes the
+-- domain view — the FULL ranked set the Coach decides on, not just the summons — so the
+-- line shows why SB beat HoG.  Folded (abilities is one-per-base), so one D, not two.
+local CD_ORDER = { "T", "D", "I", "G", "HoG", "DB", "SB" }
+-- PR (proc/buff) render order (deterministic): core / Tyrant-window / the armed Art.
+local PR_ORDER = { "core", "Tw", "IB", "RU" }
+-- Buff spellID -> PR short code (the domain view's `buffs` is keyed by spellID).
+local PR_SHORT = {
+  [264173] = "core",   -- Demonic Core buff present
+  [265187] = "Tw",     -- Tyrant window active (TrackedBar buff.isActive)
+}
 -- Guidance emphasis -> compact Binder token.
 local EMPH = { ROTATION = "ROT", LATE = "LATE", ROTATION_FALLBACK = "RFB", SOON = "SOON" }
 
@@ -115,36 +119,45 @@ function L2.Render(pulse, guidance, drawList)
   pulse = pulse or {}
   guidance = guidance or {}
   drawList = drawList or {}
-  local cds = pulse.cooldowns or {}
+  -- THE DOMAIN VIEW is the Coach's decision surface, so the log encodes THAT (the
+  -- re-layer): `abilities` (spellID-keyed, folded) / `buffs` / `resources`, NOT the raw
+  -- cooldownID-keyed `cooldowns`.  If the log didn't encode the Coach's real input it
+  -- couldn't explain the Coach's decision.
+  local abilities = pulse.abilities or {}
+  local buffs = pulse.buffs or {}
 
-  -- cid -> code, resolved once against the pulse (guidance keys cues by cooldownID).
-  local function codeForCid(cid)
-    local cd = cds[cid]
-    return shortOf(cd and cd.liveSpellID, cd and cd.spellID)
+  -- spellID -> code, live-over-base (a transformed button shows what it BECAME).
+  local function codeForSpell(spellID)
+    local ab = abilities[spellID]
+    return shortOf(ab and ab.liveSpellID, spellID)
   end
 
-  -- Stable cid walk (map order is unstable) — first-by-sorted-cid wins per code.
-  local cids = {}
-  for cid in pairs(cds) do cids[#cids + 1] = cid end
-  table.sort(cids, function(a, b) return tostring(a) < tostring(b) end)
+  -- Stable base walk (map order is unstable) — first-by-sorted-base wins per code.
+  local bases = {}
+  for base in pairs(abilities) do bases[#bases + 1] = base end
+  table.sort(bases)
 
-  -- S — CD readiness (summon set) · PR procs · PW shards · CS in-flight cast.
-  local cdTok, prSet = {}, {}
-  for _, cid in ipairs(cids) do
-    local cd = cds[cid]
-    local live, base = cd and cd.liveSpellID, cd and cd.spellID
-    local code = shortOf(live, base)
-    if SUMMON_SET[code] and cdTok[code] == nil then
-      cdTok[code] = readiness(cd and cd.cd)
-    end
-    if base == DEMONIC_CORE and cd.buff and cd.buff.isActive == true then prSet.core = true end
-    if base == DEMONBOLT and cd.glow and cd.glow.active == true then prSet.core = true end
-    if ART[live] then prSet[SHORT[live]] = true end
+  -- S — CD readiness (the full ranked set, folded) · PR procs/buffs · PW shards · CS cast.
+  local rdy, prSet = {}, {}
+  for _, base in ipairs(bases) do
+    local ab = abilities[base]
+    local code = SHORT[base]         -- base lookup: HoG stays HoG, one D (already folded)
+    if code and rdy[code] == nil then rdy[code] = readiness(ab.cd) end
+    -- the armed Demonic Art is a TRANSFORM (an ability's live override), not an aura
+    if ART[ab.liveSpellID] then prSet[SHORT[ab.liveSpellID]] = true end
+  end
+  -- Demonbolt glow = the combat-readable core proc even when the aura reads secret.
+  local dbAb = abilities[DEMONBOLT]
+  if dbAb and dbAb.glow and dbAb.glow.active == true then prSet.core = true end
+  -- procs/auras PRESENT, straight off the domain view's `buffs` set (spellID-keyed).
+  for sid in pairs(buffs) do
+    local code = PR_SHORT[sid]
+    if code then prSet[code] = true end
   end
 
   local cdParts = {}
-  for _, code in ipairs(SUMMON_ORDER) do
-    if cdTok[code] then cdParts[#cdParts + 1] = code .. "=" .. cdTok[code] end
+  for _, code in ipairs(CD_ORDER) do
+    if rdy[code] then cdParts[#cdParts + 1] = code .. "=" .. rdy[code] end
   end
   local cdStr = (#cdParts > 0) and table.concat(cdParts, " ") or "-"
 
@@ -152,7 +165,7 @@ function L2.Render(pulse, guidance, drawList)
   for _, k in ipairs(PR_ORDER) do if prSet[k] then prParts[#prParts + 1] = k end end
   local prStr = (#prParts > 0) and table.concat(prParts, ",") or "-"
 
-  local ss = (pulse.power and pulse.power.SoulShards) or {}
+  local ss = (pulse.resources and pulse.resources.shards) or {}
   local val, inc = num(ss.value), num(ss.incoming)
   local pwStr = (val and string.format("%d", math.floor(val)) or "?")
     .. "/" .. (inc and string.format("%+d", inc) or "?")
@@ -174,19 +187,20 @@ function L2.Render(pulse, guidance, drawList)
     if not terminated then csStr = shortOf(lastStart.spellID, lastStart.base) end
   end
 
-  -- G — Coach output by emphasis.  ROTATION/LATE = winner (w:/w!), else w:- (the nil-
-  -- winner smoking gun); ROTATION_FALLBACK = fb; SOON = a sorted list.
+  -- G — Coach output by emphasis.  Cues keyed by BASE spellID (the re-layer).  ROTATION/
+  -- LATE = winner (w:/w!), else w:- (the nil-winner smoking gun); ROTATION_FALLBACK = fb;
+  -- SOON = a sorted list.
   local cues = guidance.cues or {}
   local wCode, wLate, wNote, fbCode
   local soon = {}
-  for cid, cue in pairs(cues) do
+  for spellID, cue in pairs(cues) do
     local emph = cue.emphasis
     if emph == "ROTATION" or emph == "LATE" then
-      wCode, wLate, wNote = codeForCid(cid), (emph == "LATE"), cue.note
+      wCode, wLate, wNote = codeForSpell(spellID), (emph == "LATE"), cue.note
     elseif emph == "ROTATION_FALLBACK" then
-      fbCode = codeForCid(cid)
+      fbCode = codeForSpell(spellID)
     elseif emph == "SOON" then
-      soon[#soon + 1] = codeForCid(cid)
+      soon[#soon + 1] = codeForSpell(spellID)
     end
   end
   local gParts = {}
@@ -205,18 +219,22 @@ function L2.Render(pulse, guidance, drawList)
   end
   local gStr = table.concat(gParts, " ")
 
-  -- B — the Binder's fate of each guidance cue.  `×` when no DrawList cue anchors to that
-  -- cooldownID (the Binder drops layout-absent cues) — "Coach said press it, Binder
-  -- couldn't draw it".  Sorted by the rendered token for determinism.
+  -- B — the Binder's fate of each guidance cue, across the spellID -> cid seam.  A cue is
+  -- "drawn" iff a DrawList cue anchors to the ability's display cooldownID (abilities[
+  -- spellID].display.cooldownID); `×` when not — "Coach said press it, Binder couldn't
+  -- draw it".  Same signal, now honest across the re-key (and expected to go QUIET for the
+  -- summons — the regression check).  Sorted by the rendered token for determinism.
   local anchored = {}
   for _, c in ipairs(drawList.cues or {}) do
     if c.anchorTo ~= nil then anchored[c.anchorTo] = true end
   end
   local bList = {}
-  for cid, cue in pairs(cues) do
+  for spellID, cue in pairs(cues) do
     local tok = EMPH[cue.emphasis] or tostring(cue.emphasis)
-    local dropped = not anchored[cid]
-    bList[#bList + 1] = codeForCid(cid) .. ":" .. tok .. (dropped and "×" or "")
+    local ab = abilities[spellID]
+    local displayCid = ab and ab.display and ab.display.cooldownID
+    local drawn = (displayCid ~= nil) and anchored[displayCid]
+    bList[#bList + 1] = codeForSpell(spellID) .. ":" .. tok .. (drawn and "" or "×")
   end
   table.sort(bList)
   local bStr = (#bList > 0) and table.concat(bList, " ") or "-"
@@ -232,10 +250,12 @@ end
 -- so the header answers "is SB tracked?" without reading a single entry.  Only ids the
 -- SHORT map knows (the rotation set), so the list stays clean.
 local function trackedCodes(pulse)
-  local cds = (pulse and pulse.cooldowns) or {}
+  -- From the domain view's `abilities` (spellID-keyed, folded), so the header answers
+  -- "is SB tracked?" over the Coach's actual ability set, one code per ability.
+  local abilities = (pulse and pulse.abilities) or {}
   local set = {}
-  for _, cd in pairs(cds) do
-    local code = SHORT[cd.liveSpellID] or SHORT[cd.spellID]
+  for base, ab in pairs(abilities) do
+    local code = SHORT[ab.liveSpellID] or SHORT[base]
     if code then set[code] = true end
   end
   local list = {}

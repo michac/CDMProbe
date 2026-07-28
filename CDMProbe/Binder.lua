@@ -2,18 +2,21 @@
 --
 -- WHY THIS EXISTS (docs/w4-phase4-binder-plan.md, architecture.md Stage-3).  The
 -- pipeline is State -> Coach -> Guidance -> Binder -> DrawList -> Renderer.  The
--- Coach (Stage 2) decides: it emits a cooldownID-keyed, colour-free, GEOMETRY-free
--- Guidance.  The Renderer (Stage 4) draws: it consumes a handle-keyed, positioned
--- DrawList and never makes a decision.  The Binder is the seam that turns one into
--- the other — a pure GEOMETRY / BINDING merge:
+-- Coach (Stage 2) decides: it emits a BASE-spellID-keyed, colour-free, GEOMETRY-free
+-- Guidance (the W4 re-layer — cooldownID is transport the Coach never speaks).  The
+-- Renderer (Stage 4) draws: it consumes a handle-keyed, positioned DrawList and never
+-- makes a decision.  The Binder is the seam that turns one into the other — a pure
+-- GEOMETRY / BINDING merge, and it OWNS the spellID -> cooldownID resolution:
 --
---   * cues:        Layout{cooldownID -> {spellID}} + Guidance.cues -> DrawList.cues[].
---                  For each DISPLAYED icon, stamp the corner-dot geometry, pass the
---                  Coach's emphasis TOKEN through (colour stays the Renderer's job),
---                  look the keybind up by the entry's spellID, and set the glow flag.
---                  An icon the Coach did NOT signal still gets an EMPTY CUE (no emphasis
---                  -> no dot) as long as it has a keybind, so the key hint rides every
---                  button (P5d).  A cooldownID the Layout isn't showing is DROPPED.
+--   * cues:        Layout{cooldownID -> {spellID}} + Guidance.cues{spellID} -> DrawList.
+--                  For each DISPLAYED icon, look its Coach cue up by the icon's spellID,
+--                  stamp the corner-dot geometry, pass the emphasis TOKEN through (colour
+--                  stays the Renderer's job), look the keybind up by the entry's spellID,
+--                  and set the glow flag — anchoring to the icon's cooldownID.  An icon
+--                  the Coach did NOT signal still gets an EMPTY CUE (no emphasis -> no dot)
+--                  as long as it has a keybind, so the key hint rides every button (P5d).
+--                  A spellID cue whose ability isn't in a displayed icon viewer is DROPPED
+--                  (the Coach ranked it, but there's no icon to anchor to).
 --   * panel:       Guidance.sequence -> DrawList.panel (self-anchored).
 --   * resourceBar: Guidance.resourceBar -> DrawList.resourceBar (self-anchored).
 --
@@ -34,10 +37,10 @@
 --                 this seam when the layout carries none (the fixture path).
 --
 -- THE cooldownID <-> spellID BRIDGE is the LAYOUT (it carries both), not the Binder:
--- Guidance keys cues by cooldownID; the keybind scan keys by spellID.  The Layout —
--- built live from the CDM RefreshLayout hook, in test from a fixture — maps each
--- displayed cooldownID to its spellID, and the Binder reads that map, never
--- re-deriving identity.
+-- Guidance keys cues by BASE spellID and the keybind scan keys by spellID too, while the
+-- Renderer anchors by cooldownID.  The Layout — built live from the CDM RefreshLayout
+-- hook, in test from a fixture — maps each displayed cooldownID to its spellID, and the
+-- Binder reads that map (cue = cues[layout[cid].spellID]), never re-deriving identity.
 local ADDON, ns = ...
 
 ns.Binder = {}
@@ -89,8 +92,14 @@ function B:bindCues(guidance, layout)
 
   local out = {}
   for _, cid in ipairs(keys) do
-    local cue = cues[cid]
     local entry = layout[cid]
+    -- THE spellID->cooldownID JOIN (the W4 re-layer).  Guidance cues are keyed by BASE
+    -- spellID (the Coach's vocabulary); the Layout carries the spellID<->cooldownID bridge
+    -- per displayed icon, so we look the cue up by the icon's spellID and emit the cue
+    -- anchored to its cooldownID (`G.cue(cid, …)` -> anchorTo = cid, unchanged).  This is
+    -- where the summon-drop bug dies: an ability displays through its Essential row, which
+    -- IS in the Layout, so its cue draws; the TrackedBar cid never reached the Coach at all.
+    local cue = (entry and entry.spellID ~= nil) and cues[entry.spellID] or nil
     -- draw=false demotes to "no emphasis" (the keybind may still ride).
     local emphasis = (cue and cue.draw ~= false) and cue.emphasis or nil
     -- Prefer the keybind STATE already resolved (stitched onto the layout live by the

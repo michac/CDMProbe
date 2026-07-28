@@ -177,6 +177,15 @@ local cdBaseline = {}    -- cooldownID -> { ready, duration, startTime, at }
 -- not guessed.  readCd's combat path consults this as ground truth.
 local readyEdge = {}     -- cooldownID -> { ready = bool, at }
 
+-- FOLD cache (W4 domain-view re-layer), keyed by cooldownID.  base-spellID -> cooldownID
+-- is N:1 (a summon is one Essential row + one TrackedBar/TrackedBuff row), and Build's
+-- domain view must group the N CDM rows of one ability under its base spellID.  In combat
+-- a row's `spellID` can read secret, so this remembers each cooldownID's base from the
+-- OOC-readable path (where base is guaranteed readable) as the fallback fold key; the
+-- per-pulse readable base is primary.  Lives with cdBaseline/readyEdge, written on the
+-- same OOC-readable rhythm in readCd, wiped with them in clearStatelog.
+local foldBase = {}      -- cooldownID -> base spellID
+
 -- The napkin's anticipation for a cd, queried under the live identity first, the
 -- base second (a transformed button's cast filed the napkin under whichever id
 -- fired SUCCEEDED).  Returns the estimated remaining (may be <= 0 when elapsed),
@@ -203,6 +212,10 @@ local function readCd(live, base, cooldownID)
   local isReady, remaining, duration, startTime = ns.ReadCooldown(live)
   if isReady ~= nil then
     -- Readable (OOC): the precise truth, AND the baseline stash that outlives combat.
+    -- Remember this cd's base id too — the fold key the domain view falls back to when a
+    -- combat pulse reads the row's spellID secret (base is usually still readable, but this
+    -- guarantees it).  Written on the same OOC-readable rhythm as cdBaseline.
+    if cooldownID and readable(base) then foldBase[cooldownID] = base end
     if cooldownID then
       if readable(duration) and readable(startTime) then
         cdBaseline[cooldownID] = { ready = isReady and true or false,
@@ -853,6 +866,73 @@ function St.Build(drain)
     power[shardName].incoming = inflightIncoming(now, liveShards)
   end
 
+  -- ── THE DOMAIN VIEW (W4 re-layer) — the pipeline's actual input, keyed by BASE
+  -- spellID, folding the N CDM rows of one ability into one.  `cooldowns` above is the
+  -- RAW CDM diagnostic view (retained for statelog/probe, additive); this is what the
+  -- Coach decides on.  Assembled from the just-built locals — NO new spec coupling: the
+  -- fold key is `category` (spec-agnostic) + base spellID (from the readable row or the
+  -- OOC-cached foldBase fallback).
+  --   abilities[base] = the PRESSABLE representative row (Essential > Utility) of the
+  --                     ability, carrying every field Classify reads, plus `display`
+  --                     (the cooldownID/category the Binder anchors to).  Tracked-only
+  --                     rows (Demonic Core, Wild Imp — no pressable twin) do NOT enter.
+  --   buffs[spellID]  = procs/auras PRESENT (a summon's TrackedBar isActive lands here as
+  --                     the window-active signal), unioned with the flat active-aura scan.
+  --   resources.shards = the SoulShards bar ({ value, max, incoming }).
+  local function baseOf(entry)
+    return (type(entry.spellID) == "number" and entry.spellID) or foldBase[entry.cooldownID]
+  end
+
+  local abilities = {}
+  do
+    -- Group the raw rows by base spellID, then pick each ability's pressable member.
+    local rowsByBase = {}
+    for _, entry in pairs(cooldowns) do
+      local base = baseOf(entry)
+      if base then
+        local rows = rowsByBase[base]
+        if not rows then rows = {}; rowsByBase[base] = rows end
+        rows[#rows + 1] = entry
+      end
+    end
+    for base, rows in pairs(rowsByBase) do
+      local rep
+      for _, e in ipairs(rows) do
+        if e.category == "Essential" then rep = e; break end
+      end
+      if not rep then
+        for _, e in ipairs(rows) do
+          if e.category == "Utility" then rep = e; break end
+        end
+      end
+      -- No pressable (Essential/Utility) member => a tracked-only ability (Core, Wild
+      -- Imp): not in `abilities` (its presence rides `buffs`).  The fold gives the
+      -- tracked-row EXCLUSION for free, which is all the fix needs (the TrackedBar
+      -- DURATION -> abilities[base].uptime is a documented follow-up, not this task).
+      if rep then
+        rep.display = { cooldownID = rep.cooldownID, category = rep.category }
+        abilities[base] = rep
+      end
+    end
+  end
+
+  -- buffs — presence, secrecy-guarded (an entry's aura/buff reads TRUE only when it was
+  -- readable, so absence never becomes a false positive).  Keyed by the entry's base for
+  -- the CDM rows, and by the aura's own spellID for the flat scan.
+  local buffs = {}
+  for _, entry in pairs(cooldowns) do
+    if (entry.aura and entry.aura.active == true)
+        or (entry.buff and entry.buff.isActive == true) then
+      local base = baseOf(entry)
+      if base then buffs[base] = true end
+    end
+  end
+  for _, a in ipairs(auraList) do
+    if type(a.spellID) == "number" then buffs[a.spellID] = true end
+  end
+
+  local resources = { shards = shardName and power[shardName] or nil }
+
   return {
     at     = now,
     combat = InCombatLockdown() and true or false,
@@ -861,7 +941,12 @@ function St.Build(drain)
     -- the old HUD's /cdmp single|multi sets); the Coach READS it.  Spec-agnostic: it is
     -- a generic "st"|"aoe" enum, not a rotation fact.  Defaults "st" (single).
     mode   = (ns.HudState and ns.HudState.aoe) and "aoe" or "st",
+    -- RAW CDM view (retained, additive) — statelog / probe / Hud2Log short-codes / cdmp.py.
     cooldowns = cooldowns,
+    -- DOMAIN view (the re-layer) — the pipeline's input; the Coach decides on THIS.
+    abilities = abilities,
+    buffs     = buffs,
+    resources = resources,
     power  = power,
     -- Every active player buff, spec-agnostically — the Coach's authoritative proc
     -- source, and the diagnostic that reveals a proc's TRUE aura id when a CDM entry's
@@ -1013,6 +1098,7 @@ local function clearStatelog()
   wipe(cdChangedAt)
   wipe(cdBaseline)
   wipe(readyEdge)
+  wipe(foldBase)
   captureReason = nil
   lastSig = nil
   lastSample = 0
