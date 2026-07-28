@@ -4,18 +4,18 @@
 -- everything above the pipeline consumes: State -> Coach -> Guidance -> Binder ->
 -- DrawList -> Renderer (docs/architecture.md).  This file builds ONLY Stage 1.  It
 -- decides no cue, knows no rotation, imports no SpecDemonology — that is invariant
--- #3, and it is enforced from the outside by `wowkb.cdmp check`'s statelog denylist.
+-- #3 (State names no spell and no role; the rotational meaning stays Coach-only).
 -- (It DOES consult a couple of injected `ns.Spec*` READERS — the napkin's base
 -- cooldowns, and `ns.SpecShardDelta` for the signed shard-incoming projection — exactly as the
 -- architecture sanctions "a game-fact input like base cooldowns": State's code names
 -- no spell and no role; the rotational meaning stays Coach-only.)
 --
--- WHY IT EXISTS SEPARATELY FROM HudState.lua.  HudState is the de-facto State layer
--- today, but 1,254 lines that also score and paint (w4-hud-audit.md A4), with three
--- copies of live-identity resolution (B1) and three event-ingest frames (A3).  This
--- is the clean-room Stage-1 extraction the W4 refactor builds up from.  It COEXISTS
--- with HudState during Phase 1 — parallel observation, the live HUD untouched (the
--- build plan's P1) — and the old frames are deleted only at the Phase-5 cutover.
+-- WHY IT EXISTS (was HudState.lua).  The old HudState was the de-facto State layer —
+-- 1,254 lines that also scored and painted (w4-hud-audit.md A4), with three copies of
+-- live-identity resolution (B1) and three event-ingest frames (A3).  This is the
+-- clean-room Stage-1 extraction the W4 refactor built up from; it ran alongside
+-- HudState during Phase 1 (parallel observation) and REPLACED it at the W4 cutover,
+-- when the whole old engine was deleted.
 --
 -- FOUR THINGS MAKE THIS "State", not "a reader":
 --   1. ANCHORED ON THE CDM DATABASE, not the live viewer frames.  We enumerate the
@@ -41,10 +41,10 @@
 --      supplies only the *remaining* seconds while on cooldown.  The keybind is the
 --      OOC-resolved base-id binding.
 --
--- NOT IN THIS FILE: any consumer of State.  Build() emits a table; nothing scores
--- it.  The `/cdmp statelog` capture at the bottom records pulses to disk so the
--- Phase-2 Coach can be tested against an INDEPENDENT corpus (build plan P2) — that
--- is observation, not consumption.
+-- NOT IN THIS FILE: any consumer of State.  Build() emits a table; nothing here scores
+-- it.  The live driver (HudDriver, /cdmp hud) Acquire()s ingestion and calls Build each
+-- tick; the Coach above decides.  (A W4-Phase-1 statelog layer used to record pulses to
+-- disk here for an independent test corpus; it was retired at the W4 cutover.)
 local ADDON, ns = ...
 
 ns.State = {}
@@ -183,7 +183,7 @@ local readyEdge = {}     -- cooldownID -> { ready = bool, at }
 -- a row's `spellID` can read secret, so this remembers each cooldownID's base from the
 -- OOC-readable path (where base is guaranteed readable) as the fallback fold key; the
 -- per-pulse readable base is primary.  Lives with cdBaseline/readyEdge, written on the
--- same OOC-readable rhythm in readCd, wiped with them in clearStatelog.
+-- same OOC-readable rhythm in readCd.
 local foldBase = {}      -- cooldownID -> base spellID
 
 -- The napkin's anticipation for a cd, queried under the live identity first, the
@@ -344,7 +344,7 @@ end
 -- read secret.  Active if ANY associated id is in the scan set or a direct by-id read
 -- finds it.
 --
--- ⚠ COMBAT AURAS ARE SECRET (measured v0.29.4).  A `/cdmp statelog` capture proved it:
+-- ⚠ COMBAT AURAS ARE SECRET (measured v0.29.4).  A State capture proved it:
 -- out of combat the scan read 8 buffs / 0 secret; IN COMBAT only 1 passive was
 -- readable and 6–16 auras per pulse came back as secret tables, with
 -- GetPlayerAuraBySpellID returning nil for the hidden ones.  So when the aura space is
@@ -489,16 +489,11 @@ end
 -- those are the Coach's call over State's honest countdown (architecture.md Events).
 local pending = {}
 local PENDING_MAX = 64          -- bound the delta so a drain-LESS consumer can't leak
-local captureReason = nil       -- why the next poll should record (nil = no pull owed)
-
-local function markCapture(reason)
-  captureReason = captureReason or reason
-end
 
 -- Append to the since-last-pulse delta.  Bounded: a Build(false) consumer (the live
 -- driver) never drains `pending`, so without a cap it would grow without limit; the
 -- ring is only ever the last PENDING_MAX events, which is far more than one pulse's
--- worth (the statelog Capture drains it every ~change anyway).
+-- worth (a Build(true) drain empties it).
 local function pushEvent(e)
   pending[#pending + 1] = e
   while #pending > PENDING_MAX do table.remove(pending, 1) end
@@ -512,9 +507,8 @@ end
 -- `TriggerAlertEvent`, and these fire IN COMBAT — off the item's alert choke point,
 -- not a secret-guarded API read.  We hook that choke point per item and record the
 -- observed edge in `readyEdge`, which readCd consults as ground truth.  CLEAN-ROOM:
--- State ports the HOOK PATTERN from HudState (the old HUD's S.Install/onAlert) but
--- owns its own edge store and never reads HudState's S.readyAt/HudChrome — the
--- separation wowkb.cdmp's statelog denylist enforces.
+-- State ports the HOOK PATTERN from the old HUD (S.Install/onAlert) but owns its own
+-- edge store and reads none of the old engine's state — a clean Stage-1 separation.
 local function onAlert(item, event)
   if St.consumers <= 0 then return end   -- gated like the old HUD's ns.Hud.on
   local A = Enum and Enum.CooldownViewerAlertEventType
@@ -534,7 +528,6 @@ local function onAlert(item, event)
   local ready = (event == A.Available)
   readyEdge[cid] = { ready = ready, at = now }
   pushEvent({ kind = "ready_edge", cooldownID = cid, ready = ready, at = now })
-  markCapture("edge")
 end
 
 -- One hook per item INSTANCE (the methods are Mixin()-copied, so a hook on the
@@ -655,7 +648,6 @@ eframe:SetScript("OnEvent", function(_, event, a1, a2, a3)
         St.override[a1] = to
         pushEvent({ kind = "transform", base = a1, from = ns.Stash(from),
                     to = ns.Stash(to), at = GetTime() })
-        markCapture("transform")
       end
     end
   elseif event == "UNIT_SPELLCAST_START" then
@@ -673,7 +665,6 @@ eframe:SetScript("OnEvent", function(_, event, a1, a2, a3)
       end
       pushEvent({ kind = "cast_started", spellID = a3,
                   base = ns.Stash(St.BaseOfCast(a3)), at = GetTime() })
-      markCapture("cast")
     end
   elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
     -- a3 is the spellID (unit, castGUID, spellID); RegisterUnitEvent filters to
@@ -684,7 +675,6 @@ eframe:SetScript("OnEvent", function(_, event, a1, a2, a3)
       if type(base) == "number" then spendStartShards[base] = nil end
       pushEvent({ kind = "cast_succeeded", spellID = a3,
                   base = ns.Stash(St.BaseOfCast(a3)), at = GetTime() })
-      markCapture("cast")
     end
   elseif event == "UNIT_SPELLCAST_INTERRUPTED" or event == "UNIT_SPELLCAST_FAILED"
       or event == "UNIT_SPELLCAST_FAILED_QUIET" or event == "UNIT_SPELLCAST_STOP" then
@@ -700,10 +690,8 @@ eframe:SetScript("OnEvent", function(_, event, a1, a2, a3)
   elseif event == "PLAYER_REGEN_DISABLED" then
     St.combatStartedAt = GetTime()
     pushEvent({ kind = "combat_start", at = GetTime() })
-    markCapture("combat")
   elseif event == "PLAYER_REGEN_ENABLED" then
     pushEvent({ kind = "combat_end", at = GetTime() })
-    markCapture("combat")
   end
   -- Power changes are NOT an event trigger — they fire far too often in a pull and
   -- flooded the ring (v0.29.0: 30 of 40 slots were power captures, evicting procs
@@ -868,7 +856,7 @@ function St.Build(drain)
 
   -- ── THE DOMAIN VIEW (W4 re-layer) — the pipeline's actual input, keyed by BASE
   -- spellID, folding the N CDM rows of one ability into one.  `cooldowns` above is the
-  -- RAW CDM diagnostic view (retained for statelog/probe, additive); this is what the
+  -- RAW CDM diagnostic view (retained for probe/cdmp.py, additive); this is what the
   -- Coach decides on.  Assembled from the just-built locals — NO new spec coupling: the
   -- fold key is `category` (spec-agnostic) + base spellID (from the readable row or the
   -- OOC-cached foldBase fallback).
@@ -938,10 +926,10 @@ function St.Build(drain)
     combat = InCombatLockdown() and true or false,
     combatStartedAt = St.combatStartedAt,   -- so "elapsed in combat" is computable here
     -- The user-toggled single/AoE mode (P5b).  State FORWARDS it (from the AoE toggle
-    -- the old HUD's /cdmp single|multi sets); the Coach READS it.  Spec-agnostic: it is
-    -- a generic "st"|"aoe" enum, not a rotation fact.  Defaults "st" (single).
-    mode   = (ns.HudState and ns.HudState.aoe) and "aoe" or "st",
-    -- RAW CDM view (retained, additive) — statelog / probe / Hud2Log short-codes / cdmp.py.
+    -- `/cdmp single|multi|aoe` sets in Mode.lua); the Coach READS it.  Spec-agnostic: it
+    -- is a generic "st"|"aoe" enum, not a rotation fact.  Defaults "st" (single).
+    mode   = (ns.Mode and ns.Mode.aoe) and "aoe" or "st",
+    -- RAW CDM view (retained, additive) — probe / Hud2Log short-codes / cdmp.py.
     cooldowns = cooldowns,
     -- DOMAIN view (the re-layer) — the pipeline's input; the Coach decides on THIS.
     abilities = abilities,
@@ -960,163 +948,17 @@ function St.Build(drain)
 end
 
 --------------------------------------------------------------------------------
--- Eval gating — the simplest thing that matches today (architecture.md)
+-- Lifecycle — ref-counted event ingestion
 --------------------------------------------------------------------------------
--- A modest ~10 Hz poll behind a swappable trigger.  The format supports CHANGE
--- DETECTION at the seam so a no-change pulse is a near-noop and builds no strings
--- (the E1 hot-path concern): the poll computes a cheap NUMERIC signature (no table
--- or string allocation) and only does the full Build+record when something moved,
--- an interesting event is owed, or the periodic OOC sample is due.  The trigger
--- policy lives entirely here; nothing downstream cares what caused a pulse, so it
--- can later become event-driven + napkin-scheduled wakeups with no change upstream.
-local POLL_PERIOD = 0.1        -- ~10 Hz, matching the live HUD's poll cadence
-local OOC_SAMPLE  = 5.0        -- periodic out-of-combat sample, for baseline coverage
-
--- A cheap running hash of the salient facts, arithmetic only.  In combat the live
--- cd read short-circuits to nil (constant), so combat pulses ride the event flags;
--- out of combat cd/aura movement shows up here directly.
--- Returns (hash, procOn): a cheap change signature plus the count of active proc
--- signals (glow highlights + readable auras), so the poll can label a proc distinctly.
-local function signature()
-  local h = InCombatLockdown() and 1 or 0
-  local procOn = 0
-  for cooldownID in pairs(enumerate()) do
-    local info = cooldownInfo(cooldownID)
-    local base = info and readable(info.spellID) and info.spellID or nil
-    local live = liveSpellID(info) or base
-    local isReady, remaining = ns.ReadCooldown(live)
-    local cdbit = (isReady == nil) and 0 or (isReady and 1 or 2)
-    local rem = (type(remaining) == "number") and math.floor(remaining) or 0
-    local ov = readable(St.override[base]) and St.override[base] or 0
-    -- glow is the combat-readable proc signal, so fold it in AND count it as a proc.
-    local g = readGlow(live)
-    local glowbit = (g.readable and g.active) and 1 or 0
-    if glowbit == 1 then procOn = procOn + 1 end
-    -- Mix cooldownID + facts into the hash (mod keeps it a Lua number, not a string).
-    h = (h * 131 + cooldownID + cdbit * 7 + rem * 13 + ov + glowbit * 11) % 2147483647
-  end
-  -- Fold every readable power into the hash so a shard step is a 'change' — spec-
-  -- agnostically, mixing whatever powers the character has (no opinion on which).
-  for value in pairs(POWER_NAME) do
-    local okV, val = pcall(UnitPower, "player", value)
-    if okV and type(val) == "number" and not ns.IsSecret(val) then
-      h = (h * 131 + value * 17 + val) % 2147483647
-    end
-  end
-  -- Fold the active-buff set in so an OOC proc is a 'change' too, and count them.
-  -- Same-membership -> same pairs order -> same hash.
-  local _, activeByID = scanActiveAuras()
-  for id in pairs(activeByID) do
-    procOn = procOn + 1
-    h = (h * 131 + id) % 2147483647
-  end
-  return h, procOn
-end
-
-local pollTicker
-local lastSig = nil
-local lastProcOn = 0
-local lastSample = 0
-
-local function poll()
-  if not St.recording then return end
-  local now = GetTime()
-  local due = captureReason
-  local sig, procOn = signature()
-  if not due then
-    if sig ~= lastSig then
-      -- an aura coming UP is a proc — a distinct, protected moment in the ring
-      due = (procOn > lastProcOn) and "proc" or "change"
-    elseif (now - lastSample) >= OOC_SAMPLE and not InCombatLockdown() then
-      due = "sample"
-    end
-  end
-  lastSig, lastProcOn = sig, procOn   -- resync so an owed event isn't re-detected
-  if due then
-    captureReason = nil
-    lastSample = now
-    St.Capture(due)
-  end
-end
-
---------------------------------------------------------------------------------
--- The statelog capture ring — the Phase-2 corpus, written to disk
---------------------------------------------------------------------------------
--- A BOUNDED ring of diverse moments (cap RING), stored in a NEW CDMProbeDB.statelog
--- store — separate from `.probe` / `.pulls`.  Reuses ALL the existing capture
--- infrastructure: the CDMProbeDB SavedVariables file, the /reload-flush discipline,
--- and the ns.Stash secret-never-reaches-disk guard (every field in a pulse already
--- passed through the readable/Stash gates in Build, so nothing here can be a secret).
---
--- The collect/assert split (docs/m4.5-t3-plan.md): this COLLECTS (addon change +
--- release); the wowkb.cdmp statelog baseline ASSERTS (local, no release).
-local RING = 40
-
-local function store()
-  if not ns.db then return nil end
-  ns.db.statelog = ns.db.statelog or {}
-  local sl = ns.db.statelog
-  sl.pulses = sl.pulses or {}
-  sl.byReason = sl.byReason or {}
-  sl.count = sl.count or 0
-  return sl
-end
-
-function St.Capture(reason)
-  local sl = store()
-  if not sl then return end
-  local pulse = St.Build(true)
-  pulse.reason = reason or "manual"
-  pulse.seq = sl.count + 1
-  sl.count = sl.count + 1
-  sl.byReason[pulse.reason] = (sl.byReason[pulse.reason] or 0) + 1
-  local p = sl.pulses
-  p[#p + 1] = pulse
-  -- DIVERSITY-PRESERVING eviction: when full, drop the OLDEST pulse of the MOST
-  -- common reason in the ring, not simply the oldest.  A pull streams dozens of
-  -- shard-step 'change' captures; a plain FIFO lets them evict the rare moments the
-  -- corpus needs (a proc, a transform, the OOC baseline — the v0.29.0 flip-flop).
-  -- Trimming the most-over-represented reason keeps the ring diverse under spam.
-  while #p > RING do
-    local counts = {}
-    for i = 1, #p do counts[p[i].reason] = (counts[p[i].reason] or 0) + 1 end
-    local top, topN = nil, -1
-    for r, n in pairs(counts) do if n > topN then top, topN = r, n end end
-    for i = 1, #p do
-      if p[i].reason == top then table.remove(p, i); break end
-    end
-  end
-end
-
-local function clearStatelog()
-  if not ns.db then return end
-  ns.db.statelog = { pulses = {}, byReason = {}, count = 0,
-                     startedAt = date("%Y-%m-%d %H:%M:%S"), version = ns.version }
-  wipe(pending)
-  wipe(history)
-  wipe(cdPrevState)
-  wipe(cdChangedAt)
-  wipe(cdBaseline)
-  wipe(readyEdge)
-  wipe(foldBase)
-  captureReason = nil
-  lastSig = nil
-  lastSample = 0
-end
-
---------------------------------------------------------------------------------
--- Lifecycle — ingestion (ref-counted) vs statelog recording (W4 P5c)
---------------------------------------------------------------------------------
--- TWO separable things share this file: EVENT INGESTION (the override/history/combat
--- tracking + the napkin/keybind inputs a good pulse needs) and STATELOG RECORDING (the
--- poll ticker writing the disk ring).  The statelog session needs both; the LIVE DRIVER
--- (HudDriver, /cdmp hud2) needs ingestion but NOT the disk ring.  So ingestion is
--- REF-COUNTED — each consumer Acquire()s / Release()s, and the eframe events run while
--- any consumer holds a ref — and recording is its own flag on top.  This is the
--- "expose the pulse to a driver" seam the cutover plan asks for: State.Build + a clean
--- way to keep ingestion live without forcing disk churn.
-St.consumers = 0                -- live consumers of event ingestion (statelog + driver)
-St.recording = false           -- is the statelog poll writing the disk ring?
+-- EVENT INGESTION is the override/history/combat tracking + the napkin/keybind inputs
+-- a good pulse needs.  The LIVE DRIVER (HudDriver, /cdmp hud) Acquire()s it to keep the
+-- eframe events running, and Release()s it when the HUD is turned off.  Ingestion is
+-- REF-COUNTED — the events run while any consumer holds a ref — so multiple consumers
+-- can share it.  This is the "expose the pulse to a driver" seam: State.Build + a clean
+-- way to keep ingestion live.  (The W4-Phase-1 statelog disk-recording layer that used
+-- to sit on top of this was retired at the W4 cutover; the hud2 decision log is the
+-- pipeline's recorder now.)
+St.consumers = 0                -- live consumers of event ingestion
 
 function St.Acquire()
   St.consumers = St.consumers + 1
@@ -1126,7 +968,7 @@ function St.Acquire()
   -- live for a session — otherwise, with the HUD off, both are dormant and every cd
   -- reads source="none" while every keybind is nil (the v0.29.0 gap: the napkin's
   -- SUCCEEDED frame and the bar scan are only started by the HUD).  Both Start()s are
-  -- idempotent, so this is harmless when the old HUD is also running.
+  -- idempotent, so this is harmless if another consumer already started them.
   if ns.HudNapkin and ns.HudNapkin.Start then pcall(ns.HudNapkin.Start) end
   if ns.HudBinds and ns.HudBinds.Start then pcall(ns.HudBinds.Start) end
   eframe:RegisterEvent("COOLDOWN_VIEWER_SPELL_OVERRIDE_UPDATED")
@@ -1148,119 +990,8 @@ function St.Release()
   if St.consumers == 0 then eframe:UnregisterAllEvents() end
 end
 
-function St.Start()
-  if St.recording then return end
-  St.recording = true
-  St.Acquire()
-  if not pollTicker then pollTicker = C_Timer.NewTicker(POLL_PERIOD, poll) end
-  -- Seed the ring with an immediate first pulse so a session that is captured OOC
-  -- and then /reload'd has at least one recorded moment even if nothing changed.
-  St.Capture("start")
-end
-
-function St.Stop()
-  if not St.recording then return end
-  St.recording = false
-  if pollTicker then pollTicker:Cancel(); pollTicker = nil end
-  St.Release()
-end
-
---------------------------------------------------------------------------------
--- `/cdmp statelog` — capture, coverage, reset  (mirrors `/cdmp probe`)
---------------------------------------------------------------------------------
--- COLLECT-side command (needs a release).  `statelog` toggles the capture session
--- and prints status; `statelog guide` reports what coverage the ring still lacks
--- (the same in-game-timing payoff as `probe guide`); `statelog clear` resets for a
--- fresh session.  The reader/baseline half is local (wowkb.cdmp statelog), no release.
-local function statusLine()
-  local sl = ns.db and ns.db.statelog
-  local n = (sl and sl.pulses and #sl.pulses) or 0
-  local total = (sl and sl.count) or 0
-  ns.Printf("statelog: %s — %d pulse(s) in the ring, %d captured this session",
-    St.recording and "|cff88ff88recording|r" or "|cff808080idle|r", n, total)
-  if sl and sl.byReason and next(sl.byReason) then
-    local parts = {}
-    for reason, c in pairs(sl.byReason) do parts[#parts + 1] = string.format("%s=%d", reason, c) end
-    table.sort(parts)
-    ns.Printf("  by trigger: %s", table.concat(parts, "  "))
-  end
-end
-
--- Coverage the ring still needs, computed OVER THE CAPTURED PULSES — a pull-based
--- checklist mirroring `probe guide`.  Detects and nudges; it cannot create state.
-local function guide()
-  local sl = ns.db and ns.db.statelog
-  local pulses = (sl and sl.pulses) or {}
-  local seenOOC, seenCombat, seenSecret, seenNapkin, seenTransform, seenProc = false, false, false, false, false, false
-  local shardValues = {}
-  for _, p in ipairs(pulses) do
-    if p.combat then seenCombat = true else seenOOC = true end
-    for _, c in pairs(p.cooldowns or {}) do
-      if c.cd and c.cd.readable == false then seenSecret = true end
-      if c.cd and c.cd.source == "napkin" then seenNapkin = true end
-      if c.aura and c.aura.active then seenProc = true end
-    end
-    for _, e in ipairs(p.events or {}) do
-      if e.kind == "transform" then seenTransform = true end
-    end
-    local ss = p.power and p.power.SoulShards
-    if ss and type(ss.value) == "number" then shardValues[ss.value] = true end
-  end
-  local nShards = 0
-  for _ in pairs(shardValues) do nShards = nShards + 1 end
-
-  ns.Heading("statelog coverage — what the corpus still needs")
-  local goals = {
-    { seenOOC,       "an out-of-combat pulse",        "stand at a dummy OOC and wait a few seconds" },
-    { seenCombat,    "an in-combat pulse",            "pull a dummy" },
-    { seenSecret,    "a secret/unreadable cd fired",  "pull — live cd reads go secret in combat" },
-    { seenNapkin,    "a napkin-sourced cd",           "cast a cooldown in combat, then it anticipates" },
-    { nShards >= 2,  "a shard spread (2+ values)",    "spend and generate shards in a pull" },
-    { seenTransform, "a transform observed",          "arm a Demonic Art / let a Grimoire hit CD" },
-    { seenProc,      "a proc/aura observed",          "proc a Demonic Core (or any tracked buff)" },
-  }
-  local left = 0
-  for _, g in ipairs(goals) do
-    if g[1] then
-      ns.Printf("  |cff88ff88[x]|r %s", g[2])
-    else
-      left = left + 1
-      ns.Printf("  |cff808080[ ]|r %s   |cffffd100<- %s|r", g[2], g[3])
-    end
-  end
-  if left == 0 then
-    ns.Print("  |cff88ff88coverage complete|r — |cffffffff/reload|r, then |cffffffffuv run python -m wowkb.cdmp check|r")
-  else
-    ns.Printf("  -> |cffffd100%d goal%s left|r; keep playing and re-run |cffffffff/cdmp statelog guide|r, then |cffffffff/reload|r",
-      left, left == 1 and "" or "s")
-  end
-end
-
-ns.RegisterCommand("statelog",
-  "record reduced-State pulses to disk for the W4 pipeline corpus. `statelog guide` = coverage still missing; `statelog clear` = reset for a new session",
-  function(rest)
-    rest = (rest or ""):lower()
-    if rest:find("guide") then return guide() end
-    if rest:find("clear") or rest:find("reset") then
-      clearStatelog()
-      return ns.Print("statelog ring + counters cleared for a fresh session.")
-    end
-    if rest:find("stop") or rest:find("off") then
-      St.Stop()
-      return statusLine()
-    end
-    if not St.recording then
-      if not (ns.db and ns.db.statelog and ns.db.statelog.startedAt) then clearStatelog() end
-      St.Start()
-    else
-      St.Capture("manual")
-    end
-    statusLine()
-    ns.Print("|cffffd100play, then /reload|r — SavedVariables only flush on reload/logout. `/cdmp statelog guide` shows what coverage is still missing.")
-  end)
-
--- Passive: State is available from load, but the poll/ring only run once `statelog`
--- is invoked (parallel OBSERVATION on demand — the live HUD is untouched either way).
+-- State is available from load; ingestion only runs once a consumer (the HUD driver)
+-- Acquire()s it.  OnLogin just builds the category/power name caches.
 local prevOnLogin = ns.OnLogin
 function ns.OnLogin()
   if prevOnLogin then prevOnLogin() end

@@ -99,9 +99,9 @@ end
 -- live frame/table reference.
 --
 -- This is Probe.lua's file-local `stash` promoted to a shared helper (M4.5 T3 / W4
--- Phase 1): State's `/cdmp statelog` capture writes full State pulses to disk and
--- needs the exact same secret-never-reaches-disk discipline the probe snapshot has.
--- One idiom, one home.  (Probe.lua keeps its own copy for now; do not chase that
+-- Phase 1): State stamps event payloads (`ns.Stash(base)`, transform from/to) that may
+-- end up serialized, and needs the exact same secret-never-reaches-disk discipline the
+-- probe snapshot has.  One idiom, one home.  (Probe.lua keeps its own copy for now; do not chase that
 -- de-dupe here — it is a behavioural no-op and this file must stay low-risk.)
 function ns.Stash(v)
   if ns.IsSecret(v) then return "<secret>" end

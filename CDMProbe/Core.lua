@@ -13,11 +13,10 @@ ns.version = (C_AddOns and C_AddOns.GetAddOnMetadata and C_AddOns.GetAddOnMetada
 -- commands that owned them (see Probe.lua's header).  Stale keys in an existing
 -- CDMProbeDB are harmless — nothing reads them — so there is no migration.
 local DEFAULTS = {
-  -- The real HUD's settings (HudCore fills missing sub-keys defensively too, so
-  -- a db written by an older build picks up keys added later).  `sequence` is the
-  -- M4 pane's saved position (over the character by default); copied fresh here so
-  -- HudPane never shares the module-level default table.
-  hud = { on = false, opener = "off", sequence = { point = "CENTER", x = 0, y = 120 } },
+  -- `ns.db.hud` is the pipeline HUD's enable BOOL (W4 cutover reclaimed the key from
+  -- the old engine's settings TABLE).  No default entry: absent == off; HudDriver's
+  -- OnLogin migrates any stale old-engine table / prior `hud2` bool into it, and
+  -- SetHud writes it thereafter.
   reports = {},          -- persisted `/cdmp probe` output, read off disk
   -- M4.5 T3 — the SAME probe observations as a STRUCTURED table, keyed by combat
   -- state exactly like `reports`.  `reports` stays the human read; this is the
@@ -25,16 +24,6 @@ local DEFAULTS = {
   -- codebase re-words freely.  Both are rendered from one in-memory observation
   -- set per section (Probe.lua), so they cannot drift.
   probe = {},
-  -- M3e — the pull recorder's ring of the last N closed pulls.  STRUCTURED, not
-  -- report text: `CDMProbeDB.pulls[3].hist` reads straight off disk, and nothing
-  -- is printed to chat at pull end (ns.Print always writes to DEFAULT_CHAT_FRAME,
-  -- so routing this through BeginCapture would spam every combat exit).
-  pulls = {},
-  -- W4 Phase 1 — the reduced-State capture ring (State.lua / `/cdmp statelog`).
-  -- A bounded ring of full State pulses, separate from `.probe` / `.pulls`; the
-  -- independent corpus the Phase-2 Coach is tested against.  Structured, read +
-  -- asserted by `wowkb.cdmp` (the `statelog` baseline section).
-  statelog = {},
   -- HUD2 decision log — a ring of the last 3 sessions, each a list of one-line
   -- `S{…} G{…} B{…}` pipeline traces appended on every DECISION CHANGE (Hud2Log.lua).
   -- The greppable instrument for "why does /cdmp hud2 show nothing here?"; extracted

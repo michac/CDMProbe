@@ -145,9 +145,10 @@ local function runScan()
     B.stats.deferred = B.stats.deferred + 1
     return                       -- stays dirty; PLAYER_REGEN_ENABLED re-arms
   end
-  if scan() and ns.Hud and ns.Hud.RefreshKeybinds then
-    ns.Hud.RefreshKeybinds()     -- only when the map really moved
-  end
+  -- Refresh the cache; the pipeline reads it live off State (State.readCd -> HudBinds.Get)
+  -- each tick, so there is no separate chrome hook to notify (the old engine's
+  -- ns.Hud.RefreshKeybinds was retired at the W4 cutover).
+  scan()
 end
 
 local function invalidate()

@@ -594,7 +594,7 @@ ns.RegisterCommand("probe",
     local inst = "?"
     pcall(function() local _, t = IsInInstance(); inst = tostring(t) end)
     ns.Printf("  instance type: %s   |   HUD: %s",
-      inst, (ns.Hud and ns.Hud.on) and "|cff88ff88on|r" or "off")
+      inst, (ns.HudDriver and ns.HudDriver.on) and "|cff88ff88on|r" or "off")
 
     -- M4.5 T3 — the structured half.  Each section below fills its own slice of
     -- `snap` from the SAME value it prints its text line from, so the report a
@@ -617,49 +617,23 @@ ns.RegisterCommand("probe",
     sectionStackWidth(snap)
     sectionBinds()
 
-    -- M4.6 — SECTION E, the cue colour watchdog.  Rides the probe rather than
-    -- living only behind `/cdmp hud cuewatch` so the evidence for the
-    -- intermittent-white report lands ON DISK with the rest of the capture and
-    -- can be asserted by `wowkb.cdmp` instead of read off a chat scrollback.
-    if ns.HudCueWatch then
-      snap.cueWatch = ns.HudCueWatch.Snapshot()
-      pcall(ns.HudCueWatch.Report)
-    end
-    -- M4.6c — SECTION F: how SetGradient behaves on THIS client.  Cheap, needs no
-    -- combat and no timing, so it rides every capture: the answer decides the
-    -- cue's paint order and has been assumed rather than measured three times now.
-    if ns.HudGradTest then
-      local okG, res = pcall(ns.HudGradTest.Run)
-      if okG then snap.gradTest = res end
-      pcall(ns.HudGradTest.Report)
-    end
-
     ns.db.probe = ns.db.probe or {}
     ns.db.probe[combat and "combat" or "ooc"] = snap
 
-    -- The HUD's own state/score/napkin readout, so ONE report has everything.
-    if ns.Hud and ns.Hud.on then
-      ns.HudState.PrintStatus()
-      -- M3e — the LAST CLOSED PULL, folded in here so one report still has
-      -- everything and the existing OOC-then-combat workflow is unchanged.  The
-      -- status block's `lit now` is a snapshot of THIS instant; this is the
-      -- distribution across the whole fight, which is what §7.3 item 6 actually
-      -- asks about.  (The full ring is `/cdmp hud log all`, or read
-      -- CDMProbeDB.pulls off disk.)
-      ns.Heading("  last pull — M3e (the recorder)")
-      local pulls = ns.db and ns.db.pulls or {}
-      ns.HudLog.Summary(pulls[#pulls] or ns.HudLog.last, 20)
-    else
-      ns.Print("(HUD off — enable it with /cdmp hud for the state + score block, and NOTHING IS BEING RECORDED)")
-    end
+    -- The pipeline HUD's live status, so ONE report has everything (the W4 cutover
+    -- retired the old-engine state/score/napkin readout + the M3e pull recorder that
+    -- used to print here; the hud2 decision log is the pipeline's recorder now).
+    ns.Print((ns.HudDriver and ns.HudDriver.on)
+      and "(HUD on — /cdmp hud status for the pipeline readout; decision trace in CDMProbeDB.hud2log)"
+      or  "(HUD off — enable it with /cdmp hud)")
 
     ns.EndCapture("probe_" .. (combat and "combat" or "ooc"))
     ns.Print("|cffffd100now /reload|r — SavedVariables only flush on reload/logout.")
   end)
 
 --------------------------------------------------------------------------------
--- Base `reset` + `OnLogin` (were in the deleted Probes.lua; HudCore wraps both,
--- so the base definitions have to exist before HudCore loads)
+-- Base `reset` + `OnLogin` (were in the deleted Probes.lua; HudDriver wraps both,
+-- so the base definitions have to exist before HudDriver loads)
 --------------------------------------------------------------------------------
 ns.RegisterCommand("reset", "turn every experiment off", function()
   ns.Print("all experiments off.")
