@@ -32,4 +32,5 @@ HudBurst.lua
 HudRow.lua
 HudCore.lua
 State.lua
+Hud2Log.lua
 HudDriver.lua

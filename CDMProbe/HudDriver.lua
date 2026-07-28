@@ -80,6 +80,9 @@ local function tick()
   local drawList = D.binder:Bind(guidance, layout)
   D.renderer:Draw(drawList)
   D.lastCues = drawList.cues and #drawList.cues or 0
+  -- HUD2 decision log — append one greppable line on any decision change.  Inside the
+  -- pcall'd tick, so a logging throw can never wedge the HUD.
+  if ns.Hud2Log then ns.Hud2Log.Record(pulse, guidance, drawList) end
 end
 
 local function safeTick()

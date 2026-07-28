@@ -35,6 +35,11 @@ local DEFAULTS = {
   -- independent corpus the Phase-2 Coach is tested against.  Structured, read +
   -- asserted by `wowkb.cdmp` (the `statelog` baseline section).
   statelog = {},
+  -- HUD2 decision log — a ring of the last 3 sessions, each a list of one-line
+  -- `S{…} G{…} B{…}` pipeline traces appended on every DECISION CHANGE (Hud2Log.lua).
+  -- The greppable instrument for "why does /cdmp hud2 show nothing here?"; extracted
+  -- to a flat .log by `wowkb.cdmp hud2log`.  Structured, flushed on /reload like pulls.
+  hud2log = {},
 }
 
 -- Chat helpers ----------------------------------------------------------------
