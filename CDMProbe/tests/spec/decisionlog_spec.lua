@@ -1,6 +1,6 @@
--- hud2log_spec.lua — the HUD2 decision-log RENDER gate.
+-- decisionlog_spec.lua — the decision-log RENDER gate.
 --
--- Only ns.Hud2Log.Render (PURE) is unit-tested: it takes hand-built pulse/guidance/
+-- Only ns.DecisionLog.Render (PURE) is unit-tested: it takes hand-built pulse/guidance/
 -- drawList and emits the `S{…} G{…} B{…}` string.  Record (session push, date(),
 -- ns.version, the ring) is NOT tested — mock_ns provides no `date` and doesn't load
 -- Core.lua, so ns.version is unset; all that clock/db/version logic lives in Record,
@@ -44,7 +44,8 @@ local function ability(base, cid, cd, extra)
 end
 
 -- A pulse with the four summons + HoG/DB/SB fillers, defaults "not usable".  The DOMAIN
--- VIEW: `abilities` keyed by base spellID (folded), `buffs` by spellID, `resources.shards`.
+-- VIEW: `abilities` keyed by base spellID (folded), `buffs` by spellID, `power` keyed by
+-- Enum.PowerType name (the SoulShards bar the log's PW field reads).
 local function build(f)
   f = f or {}
   local abilities = {}
@@ -67,7 +68,7 @@ local function build(f)
 
   return {
     at = 1000, combat = true,
-    resources = { shards = { value = f.shards or 0, incoming = f.incoming or 0, max = 5 } },
+    power = { SoulShards = { value = f.shards or 0, incoming = f.incoming or 0, max = 5 } },
     buffs = buffs,
     history = f.history or {},
     abilities = abilities,
@@ -93,17 +94,17 @@ local function drawList(anchoredCids)
   return { cues = cues }
 end
 
-describe("Hud2Log.Render", function()
+describe("DecisionLog.Render", function()
   local ns
   before_each(function()
     ns = H.fresh()
-    H.load("Hud2Log.lua")
+    H.load("DecisionLog.lua")
   end)
 
   it("renders a normal winner line: w:SB + note, B{SB:ROT}", function()
     local pulse = build{ shards = 2 }
     local g = guidance({ [ID.SB] = "ROTATION" }, { [ID.SB] = "pool to 5" })   -- cue keyed by spellID
-    local s = ns.Hud2Log.Render(pulse, g, drawList{ CID.SB })                 -- Binder anchors the cid
+    local s = ns.DecisionLog.Render(pulse, g, drawList{ CID.SB })                 -- Binder anchors the cid
     assert.truthy(s:find("G{w:SB:pool_to_5", 1, true), s)
     assert.truthy(s:find("B{SB:ROT}", 1, true), s)
     assert.is_nil(s:find("×", 1, true))          -- SB was drawn, not dropped
@@ -111,14 +112,14 @@ describe("Hud2Log.Render", function()
 
   it("no winner ⇒ w:-", function()
     local pulse = build{}
-    local s = ns.Hud2Log.Render(pulse, { cues = {} }, { cues = {} })
+    local s = ns.DecisionLog.Render(pulse, { cues = {} }, { cues = {} })
     assert.truthy(s:find("G{w:-}", 1, true), s)
   end)
 
   it("dropped cue (in guidance, absent from drawList) ⇒ ×", function()
     local pulse = build{ shards = 1 }
     local g = guidance({ [ID.SB] = "ROTATION" })
-    local s = ns.Hud2Log.Render(pulse, g, drawList{})   -- Binder anchored nothing
+    local s = ns.DecisionLog.Render(pulse, g, drawList{})   -- Binder anchored nothing
     assert.truthy(s:find("B{SB:ROT×}", 1, true), s)
   end)
 
@@ -130,7 +131,7 @@ describe("Hud2Log.Render", function()
       [ID.DREAD]  = "SOON",
       [ID.IMPLOSION] = "SOON",
     })
-    local s = ns.Hud2Log.Render(pulse, g, drawList{ CID.TYRANT, CID.HOG, CID.DREAD, CID.IMPLOSION })
+    local s = ns.DecisionLog.Render(pulse, g, drawList{ CID.TYRANT, CID.HOG, CID.DREAD, CID.IMPLOSION })
     assert.truthy(s:find("w!T", 1, true), s)
     assert.truthy(s:find("fb:HoG", 1, true), s)
     assert.truthy(s:find("soon:D,I", 1, true), s)   -- sorted: D before I
@@ -141,7 +142,7 @@ describe("Hud2Log.Render", function()
       shards = 3, incoming = -3, core = true, art = "infernal",
       tyrant = cdReady(), dread = cdSoon(8), implosion = cdProbably(), grimoire = cdUnknown(),
     }
-    local s = ns.Hud2Log.Render(pulse, { cues = {} }, { cues = {} })
+    local s = ns.DecisionLog.Render(pulse, { cues = {} }, { cues = {} })
     assert.truthy(s:find("PW:3/-3", 1, true), s)
     assert.truthy(s:find("PR:core,IB", 1, true), s)
     assert.truthy(s:find("T=R", 1, true), s)         -- ready
@@ -152,8 +153,8 @@ describe("Hud2Log.Render", function()
 
   it("guards a <secret> shard value → ?", function()
     local pulse = build{}
-    pulse.resources.shards.value = "<secret>"
-    local s = ns.Hud2Log.Render(pulse, { cues = {} }, { cues = {} })
+    pulse.power.SoulShards.value = "<secret>"
+    local s = ns.DecisionLog.Render(pulse, { cues = {} }, { cues = {} })
     assert.truthy(s:find("PW:?/", 1, true), s)
   end)
 
@@ -161,7 +162,7 @@ describe("Hud2Log.Render", function()
     local pulse = build{ history = {
       { phase = "start", spellID = ID.HOG, base = ID.HOG, at = 999 },
     } }
-    local s = ns.Hud2Log.Render(pulse, { cues = {} }, { cues = {} })
+    local s = ns.DecisionLog.Render(pulse, { cues = {} }, { cues = {} })
     assert.truthy(s:find("CS:HoG", 1, true), s)
   end)
 
@@ -170,7 +171,7 @@ describe("Hud2Log.Render", function()
       { phase = "start",     spellID = ID.HOG, base = ID.HOG, at = 998 },
       { phase = "succeeded", spellID = ID.HOG, base = ID.HOG, at = 999 },
     } }
-    local s = ns.Hud2Log.Render(pulse, { cues = {} }, { cues = {} })
+    local s = ns.DecisionLog.Render(pulse, { cues = {} }, { cues = {} })
     assert.truthy(s:find("CS:-", 1, true), s)
   end)
 
@@ -184,6 +185,6 @@ describe("Hud2Log.Render", function()
     g2.cues[ID.IMPLOSION] = { draw = true, emphasis = "SOON" }
     g2.cues[ID.DREAD]     = { draw = true, emphasis = "SOON" }
     local dl = drawList{ CID.TYRANT, CID.DREAD, CID.IMPLOSION }
-    assert.are.equal(ns.Hud2Log.Render(pulse, g1, dl), ns.Hud2Log.Render(pulse, g2, dl))
+    assert.are.equal(ns.DecisionLog.Render(pulse, g1, dl), ns.DecisionLog.Render(pulse, g2, dl))
   end)
 end)

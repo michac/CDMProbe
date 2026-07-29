@@ -21,6 +21,6 @@ Binder.lua
 Renderer.lua
 HudLayout.lua
 State.lua
-Hud2Log.lua
+DecisionLog.lua
 HudProcGlow.lua
 HudDriver.lua

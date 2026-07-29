@@ -907,7 +907,8 @@ function St.Build(drain)
   --                     rows (Demonic Core, Wild Imp — no pressable twin) do NOT enter.
   --   buffs[spellID]  = procs/auras PRESENT (a summon's TrackedBar isActive lands here as
   --                     the window-active signal), unioned with the flat active-aura scan.
-  --   resources.shards = the SoulShards bar ({ value, max, incoming }).
+  -- (The named power bars ride `power` — keyed by Enum.PowerType name — which every
+  --  consumer reads directly; the old `resources.shards` alias was retired in Phase 4.)
   local function baseOf(entry)
     return (type(entry.spellID) == "number" and entry.spellID) or foldBase[entry.cooldownID]
   end
@@ -960,8 +961,6 @@ function St.Build(drain)
     if type(a.spellID) == "number" then buffs[a.spellID] = true end
   end
 
-  local resources = { shards = shardName and power[shardName] or nil }
-
   return {
     at     = now,
     combat = InCombatLockdown() and true or false,
@@ -970,12 +969,11 @@ function St.Build(drain)
     -- `/cdmp single|multi|aoe` sets in Mode.lua); the Coach READS it.  Spec-agnostic: it
     -- is a generic "st"|"aoe" enum, not a rotation fact.  Defaults "st" (single).
     mode   = (ns.Mode and ns.Mode.aoe) and "aoe" or "st",
-    -- RAW CDM view (retained, additive) — probe / Hud2Log short-codes / cdmp.py.
+    -- RAW CDM view (retained, additive) — probe / DecisionLog short-codes / cdmp.py.
     cooldowns = cooldowns,
     -- DOMAIN view (the re-layer) — the pipeline's input; the Coach decides on THIS.
     abilities = abilities,
     buffs     = buffs,
-    resources = resources,
     power  = power,
     -- Every active player buff, spec-agnostically — the Coach's authoritative proc
     -- source, and the diagnostic that reveals a proc's TRUE aura id when a CDM entry's
@@ -997,7 +995,7 @@ end
 -- REF-COUNTED — the events run while any consumer holds a ref — so multiple consumers
 -- can share it.  This is the "expose the pulse to a driver" seam: State.Build + a clean
 -- way to keep ingestion live.  (The W4-Phase-1 statelog disk-recording layer that used
--- to sit on top of this was retired at the W4 cutover; the hud2 decision log is the
+-- to sit on top of this was retired at the W4 cutover; the decision log is the
 -- pipeline's recorder now.)
 St.consumers = 0                -- live consumers of event ingestion
 

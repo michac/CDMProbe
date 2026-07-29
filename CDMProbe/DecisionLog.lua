@@ -1,25 +1,33 @@
--- Hud2Log.lua — the HUD2 DECISION LOG.  A greppable pipeline trace.
+-- DecisionLog.lua — the pipeline DECISION LOG.  A greppable pipeline trace.
 --
--- WHY THIS EXISTS.  The W4 Phase-8 Coach (flat priority-list APL) runs live behind
--- `/cdmp hud2`, and in-game it can sit showing NO recommendation in a state where it
--- should call one (e.g. "build / pool shards").  The leading hypothesis is that the
--- winner resolves to Shadow Bolt, which has no cooldown, so it is not in the Cooldown
--- Manager's tracked set (`cidByBase[686]` is nil) and the Binder DROPS the cue — nothing
--- draws.  But the interesting states fly by mid-combat and `/cdmp hud2 status` only
--- reports the LAST tick, so which of several failure modes it is can't be confirmed.
+-- WHY THIS EXISTS.  The Coach (flat priority-list APL) can sit showing NO recommendation
+-- in a state where it should call one (e.g. "build / pool shards").  A winner that
+-- resolves to a spell with no cooldown is not in the Cooldown Manager's tracked set, so
+-- the Binder DROPS the cue and nothing draws — but the interesting states fly by
+-- mid-combat and `/cdmp hud status` only reports the LAST tick, so which failure mode it
+-- is can't be confirmed from chat alone.
 --
 -- The fix is an INSTRUMENT, not a UI: each time the pipeline's decision CHANGES, append
 -- ONE greppable line capturing State -> Coach(Guidance) -> Binder(DrawList), including
 -- whether a Coach cue was DROPPED by the Binder (no icon, `×`) or the Coach produced NO
 -- winner (`w:-`).  The log gets big; grep/awk sorts it out later.  It persists via
--- CDMProbeDB (flushed on /reload), and `wowkb.cdmp hud2log` extracts it to a flat .log.
+-- CDMProbeDB (flushed on /reload), and `wowkb.cdmp decisionlog` extracts it to a flat .log.
 --
--- THE SPLIT is the whole design (mirrors HudLog's Render/Record intent):
+-- (The name is a fossil-free rename of the old `Hud2Log` — the `2` was left over from the
+-- retired `/cdmp hud2` HUD alias and never meant anything here.  Multi-spec Phase 4.)
+--
+-- THE SPLIT is the whole design:
 --   * Render(pulse, guidance, drawList) -> string is PURE — no frames, no db, no clock.
 --     Builds the `S{…} G{…} B{…}` content.  This is the busted-testable core.
 --   * Record(...) is the stateful wrapper — lazy session, the change-only dedup, the
 --     ring trim, the clock/date/version.  Kept OUT of Render so the tests need no
 --     `date`/`ns.version` (mock_ns provides neither).
+--
+-- SPEC-PARAMETERIZED (multi-spec Phase 4).  The log holds NO spell constants of its own:
+-- per-ability short codes ride `abbr` on each ns.SpecInfo(id) entry, and the non-per-
+-- ability vocabulary (CD/PR render order, proc buff codes, the armed-Art id set, the
+-- core-glow id) is read off ns.ActiveSpec.log.  Demo renders byte-identical lines; a
+-- second spec supplies its own `abbr`s + `log` table and this module is untouched.
 --
 -- DETERMINISM is load-bearing for the change-only dedup.  `guidance.cues` and
 -- `pulse.abilities`/`.buffs` are MAPS; `pairs()` order is unstable.  Every map-derived
@@ -32,37 +40,14 @@
 -- id->code lookup floors to "?" so a "<secret>" never reaches a `%d` slot.
 local ADDON, ns = ...
 
-ns.Hud2Log = {}
-local L2 = ns.Hud2Log
+ns.DecisionLog = {}
+local DL = ns.DecisionLog
 
 local CAP     = 5000     -- entries kept per session ("let it get big")
 local SESSIONS = 3       -- sessions kept on disk
 
--- Short codes keyed by spellID.  No existing abbr field exists (ns.Spec[id].label is the
--- only name); this is the greppable stand-in.  Base ids from ns.SpecIDs + the Art
--- override ids (both the confirmed and the alt/unconfirmed pair, which cost nothing).
-local SHORT = {
-  [265187] = "T",  [104316] = "D",  [196277] = "I",
-  [1276452] = "G", [1276467] = "G", [136726] = "G",
-  [105174] = "HoG", [264178] = "DB", [686] = "SB",
-  [434506] = "IB", [433891] = "IB", [434635] = "RU", [434636] = "RU",
-}
--- The armed-Demonic-Art override ids (live id ∈ this set ⇒ the transform is up).
-local ART = { [434506] = true, [433891] = true, [434635] = true, [434636] = true }
-local DEMONBOLT = 264178   -- glow.active ⇒ core proc (the empowered button)
-
--- CD readiness render order (deterministic).  Since the re-layer the log encodes the
--- domain view — the FULL ranked set the Coach decides on, not just the summons — so the
--- line shows why SB beat HoG.  Folded (abilities is one-per-base), so one D, not two.
-local CD_ORDER = { "T", "D", "I", "G", "HoG", "DB", "SB" }
--- PR (proc/buff) render order (deterministic): core / Tyrant-window / the armed Art.
-local PR_ORDER = { "core", "Tw", "IB", "RU" }
--- Buff spellID -> PR short code (the domain view's `buffs` is keyed by spellID).
-local PR_SHORT = {
-  [264173] = "core",   -- Demonic Core buff present
-  [265187] = "Tw",     -- Tyrant window active (TrackedBar buff.isActive)
-}
--- Guidance emphasis -> compact Binder token.
+-- Guidance emphasis -> compact Binder token.  Generic (spec-agnostic), so it stays a
+-- shell local rather than moving to the per-spec log vocabulary.
 local EMPH = { ROTATION = "ROT", LATE = "LATE", ROTATION_FALLBACK = "RFB", SOON = "SOON" }
 
 --------------------------------------------------------------------------------
@@ -70,7 +55,14 @@ local EMPH = { ROTATION = "ROT", LATE = "LATE", ROTATION_FALLBACK = "RFB", SOON 
 --------------------------------------------------------------------------------
 local function num(v) return (type(v) == "number") and v or nil end
 
--- ns.SpecInfo is nil-safe/secret-safe, but the NEUTRAL fallback has NO label, so guard.
+-- ns.SpecInfo is nil-safe/secret-safe; the NEUTRAL fallback carries no abbr/label, so
+-- both readers below just return nil for an unknown/secret id.
+local function abbrOf(id)
+  if type(id) ~= "number" then return nil end
+  local info = ns.SpecInfo and ns.SpecInfo(id)
+  return info and info.abbr
+end
+
 local function labelOf(id)
   if type(id) ~= "number" then return nil end
   local info = ns.SpecInfo and ns.SpecInfo(id)
@@ -80,7 +72,7 @@ end
 -- id -> short code.  live wins over base (a transformed button is what it BECAME); floor
 -- to "?" so a "<secret>" or unknown never lands in a format slot as nil.
 local function shortOf(live, base)
-  return SHORT[live] or SHORT[base]
+  return abbrOf(live) or abbrOf(base)
       or labelOf(live) or labelOf(base)
       or (type(base) == "number" and tostring(base))
       or (type(live) == "number" and tostring(live))
@@ -115,14 +107,17 @@ end
 --------------------------------------------------------------------------------
 -- Render — PURE.  pulse/guidance/drawList in, the `S{…} G{…} B{…}` string out.
 --------------------------------------------------------------------------------
-function L2.Render(pulse, guidance, drawList)
+function DL.Render(pulse, guidance, drawList)
   pulse = pulse or {}
   guidance = guidance or {}
   drawList = drawList or {}
+  -- The per-spec log vocabulary (CD/PR render order, proc codes, armed-Art set, core-glow
+  -- id).  Read off the active spec; empty-table fallback keeps Render total pre-activation.
+  local L = (ns.ActiveSpec and ns.ActiveSpec.log) or {}
   -- THE DOMAIN VIEW is the Coach's decision surface, so the log encodes THAT (the
-  -- re-layer): `abilities` (spellID-keyed, folded) / `buffs` / `resources`, NOT the raw
-  -- cooldownID-keyed `cooldowns`.  If the log didn't encode the Coach's real input it
-  -- couldn't explain the Coach's decision.
+  -- re-layer): `abilities` (spellID-keyed, folded) / `buffs`, NOT the raw cooldownID-keyed
+  -- `cooldowns`.  If the log didn't encode the Coach's real input it couldn't explain the
+  -- Coach's decision.
   local abilities = pulse.abilities or {}
   local buffs = pulse.buffs or {}
 
@@ -139,33 +134,45 @@ function L2.Render(pulse, guidance, drawList)
 
   -- S — CD readiness (the full ranked set, folded) · PR procs/buffs · PW shards · CS cast.
   local rdy, prSet = {}, {}
+  local artArmed = L.artArmed or {}
   for _, base in ipairs(bases) do
     local ab = abilities[base]
-    local code = SHORT[base]         -- base lookup: HoG stays HoG, one D (already folded)
+    local code = abbrOf(base)         -- base lookup: HoG stays HoG, one D (already folded)
     if code and rdy[code] == nil then rdy[code] = readiness(ab.cd) end
     -- the armed Demonic Art is a TRANSFORM (an ability's live override), not an aura
-    if ART[ab.liveSpellID] then prSet[SHORT[ab.liveSpellID]] = true end
+    if artArmed[ab.liveSpellID] then
+      local c = abbrOf(ab.liveSpellID)
+      if c then prSet[c] = true end
+    end
   end
-  -- Demonbolt glow = the combat-readable core proc even when the aura reads secret.
-  local dbAb = abilities[DEMONBOLT]
+  -- The core-proc button's glow = the combat-readable core proc even when the aura reads
+  -- secret (Demonbolt for Demo).
+  local coreGlowID = L.coreGlowID
+  local dbAb = coreGlowID and abilities[coreGlowID]
   if dbAb and dbAb.glow and dbAb.glow.active == true then prSet.core = true end
   -- procs/auras PRESENT, straight off the domain view's `buffs` set (spellID-keyed).
+  local procBuffs = L.procBuffs or {}
   for sid in pairs(buffs) do
-    local code = PR_SHORT[sid]
+    local code = procBuffs[sid]
     if code then prSet[code] = true end
   end
 
   local cdParts = {}
-  for _, code in ipairs(CD_ORDER) do
+  for _, code in ipairs(L.cdOrder or {}) do
     if rdy[code] then cdParts[#cdParts + 1] = code .. "=" .. rdy[code] end
   end
   local cdStr = (#cdParts > 0) and table.concat(cdParts, " ") or "-"
 
   local prParts = {}
-  for _, k in ipairs(PR_ORDER) do if prSet[k] then prParts[#prParts + 1] = k end end
+  for _, k in ipairs(L.procOrder or {}) do if prSet[k] then prParts[#prParts + 1] = k end end
   local prStr = (#prParts > 0) and table.concat(prParts, ",") or "-"
 
-  local ss = (pulse.resources and pulse.resources.shards) or {}
+  -- PW — the power bar the HUD renders.  Read the FIRST `incoming` power off the active
+  -- spec's power array (Demo -> power.SoulShards); no `resources.shards` alias anymore.
+  local ss = {}
+  for _, p in ipairs((ns.ActiveSpec and ns.ActiveSpec.powers) or {}) do
+    if p.incoming then ss = (pulse.power and pulse.power[p.name]) or {}; break end
+  end
   local val, inc = num(ss.value), num(ss.incoming)
   local pwStr = (val and string.format("%d", math.floor(val)) or "?")
     .. "/" .. (inc and string.format("%+d", inc) or "?")
@@ -247,15 +254,15 @@ end
 -- Record — the stateful wrapper (session push, change-only dedup, the ring).
 --------------------------------------------------------------------------------
 -- The rotation short-codes present in the pulse — captured on the session's FIRST Record,
--- so the header answers "is SB tracked?" without reading a single entry.  Only ids the
--- SHORT map knows (the rotation set), so the list stays clean.
+-- so the header answers "is SB tracked?" without reading a single entry.  Only ids that
+-- carry an `abbr` (the rotation set), so the list stays clean.
 local function trackedCodes(pulse)
   -- From the domain view's `abilities` (spellID-keyed, folded), so the header answers
   -- "is SB tracked?" over the Coach's actual ability set, one code per ability.
   local abilities = (pulse and pulse.abilities) or {}
   local set = {}
   for base, ab in pairs(abilities) do
-    local code = SHORT[ab.liveSpellID] or SHORT[base]
+    local code = abbrOf(ab.liveSpellID) or abbrOf(base)
     if code then set[code] = true end
   end
   local list = {}
@@ -264,17 +271,17 @@ local function trackedCodes(pulse)
   return table.concat(list, ",")
 end
 
-L2.session     = nil   -- in-memory handle; nil ⇒ first Record of this load starts a session
-L2.t0          = nil
-L2.lastContent = nil
+DL.session     = nil   -- in-memory handle; nil ⇒ first Record of this load starts a session
+DL.t0          = nil
+DL.lastContent = nil
 
-function L2.Record(pulse, guidance, drawList)
+function DL.Record(pulse, guidance, drawList)
   if not ns.db then return end   -- pre-ADDON_LOADED; nothing to persist to
 
   -- Lazy session: push a fresh header the first time we run after a load.
-  if L2.session == nil then
-    local log = ns.db.hud2log
-    if type(log) ~= "table" then log = {}; ns.db.hud2log = log end
+  if DL.session == nil then
+    local log = ns.db.decisionlog
+    if type(log) ~= "table" then log = {}; ns.db.decisionlog = log end
     local sess = {
       started = date("%Y-%m-%d %H:%M:%S"),
       version = ns.version,
@@ -283,15 +290,15 @@ function L2.Record(pulse, guidance, drawList)
     }
     log[#log + 1] = sess
     while #log > SESSIONS do table.remove(log, 1) end
-    L2.session, L2.t0, L2.lastContent = sess, GetTime(), nil
+    DL.session, DL.t0, DL.lastContent = sess, GetTime(), nil
   end
 
   -- Change-only: skip a tick whose whole decision is byte-identical to the last logged.
-  local content = L2.Render(pulse, guidance, drawList)
-  if content == L2.lastContent then return end
-  L2.lastContent = content
+  local content = DL.Render(pulse, guidance, drawList)
+  if content == DL.lastContent then return end
+  DL.lastContent = content
 
-  local entries = L2.session.entries
-  entries[#entries + 1] = string.format("t%.1f %s", GetTime() - L2.t0, content)
+  local entries = DL.session.entries
+  entries[#entries + 1] = string.format("t%.1f %s", GetTime() - DL.t0, content)
   while #entries > CAP do table.remove(entries, 1) end
 end

@@ -133,6 +133,27 @@ spec.powers = {
   { name = "SoulShards", display = "discrete", incoming = true, token = "SOUL_SHARDS" },
 }
 
+-- The DECISION-LOG vocabulary (multi-spec Phase 4, the decision-log seam).  DecisionLog.lua
+-- holds NO spec constants of its own: the per-ability short codes live as `abbr` on each
+-- spec.Spec entry (one identity source), and the non-per-ability bits live here.  Read off
+-- ns.ActiveSpec.log (an object read, like spec.powers), NOT a rebound SpecField.
+--   cdOrder    the S{CD:…} readiness render order, by abbr (deterministic).
+--   procOrder  the S{PR:…} proc/buff render order, by code.
+--   procBuffs  buff spellID -> PR code (the domain view's `buffs` is keyed by spellID).
+--   artArmed   live override id ∈ this set ⇒ the Demonic-Art transform is up (a PR code).
+--   coreGlowID the button whose glow.active reads the core proc (Demonbolt) even when the
+--              aura reads secret.
+spec.log = {
+  cdOrder   = { "T", "D", "I", "G", "HoG", "DB", "SB" },
+  procOrder = { "core", "Tw", "IB", "RU" },
+  procBuffs = {
+    [264173] = "core",   -- Demonic Core buff present
+    [265187] = "Tw",     -- Tyrant window active (TrackedBar buff.isActive)
+  },
+  artArmed  = { [433891] = true, [434506] = true, [434635] = true, [434636] = true },
+  coreGlowID = 264178,   -- Demonbolt glow.active ⇒ core proc (the empowered button)
+}
+
 spec.Spec = {
   -- ── Essential: the burst summons (§3 "summon" / fel green) ────────────────
   -- cadence = "oncd": these are the abilities the user rates the biggest win —
@@ -145,7 +166,7 @@ spec.Spec = {
   [S.TYRANT] = {
     group = "summon", kind = "button", spends = "shards", cadence = "oncd",
     burstAlign = true, goGate = true, emphasis = "burst",
-    baseCD = 60, label = "Summon Demonic Tyrant",
+    baseCD = 60, abbr = "T", label = "Summon Demonic Tyrant",
   },
   -- `stage = true` (M4): inside the BURST window HudScore reads this AVAILABLE
   -- "stage for Tyrant" instead of greenlighting it on cooldown, so it lands FRESH
@@ -154,7 +175,7 @@ spec.Spec = {
   [S.DREADSTALKERS] = {
     group = "summon", kind = "button", spends = "shards", cadence = "oncd",
     burstAlign = true, goGate = true, stage = true, baseCD = 20,
-    label = "Call Dreadstalkers",
+    abbr = "D", label = "Call Dreadstalkers",
   },
   -- The Grimoire summons are burst-ALIGNED but NOT part of the go-gate (see
   -- `goGate` above).  `stage = true` (M4.1): both are 2-min summons paired with
@@ -167,24 +188,24 @@ spec.Spec = {
   -- 2-min summons paired with Tyrant, so on-cooldown use is almost always wrong.
   [1276467] = {
     group = "summon", kind = "button", cadence = "oncd", burstAlign = true,
-    stage = true, discretion = true, baseCD = 120, label = "Grimoire: Fel Ravager",
+    stage = true, discretion = true, baseCD = 120, abbr = "G", label = "Grimoire: Fel Ravager",
   },
   [S.IMP_LORD] = {
     group = "summon", kind = "button", cadence = "oncd", burstAlign = true,
-    stage = true, discretion = true, baseCD = 120, label = "Grimoire: Imp Lord",
+    stage = true, discretion = true, baseCD = 120, abbr = "G", label = "Grimoire: Imp Lord",
   },
   -- 136726 is the talent ENTRY-id, kept mapped as a harmless alias for a build
   -- that surfaces it; the live tracked/cast id is S.IMP_LORD (1276452) above.
   [136726] = {
     group = "summon", kind = "button", cadence = "oncd", burstAlign = true,
-    stage = true, discretion = true, baseCD = 120, label = "Grimoire: Imp Lord (entry-id alias)",
+    stage = true, discretion = true, baseCD = 120, abbr = "G", label = "Grimoire: Imp Lord (entry-id alias)",
   },
 
   -- ── Essential: core shadow damage (§3 "core" / shadow violet) ─────────────
   -- HoG is the spender the whole shard economy points at — `primary`.
   [S.HAND_OF_GULDAN] = {
     group = "core", kind = "button", spends = "shards", cadence = "gated",
-    primary = true, label = "Hand of Gul'dan",
+    primary = true, abbr = "HoG", label = "Hand of Gul'dan",
   },
   -- C2, the pole fix.  v0.9.1 classified Demonbolt as a `builder`, which put it
   -- at the OPPOSITE tint pole from Hand of Gul'dan — its single most common
@@ -194,7 +215,7 @@ spec.Spec = {
   -- `generates = 2` is what drives the overcap guard.
   [S.DEMONBOLT] = {
     group = "core", kind = "button", spends = "core", generates = 2,
-    cadence = "reactive", label = "Demonbolt",
+    cadence = "reactive", abbr = "DB", label = "Demonbolt",
   },
   [S.SHADOW_BOLT] = {
     group = "core", kind = "button", generates = 1, cadence = "filler",
@@ -203,7 +224,7 @@ spec.Spec = {
     -- for four milestones, and because Shadow Bolt is added by hand — the
     -- knowingly-accepted risk is silent degradation if the setting is ever lost.
     lost = "SB -> Infernal Bolt cannot light, and the filler has no dot",
-    label = "Shadow Bolt",
+    abbr = "SB", label = "Shadow Bolt",
   },
 
   -- Demonic Art transforms.  These are OVERRIDES, never separately tracked by
@@ -216,13 +237,13 @@ spec.Spec = {
   -- Bolt = 434506**.  The other two stay mapped — they cost nothing and cover a
   -- build that surfaces the alternate ID.
   [433891] = { group = "core", kind = "button", spends = "art", generates = 3,
-               cadence = "reactive", expect = false, label = "Infernal Bolt (alt ID, unconfirmed)" },
+               cadence = "reactive", expect = false, abbr = "IB", label = "Infernal Bolt (alt ID, unconfirmed)" },
   [434506] = { group = "core", kind = "button", spends = "art", generates = 3,
-               cadence = "reactive", expect = false, label = "Infernal Bolt" },  -- CONFIRMED live
+               cadence = "reactive", expect = false, abbr = "IB", label = "Infernal Bolt" },  -- CONFIRMED live
   [434635] = { group = "core", kind = "button", spends = "art",
-               cadence = "reactive", expect = false, label = "Ruination" },      -- CONFIRMED live
+               cadence = "reactive", expect = false, abbr = "RU", label = "Ruination" },      -- CONFIRMED live
   [434636] = { group = "core", kind = "button", spends = "art",
-               cadence = "reactive", expect = false, label = "Ruination (alt ID, unconfirmed)" },
+               cadence = "reactive", expect = false, abbr = "RU", label = "Ruination (alt ID, unconfirmed)" },
 
   -- ── Essential: the fel explosion (§3 "aoe" / lime) ────────────────────────
   -- THE judgeable=false case.  Implosion's real gate is Wild Imps >= 6.  The
@@ -239,7 +260,7 @@ spec.Spec = {
     -- whose priority is "largely the same across target counts", so there is no
     -- clean ST/AoE dot difference to gate here.  It stays judgeable=false / "your
     -- call" in both modes; the imp count we can't read is the real gate.
-    label = "Implosion",
+    abbr = "I", label = "Implosion",
   },
 
   -- ── Utility: defensives / CC / mobility ───────────────────────────────────

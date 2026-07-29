@@ -24,11 +24,12 @@ local DEFAULTS = {
   -- codebase re-words freely.  Both are rendered from one in-memory observation
   -- set per section (Probe.lua), so they cannot drift.
   probe = {},
-  -- HUD2 decision log — a ring of the last 3 sessions, each a list of one-line
-  -- `S{…} G{…} B{…}` pipeline traces appended on every DECISION CHANGE (Hud2Log.lua).
-  -- The greppable instrument for "why does /cdmp hud2 show nothing here?"; extracted
-  -- to a flat .log by `wowkb.cdmp hud2log`.  Structured, flushed on /reload like pulls.
-  hud2log = {},
+  -- Pipeline decision log — a ring of the last 3 sessions, each a list of one-line
+  -- `S{…} G{…} B{…}` pipeline traces appended on every DECISION CHANGE (DecisionLog.lua).
+  -- The greppable instrument for "why does /cdmp hud show nothing here?"; extracted to a
+  -- flat .log by `wowkb.cdmp decisionlog`.  Structured, flushed on /reload like pulls.
+  -- (A prior `hud2log` store is folded in one-shot on login — see HudDriver.OnLogin.)
+  decisionlog = {},
 }
 
 -- Chat helpers ----------------------------------------------------------------

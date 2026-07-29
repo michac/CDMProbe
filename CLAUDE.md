@@ -89,7 +89,8 @@ Design context + status live in the parent workspace at
   - `hud on` / `hud off` — set it explicitly (bare `hud` toggles).
   - `hud status` — the pipeline readout: ON/OFF, State ingestion consumer count, and
     the last tick's cue count / any tick error. The decision trace is in
-    `CDMProbeDB.hud2log` (extract with `wowkb.cdmp hud2log`).
+    `CDMProbeDB.decisionlog` (extract with `wowkb.cdmp decisionlog`; `hud2log` is a
+    back-compat alias).
   - `hud layout` — dump the live Layout (icon viewers -> cooldownID -> spellID +
     the State-resolved keybind) — the row to read when a cue's key is missing.
 - `single` / `multi` / `aoe` — the target-mode toggle (`Mode.lua`): idempotent
@@ -148,8 +149,9 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
     HudGeometry.lua               shared frame/anchor geometry helpers.
     HudDriver.lua                 the LIVE driver: the ~10 Hz ticker that runs the
                                   pipeline + the `/cdmp hud` command (alias `hud2`).
-    Hud2Log.lua                   the decision log: one greppable `S{} G{} B{}` line
-                                  per decision change -> CDMProbeDB.hud2log.
+    DecisionLog.lua               the decision log: one greppable `S{} G{} B{}` line
+                                  per decision change -> CDMProbeDB.decisionlog.
+                                  Short-codes come from per-spec `abbr`/`spec.log`.
     HudNapkin.lua                 anticipation: SUCCEEDED cast -> base-cooldown
                                   countdown.  The only DRIFTING input, fenced so it
                                   can only make the HUD early: an observed ready edge
@@ -170,7 +172,7 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
       spec/binder_spec.lua        spellID cue -> display cooldownID/icon resolution
       spec/renderer_spec.lua      DrawList -> texture/token treatment
       spec/hudlayout_spec.lua     the CDM viewer walk -> Layout
-      spec/hud2log_spec.lua       the decision-log Record/Render split
+      spec/decisionlog_spec.lua   the decision-log Record/Render split
       spec/hudnapkin_spec.lua     anticipation countdown + honesty rules
       spec/specdelta_spec.lua     SpecDemonology signal-bucket deltas
 ```
@@ -192,7 +194,7 @@ put `~/.luarocks/bin` on PATH.
   config or FIX the code — do not scatter inline `-- luacheck: ignore`.** A real
   catch gets fixed; a legit API name goes in the std.
 - **`busted CDMProbe/tests/spec`** — unit tests for the pure-logic pipeline modules
-  (`Coach`, `Binder`, `Renderer`, `HudLayout`, `Hud2Log`, `HudNapkin`,
+  (`Coach`, `Binder`, `Renderer`, `HudLayout`, `DecisionLog`, `HudNapkin`,
   `SpecDemonology`). The harness is
   **`CDMProbe/tests/mock_ns.lua`**: a chainable `CreateFrame`/FontString/animation
   stub, a **settable `GetTime` fake clock**, global fakes

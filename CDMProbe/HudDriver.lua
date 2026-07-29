@@ -84,9 +84,9 @@ local function tick()
   -- Re-hook newly-pooled CDM frames + re-apply the native-proc-glow dim (idempotent,
   -- cheap — a per-instance flag skips already-hooked frames).
   if ns.HudProcGlow then ns.HudProcGlow.Install() end
-  -- HUD2 decision log — append one greppable line on any decision change.  Inside the
+  -- Decision log — append one greppable line on any decision change.  Inside the
   -- pcall'd tick, so a logging throw can never wedge the HUD.
-  if ns.Hud2Log then ns.Hud2Log.Record(pulse, guidance, drawList) end
+  if ns.DecisionLog then ns.DecisionLog.Record(pulse, guidance, drawList) end
 end
 
 local function safeTick()
@@ -203,6 +203,14 @@ function ns.OnLogin()
       ns.db.hud = ns.db.hud2 and true or false
       ns.db.hud2 = nil
     end
+    -- Decision-log rename (Phase 4): fold a prior `hud2log` store into `decisionlog`.
+    -- One-shot + idempotent — only moves when there is old data and no new data yet.
+    -- (Distinct from the `hud2` bool above: this is the LOG ring, `Hud2Log` -> `DecisionLog`.)
+    if type(ns.db.hud2log) == "table" and #ns.db.hud2log > 0
+        and (type(ns.db.decisionlog) ~= "table" or #ns.db.decisionlog == 0) then
+      ns.db.decisionlog = ns.db.hud2log
+    end
+    ns.db.hud2log = nil
   end
   if ns.db and ns.db.hud then
     C_Timer.After(1.0, function() ns.SetHud(true) end)

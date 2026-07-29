@@ -624,7 +624,7 @@ ns.RegisterCommand("probe",
     -- retired the old-engine state/score/napkin readout + the M3e pull recorder that
     -- used to print here; the hud2 decision log is the pipeline's recorder now).
     ns.Print((ns.HudDriver and ns.HudDriver.on)
-      and "(HUD on — /cdmp hud status for the pipeline readout; decision trace in CDMProbeDB.hud2log)"
+      and "(HUD on — /cdmp hud status for the pipeline readout; decision trace in CDMProbeDB.decisionlog)"
       or  "(HUD off — enable it with /cdmp hud)")
 
     ns.EndCapture("probe_" .. (combat and "combat" or "ooc"))
