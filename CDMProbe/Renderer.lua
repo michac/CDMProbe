@@ -441,14 +441,17 @@ local FIXTURES = {
   --   FALLBACK  ROTATION_FALLBACK — the honest runner-up, plain dot
   --   ROTATION  press now — dot + our own breathing dot-glow
   --   LATE      overdue — dot + our own dot-glow
-  --   PROC GLOW Blizzard's NATIVE spell-activation overlay (applied post-Draw, below),
-  --            the same glow the CDM shows on a proc — the one the "subdue the proc
-  --            glow" backlog item is about, previewed here on a dummy square.
+  --   FB+GLOW   a FALLBACK dot + keybind UNDER Blizzard's NATIVE spell-activation
+  --            overlay (applied post-Draw, below) — the exact conflict the "subdue
+  --            the proc glow" backlog item is about: the native glow stomping OUR
+  --            chrome.  Pairs with the plain FALLBACK square (fake3) as the A/B.
+  -- Squares carry real spell-icon ART (buildRig), so the chrome is judged against a
+  -- busy icon like the live CDM, not a flat fill.
   -- (Supersedes `inventory` as the default: that card still lists the RETIRED
   -- JUDGE/SEQUENCE tokens; this one is the live SOON|ROTATION|ROTATION_FALLBACK|LATE
   -- set plus the idle + native-glow states.)
   ["states"] = { icons = 6,
-    captions = { "IDLE", "SOON", "FALLBACK", "ROTATION", "LATE", "PROC GLOW" },
+    captions = { "IDLE", "SOON", "FALLBACK", "ROTATION", "LATE", "FB+GLOW" },
     procGlow = { 6 },   -- icon indices to paint Blizzard's native glow onto (post-Draw)
     drawList = {
       cues = {
@@ -457,7 +460,7 @@ local FIXTURES = {
         cue("fake3", "ROTATION_FALLBACK", "R"),  -- runner-up, no glow
         cue("fake4", "ROTATION", "R"),           -- press now, glows (our dot-glow)
         cue("fake5", "LATE", "E"),               -- overdue, glows
-        cue("fake6", nil, "F"),                  -- identity only; native glow lands on top
+        cue("fake6", "ROTATION_FALLBACK", "F"),  -- FALLBACK dot + keybind, native glow on top
       },
     } },
   -- INVENTORY — not a scenario: one dot of EVERY emphasis token side by side, each
@@ -502,9 +505,18 @@ local FIXTURES = {
 
 ns.RenderTestFixtures = FIXTURES   -- exported so a spec / tool can read them
 
+-- Real spell-icon art for the placeholder squares, so the chrome (dots / glow /
+-- keybind) is judged against a BUSY icon like the live CDM rather than a flat fill —
+-- a dark uniform block reads the chrome too kindly.  Long-standing Warlock spellIDs
+-- (texture resolves regardless of known/spec); `C_Spell.GetSpellTexture` falls back
+-- to nil for any dud, and buildRig falls back to the old dark fill then.  Cycled by
+-- icon index, so any icon count gets varied art.
+local DEMO_ICON_SPELLS = { 105174, 686, 30146, 1122, 5740, 172 }
+local ICON_DARK = { 0.12, 0.13, 0.16, 1 }  -- fallback fill when a texture won't resolve
+
 -- Build (or reuse) the placeholder icon row + a persistent test Renderer.  Icons
--- are bordered dark squares — the DOT is the star of each screenshot.  An optional
--- `captions` list labels each icon underneath (the inventory view's reference card).
+-- carry real spell art (above) so the DOT/glow/keybind read as they would over a
+-- live CDM icon.  An optional `captions` list labels each icon underneath.
 local function buildRig(n, captions)
   local rig = ns._renderTestRig
   if not rig then
@@ -528,7 +540,14 @@ local function buildRig(n, captions)
       edge:SetColorTexture(0.40, 0.40, 0.46, 1)
       local fill = icon:CreateTexture(nil, "ARTWORK")
       fill:SetAllPoints(icon)
-      fill:SetColorTexture(0.12, 0.13, 0.16, 1)
+      local spellID = DEMO_ICON_SPELLS[((i - 1) % #DEMO_ICON_SPELLS) + 1]
+      local tex = C_Spell and C_Spell.GetSpellTexture and C_Spell.GetSpellTexture(spellID)
+      if tex then
+        fill:SetTexture(tex)
+        fill:SetTexCoord(0.07, 0.93, 0.07, 0.93)   -- trim the stock icon border
+      else
+        fill:SetColorTexture(ICON_DARK[1], ICON_DARK[2], ICON_DARK[3], ICON_DARK[4])
+      end
       icon._caption = icon:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
       icon._caption:SetPoint("TOP", icon, "BOTTOM", 0, -4)
       rig.icons[i] = icon
