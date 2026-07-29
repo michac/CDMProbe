@@ -56,12 +56,21 @@
 -- Unknown spellIDs fall back to the neutral accent — never crash, never guess.
 local ADDON, ns = ...
 
+-- Multi-spec Phase 1: this file no longer clobbers the ns.Spec* globals at load.  It fills
+-- a local `spec` object and self-registers it (bottom of file); the SpecRegistry resolver
+-- DERIVES the legacy globals from whichever spec is active.  The field names on `spec`
+-- match the old global names 1:1 so every consumer keeps reading ns.SpecIDs / ns.SpecInfo
+-- / … untouched.  Runtime cross-references INSIDE these functions stay `ns.Spec*` — they
+-- resolve post-activation to the active spec (= Demo), which is correct since only the
+-- active spec's functions are ever invoked through the rebound globals.
+local spec = {}
+
 -- Group hues — THE source of truth (B6).  These triples were first tuned in the
 -- retired Resource.lua (deleted W4a); their authority now lives HERE, so the
 -- render modules read `ns.SpecGroups` and hold no colour constants of their own.
 -- spec.md §3: summon = fel green, core shadow = violet, fel explosion = lime,
 -- proc/resource = cyan, defensive = blue, CC = slate, mobility = gold.
-ns.SpecGroups = {
+spec.SpecGroups = {
   summon  = { 0.216, 0.784, 0.435 }, -- fel green     — demon summons / burst
   core    = { 0.627, 0.396, 1.000 }, -- shadow violet — core shadow damage
   aoe     = { 0.741, 0.953, 0.227 }, -- fel lime      — Implosion
@@ -73,7 +82,7 @@ ns.SpecGroups = {
 }
 
 -- Named IDs the render modules reference by name rather than by literal.
-ns.SpecIDs = {
+spec.SpecIDs = {
   TYRANT        = 265187,
   DREADSTALKERS = 104316,
   HAND_OF_GULDAN = 105174,
@@ -94,22 +103,22 @@ ns.SpecIDs = {
   DOMINION       = 1276166,  -- BuffBar
 }
 
-local S = ns.SpecIDs
+local S = spec.SpecIDs
 
 -- Keybind-resolution aliases.  A spell whose CDM/cast id differs from the id that
 -- sits on the action bar won't resolve a keybind under its own id — Imp Lord is
 -- the case (cast 1276452 vs talent entry 136726).  HudBinds.Get falls back to the
 -- alias so the icon + sequence show the key either way.  Bidirectional.
-ns.SpecBindAlias = {
+spec.SpecBindAlias = {
   [1276452] = 136726,
   [136726]  = 1276452,
 }
 
 -- The Soul Shard cap.  Used by the overcap guard: a generator that would push
 -- past this stops being a ROTATION call even when its proc is genuinely up.
-ns.SHARD_CAP = 5
+spec.SHARD_CAP = 5
 
-ns.Spec = {
+spec.Spec = {
   -- ── Essential: the burst summons (§3 "summon" / fel green) ────────────────
   -- cadence = "oncd": these are the abilities the user rates the biggest win —
   -- "firing cooldown abilities as soon as they are up".  So a ready edge on any
@@ -285,13 +294,13 @@ ns.Spec = {
 -- the thing to revisit — the scoring for these buttons is untouched and still
 -- correct, only the CUE is muted.  (Also: 132411 Singe Magic / 388215 Devour
 -- Magic override this same button; those are utilities and never cue anyway.)
-ns.SpecNoCue = {
+spec.SpecNoCue = {
   [1276467]     = true,   -- Grimoire: Fel Ravager
   [S.IMP_LORD]  = true,   -- Grimoire: Imp Lord
   [136726]      = true,   -- Grimoire: Imp Lord (talent entry-id alias)
 }
 
-ns.SpecProcGlow = {
+spec.SpecProcGlow = {
   [S.DEMONIC_CORE] = {
     target = S.DEMONBOLT, group = "proc", softenAbove = 4,
     label = "Demonic Core -> Demonbolt", why = "core up",
@@ -314,7 +323,7 @@ ns.SpecProcGlow = {
 --
 -- The two constants are DIFFERENT and must never be crossed (notes.md §1):
 -- Wild Imps gate Implosion at >=6; Demonic Core caps at 4.
-ns.SpecStacks = {
+spec.SpecStacks = {
   [S.WILD_IMP] = { suffix = "/6", label = "Wild Imp -> Implosion gate" },
 }
 
@@ -337,7 +346,7 @@ ns.SpecStacks = {
 -- strip, each lit when met.  `spell` prereqs check readiness (ready edge, or the
 -- napkin within `lead` seconds); `shards` checks the live count.  For the opener
 -- these are the hard pre-pull conditions, so `lead` defaults to 0 (ready NOW).
-ns.SpecOpener = {
+spec.SpecOpener = {
   header   = "OPENER",
   preamble = "pre-stack: HoG -> DB/SB (seed a Core)",
   prereqs = {
@@ -369,7 +378,7 @@ ns.SpecOpener = {
 -- to mirror the opener and diabolist-sequences.md: they land out BEFORE Tyrant, so
 -- the strip shows them as the windup, then Tyrant, then the burn (HoG HoG -> cores
 -- -> Implosion).  Imp Lord is `optional` (2-min CD = off-Tyrant cycles drop it).
-ns.SpecBurst = {
+spec.SpecBurst = {
   header   = "BURST",
   preamble = "Tyrant window — stage demons, then dump",
   prereqs = {
@@ -397,7 +406,7 @@ local NEUTRAL = { group = "neutral", kind = "button", cadence = "utility" }
 -- Never nil, never errors: unknown IDs get the neutral accent.
 -- A Secret Value must never be used as a table key (indexing with one taints),
 -- so it is treated exactly like an unresolved ID — neutral, no guess.
-function ns.SpecInfo(spellID)
+function spec.SpecInfo(spellID)
   if type(spellID) ~= "number" or ns.IsSecret(spellID) then return NEUTRAL, false end
   local e = ns.Spec[spellID]
   if e then return e, true end
@@ -405,7 +414,7 @@ function ns.SpecInfo(spellID)
 end
 
 -- r, g, b for a spellID's group hue.
-function ns.SpecColor(spellID)
+function spec.SpecColor(spellID)
   local info = ns.SpecInfo(spellID)
   local c = ns.SpecGroups[info.group] or ns.SpecGroups.neutral
   return c[1], c[2], c[3]
@@ -417,7 +426,7 @@ end
 -- Order matters and encodes C2: `spends` is checked BEFORE `generates`, so
 -- Demonbolt (spends a Core, refunds 2 shards) lands at the CONSUMER pole beside
 -- Hand of Gul'dan rather than opposite it.
-function ns.SpecPole(info)
+function spec.SpecPole(info)
   if info.kind == "aura" then return "proc" end
   if info.cadence == "utility" then return "utility" end
   if info.cadence == "oncd" or info.spends then return "consumer" end
@@ -426,7 +435,7 @@ function ns.SpecPole(info)
 end
 
 -- Deterministic shard yield of an in-flight cast (anticipation layer / overcap).
-function ns.SpecGhost(spellID)
+function spec.SpecGhost(spellID)
   return (ns.SpecInfo(spellID).generates) or 0
 end
 
@@ -444,7 +453,7 @@ end
 -- cost is read LIVE (talent-dependent) via ns.ShardCost; an UNREADABLE cost drops the
 -- spend term (delta = generates only) rather than guessing — the safe direction (never
 -- pre-deducts shards on an unreadable read).
-function ns.SpecShardDelta(spellID)
+function spec.SpecShardDelta(spellID)
   local info = ns.SpecInfo(spellID)
   local delta = info.generates or 0
   if info.spends == "shards" and ns.ShardCost then
@@ -453,3 +462,10 @@ function ns.SpecShardDelta(spellID)
   end
   return delta
 end
+
+-- Self-register + statically activate (multi-spec Phase 1) ---------------------
+-- The resolver rebinds ns.SpecIDs / ns.SpecInfo / … from this object.  Activation is
+-- STATIC here; Phase 5 replaces the SetActiveSpec line with the login /
+-- PLAYER_SPECIALIZATION_CHANGED resolver.
+ns.RegisterSpec(266 --[[ Demonology ]], spec)
+ns.SetActiveSpec(266)

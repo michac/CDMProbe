@@ -165,7 +165,8 @@ function H.fresh()
 
   -- Real, shipping implementations (data + lookups + Secret-Values-aware helpers).
   H.load("Util.lua")
-  H.load("SpecDemonology.lua")
+  H.load("SpecRegistry.lua")    -- registry + SetActiveSpec, needed before Demo self-activates
+  H.load("SpecDemonology.lua")  -- self-registers spec 266 + statically activates it
 
   -- The fixture handle every spec pokes.  Tables are keyed by spellID.
   local fx = {
