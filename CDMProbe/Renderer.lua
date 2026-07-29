@@ -204,13 +204,13 @@ function R:drawCues(cues)
         dot:SetPoint(c.point or "CENTER", anchor,
                      c.relPoint or c.point or "CENTER", c.dx or 0, c.dy or 0)
         dot:Show()
-        self:setDotGlow(key, holder, dot, c.glow and col or nil, sz)
+        self:setDotGlow(key, holder, anchor, c.glow and col or nil, sz)
       else
         -- EMPTY CUE (keybind-only): no emphasis the theme knows -> no dot, no glow.
         -- Hide any dot/glow this handle had, but keep the handle ACTIVE so its keybind
         -- hint (below) survives the end-of-frame cull.
         if self.cueFrames[key] then self.cueFrames[key]:Hide() end
-        self:setDotGlow(key, holder, self.cueFrames[key], nil, sz)
+        self:setDotGlow(key, holder, anchor, nil, sz)
       end
       -- The keybind hint draws regardless of emphasis — identity chrome on every button.
       self:drawCueKey(key, holder, anchor, c.keybind)
@@ -257,22 +257,24 @@ function R:drawCueKey(key, holder, anchor, keybind)
 end
 
 --------------------------------------------------------------------------------
--- Proc glow — the DOT itself glows, like Demonic Core lighting up Demonbolt, but
--- scoped to the little cue rather than the whole icon.
+-- Press glow — MIMIC Blizzard's native proc overlay, in OUR colour.
 --------------------------------------------------------------------------------
--- A soft additive halo, tinted to the dot's own emphasis hue, sized ~2.4x the dot
--- and centred on it (so it rides the dot into the icon corner), breathing on a
--- looping alpha bounce.  Sits a layer BELOW the dot (ARTWORK vs the dot's OVERLAY)
--- so the crisp dot stays on top of its own glow.  Pooled per handle like the dot.
--- Idempotent: the breathe only (re)starts on the not-glowing -> glowing edge, so a
--- steady cue redraw (a colour/size change) doesn't hitch the animation.
-local GLOW_TEX   = "Interface\\Buttons\\UI-ActionButton-Border"  -- soft rounded halo
--- ~4.5x the dot => the halo blooms PAST the icon edges (deliberately, 2026-07-26
--- feedback: "more prominent, even if it overlaps the edges").  Paired with a high
--- alpha floor so it's always visibly lit, breathing brighter on the bounce.
-local GLOW_SCALE = 4.5
+-- Replaces the old pulsing-square halo (a static Border texture on an alpha bounce)
+-- with the SAME animated art Blizzard's spell-activation glow uses: the proc-loop
+-- FLIPBOOK atlas (a 6x5 / 30-frame sheet cycled by a FlipBook animation, exactly the
+-- ProcLoopFlipbook in Blizzard_ActionBar/ActionButtonSpellAlerts.xml), tinted to the
+-- cue's emphasis hue by SetVertexColor (multiplicative on the gold art — clean toward
+-- our green/amber press hues).  Sized ~1.4x the ICON (matching Blizzard's
+-- SpellActivationAlert) and centred on the icon, NOT the corner dot, so a ROTATION/
+-- LATE press reads as an unmistakable proc in our colour.  Sits a layer BELOW the dot
+-- (ARTWORK vs the dot's OVERLAY) so the crisp corner dot + keybind stay on top.
+-- Pooled per handle; idempotent — the flip loop only (re)starts on the
+-- not-glowing -> glowing edge, so a steady redraw (colour/size change) doesn't hitch it.
+local GLOW_ATLAS = "UI-HUD-ActionBar-Proc-Loop-Flipbook"
+local GLOW_FB    = { rows = 6, cols = 5, frames = 30, dur = 1.0 }
+local GLOW_SCALE = 1.4   -- relative to the ICON (Blizzard's SpellActivationAlert is 1.4x)
 
-function R:setDotGlow(key, holder, dot, col, size)
+function R:setDotGlow(key, holder, anchor, col, size)
   local g = self.cueGlows[key]
   if not col then                              -- no glow this frame: hide + park
     if g then g:Hide(); if g.ag then g.ag:Stop() end end
@@ -282,22 +284,24 @@ function R:setDotGlow(key, holder, dot, col, size)
   local was = self.glowing[key]
   if not g then
     g = holder:CreateTexture(nil, "ARTWORK")
-    g:SetTexture(GLOW_TEX)
-    g:SetBlendMode("ADD")
+    g:SetAtlas(GLOW_ATLAS)
     local ag = g:CreateAnimationGroup()
-    local a = ag:CreateAnimation("Alpha")
-    a:SetFromAlpha(0.45)
-    a:SetToAlpha(1.00)
-    a:SetDuration(0.50)
-    a:SetOrder(1)
-    ag:SetLooping("BOUNCE")
+    local fb = ag:CreateAnimation("FlipBook")
+    fb:SetDuration(GLOW_FB.dur)
+    fb:SetFlipBookRows(GLOW_FB.rows)
+    fb:SetFlipBookColumns(GLOW_FB.cols)
+    fb:SetFlipBookFrames(GLOW_FB.frames)
+    fb:SetOrder(1)
+    ag:SetLooping("REPEAT")
     g.ag = ag
     self.cueGlows[key] = g
   end
   g:SetVertexColor(col[1], col[2], col[3], 1)
   g:ClearAllPoints()
-  g:SetPoint("CENTER", dot, "CENTER", 0, 0)
-  g:SetSize(size * GLOW_SCALE, size * GLOW_SCALE)
+  g:SetPoint("CENTER", anchor, "CENTER", 0, 0)
+  local iw = (anchor and anchor.GetWidth and anchor:GetWidth()) or 0
+  if iw <= 0 then iw = (size or 12) * 4 end     -- off-game / pre-layout fallback
+  g:SetSize(iw * GLOW_SCALE, iw * GLOW_SCALE)
   g:Show()
   if not was and g.ag then g.ag:Play() end
   self.glowing[key] = true

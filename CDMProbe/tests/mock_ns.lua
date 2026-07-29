@@ -71,6 +71,8 @@ local function newStub()
     "SetLooping", "Play", "Stop", "Pause", "Finish",
     "SetDuration", "SetSmoothing", "SetOffset", "SetFromAlpha", "SetToAlpha",
     "SetOrder", "SetStartDelay", "SetChildKey", "SetTarget", "SetTargetKey",
+    "SetFlipBookRows", "SetFlipBookColumns", "SetFlipBookFrames",
+    "SetFlipBookFrameWidth", "SetFlipBookFrameHeight",
   }) do t[m] = chain end
   -- RECORDING methods (W4 Phase 3 — the Renderer harness).  The Renderer draws no
   -- real pixels off-game, so busted asserts on what the stub was TOLD: colour,
