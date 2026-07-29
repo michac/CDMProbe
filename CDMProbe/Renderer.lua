@@ -203,6 +203,10 @@ function R:drawCues(cues)
         dot:ClearAllPoints()
         dot:SetPoint(c.point or "CENTER", anchor,
                      c.relPoint or c.point or "CENTER", c.dx or 0, c.dy or 0)
+        -- A glowing press cue is the spinning RING alone: the centre dot is drawn
+        -- INVISIBLE (alpha 0) but kept positioned, so the glow still centres on it.
+        -- Non-glow cues (SOON / FALLBACK) keep the solid dot — it is their only signal.
+        dot:SetAlpha(c.glow and 0 or 1)
         dot:Show()
         self:setDotGlow(key, holder, dot, c.glow and col or nil, sz)
       else
@@ -462,25 +466,33 @@ local FIXTURES = {
   --   GLOW·RED  the SAME native overlay, RECOLORED via SetVertexColor on its flipbook
   --            textures — proof the borrowed glow is tintable, i.e. the backlog item
   --            could RECOLOR (to a tamer hue) rather than fully replace it.
-  -- Squares carry real spell-icon ART (buildRig), so the chrome is judged against a
-  -- busy icon like the live CDM, not a flat fill.
+  --   GLOW·DIM  the native gold overlay DIMMED via frame alpha — proof it can be
+  --            de-emphasized by turning it down, the other subdue lever.
+  -- (ROTATION / LATE show OUR spinning ring glow with NO centre dot; the non-glow
+  -- states keep their solid dot.)  Squares carry real spell-icon ART (buildRig), so the
+  -- chrome is judged against a busy icon like the live CDM, not a flat fill.
   -- (Supersedes `inventory` as the default: that card still lists the RETIRED
   -- JUDGE/SEQUENCE tokens; this one is the live SOON|ROTATION|ROTATION_FALLBACK|LATE
   -- set plus the idle + native-glow states.)
-  ["states"] = { icons = 7,
-    captions = { "IDLE", "SOON", "FALLBACK", "ROTATION", "LATE", "GLOW", "GLOW·RED" },
-    -- Each proc-glow entry is { index, color? }: no color = Blizzard's native gold;
-    -- a color = SetVertexColor tint on the flipbook art (multiplicative).
-    procGlow = { { index = 6 }, { index = 7, color = { 1.00, 0.25, 0.20 } } },
+  ["states"] = { icons = 8,
+    captions = { "IDLE", "SOON", "FALLBACK", "ROTATION", "LATE", "GLOW", "GLOW·RED", "GLOW·DIM" },
+    -- Each proc-glow entry is { index, color?, alpha? }: no color = native gold; a
+    -- color = SetVertexColor tint (multiplicative); alpha = dim via the alert frame.
+    procGlow = {
+      { index = 6 },
+      { index = 7, color = { 1.00, 0.25, 0.20 } },
+      { index = 8, alpha = 0.35 },
+    },
     drawList = {
       cues = {
         cue("fake1", nil, "Q"),                  -- IDLE: keybind only, no dot
         cue("fake2", "SOON", "E"),               -- anticipation, no glow
         cue("fake3", "ROTATION_FALLBACK", "R"),  -- runner-up, no glow
-        cue("fake4", "ROTATION", "R"),           -- press now, glows (our dot-glow)
-        cue("fake5", "LATE", "E"),               -- overdue, glows
+        cue("fake4", "ROTATION", "R"),           -- press now: spinning ring, no centre dot
+        cue("fake5", "LATE", "E"),               -- overdue: spinning ring, no centre dot
         cue("fake6", "ROTATION_FALLBACK", "F"),  -- FALLBACK dot + keybind, NATIVE glow on top
         cue("fake7", "ROTATION_FALLBACK", "F"),  -- same, but the glow is RECOLORED (red)
+        cue("fake8", "ROTATION_FALLBACK", "F"),  -- same, but the glow is DIMMED (alpha)
       },
     } },
   -- INVENTORY — not a scenario: one dot of EVERY emphasis token side by side, each
@@ -541,7 +553,7 @@ local function buildRig(n, captions)
   local rig = ns._renderTestRig
   if not rig then
     local container = CreateFrame("Frame", "CDMProbeRenderTest", UIParent)
-    container:SetSize(560, 220)
+    container:SetSize(640, 220)
     container:SetPoint("CENTER", UIParent, "CENTER", 0, 60)
     container:SetFrameStrata("HIGH")
     rig = { container = container, icons = {}, renderer = R.New() }
@@ -620,12 +632,16 @@ local function clearProcGlow()
       ActionButtonSpellAlertManager:HideAlert(icon)
     end
     tintAlert(icon, nil)   -- reset to native gold so a later glow isn't stuck tinted
+    if icon.SpellActivationAlert then icon.SpellActivationAlert:SetAlpha(1) end
   end
 end
 
--- `specs` = list of { index, color? }: no color = Blizzard's native gold; a color
--- recolors that square's glow (tintAlert).  ShowAlert creates icon.SpellActivationAlert
--- synchronously, so the tint lands on an existing frame.
+-- `specs` = list of { index, color?, alpha? }: no color = Blizzard's native gold, a
+-- color recolors that square's glow (tintAlert); `alpha` DIMS it — set on the alert
+-- FRAME, which multiplies the whole glow WITHOUT fighting the proc animation (that
+-- animates the child textures' alpha, not the frame's).  This is the de-emphasis lever
+-- for the "subdue the proc glow" backlog item.  ShowAlert creates icon.SpellActivationAlert
+-- synchronously, so tint + alpha land on an existing frame.
 local function applyProcGlow(rig, specs)
   if not (specs and ActionButtonSpellAlertManager) then return end
   for _, spec in ipairs(specs) do
@@ -633,6 +649,9 @@ local function applyProcGlow(rig, specs)
     if icon then
       ActionButtonSpellAlertManager:ShowAlert(icon)
       tintAlert(icon, spec.color)
+      if icon.SpellActivationAlert then
+        icon.SpellActivationAlert:SetAlpha(spec.alpha or 1)
+      end
     end
   end
 end
