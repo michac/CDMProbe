@@ -228,7 +228,8 @@ function R:drawCues(cues)
   for key, g in pairs(self.cueGlows) do
     if not active[key] then
       g:Hide()
-      if g.ag then g.ag:Stop() end
+      if g.spin then g.spin:Stop() end
+      if g.pulse then g.pulse:Stop() end
       self.glowing[key] = nil
     end
   end
@@ -257,24 +258,27 @@ function R:drawCueKey(key, holder, anchor, keybind)
 end
 
 --------------------------------------------------------------------------------
--- Press glow — a soft ROUND glow centred on the solid cue dot, in OUR colour.
+-- Press glow — a SPINNING round glow centred on the solid cue dot, in OUR colour.
 --------------------------------------------------------------------------------
--- A circular radial-glow atlas (ParagonReputation_Glow — a soft round glow Blizzard
--- uses on paragon rep), additive, tinted to the cue's emphasis hue via SetVertexColor
--- and CENTRED on the solid dot (the little box), sized relative to the dot.  Breathes
--- on a looping alpha bounce so a ROTATION/LATE press reads as a live glow.  Sits a
--- layer BELOW the dot (ARTWORK vs the dot's OVERLAY) so the crisp dot + keybind stay
--- on top.  (Was, briefly, the square proc FLIPBOOK around the whole icon — pulled back
--- to a round glow ON the dot per 2026-07-28 feedback.)  Pooled per handle; idempotent
--- — the breathe only (re)starts on the not-glowing -> glowing edge, so a steady redraw
--- (colour/size change) doesn't hitch the animation.
-local GLOW_ATLAS = "ParagonReputation_Glow"   -- soft round radial glow
-local GLOW_SCALE = 3.2   -- relative to the DOT (the solid box it's centred on)
+-- A round ring-glow atlas Blizzard built to spin (services-ring-large-glowspin, the
+-- RecruitAFriend claim glow), additive, tinted to the cue's emphasis hue via
+-- SetVertexColor and CENTRED on the solid dot, sized relative to the dot.  The
+-- CONTINUOUS ROTATION is the eye-draw (2026-07-28 feedback: "the movement really helps
+-- draw the eye"); a symmetric soft circle can't show spin, so this ring's angular
+-- detail is what makes the motion read.  Two separate looping groups because their
+-- loop MODES differ: `spin` (Rotation, REPEAT — a seamless full turn) and `pulse`
+-- (Alpha, BOUNCE — a gentle breathe); one group can't do both.  Sits a layer BELOW the
+-- dot (ARTWORK vs the dot's OVERLAY) so the crisp dot + keybind stay on top.  Pooled
+-- per handle; idempotent — both loops only (re)start on the not-glowing -> glowing
+-- edge, so a steady redraw (colour/size change) doesn't hitch either animation.
+local GLOW_ATLAS = "services-ring-large-glowspin"   -- round ring glow, built to spin
+local GLOW_SCALE = 3.6    -- relative to the DOT (the solid box it's centred on)
+local SPIN_SECS  = 4.0    -- one full rotation
 
 function R:setDotGlow(key, holder, dot, col, size)
   local g = self.cueGlows[key]
   if not col then                              -- no glow this frame: hide + park
-    if g then g:Hide(); if g.ag then g.ag:Stop() end end
+    if g then g:Hide(); if g.spin then g.spin:Stop() end; if g.pulse then g.pulse:Stop() end end
     self.glowing[key] = nil
     return
   end
@@ -283,14 +287,21 @@ function R:setDotGlow(key, holder, dot, col, size)
     g = holder:CreateTexture(nil, "ARTWORK")
     g:SetAtlas(GLOW_ATLAS)
     g:SetBlendMode("ADD")
-    local ag = g:CreateAnimationGroup()
-    local a = ag:CreateAnimation("Alpha")
-    a:SetFromAlpha(0.45)
+    local spin = g:CreateAnimationGroup()      -- continuous rotation (REPEAT)
+    local rot = spin:CreateAnimation("Rotation")
+    rot:SetDegrees(-360)
+    rot:SetDuration(SPIN_SECS)
+    rot:SetOrigin("CENTER", 0, 0)
+    rot:SetOrder(1)
+    spin:SetLooping("REPEAT")
+    local pulse = g:CreateAnimationGroup()      -- breathe (BOUNCE) — own group
+    local a = pulse:CreateAnimation("Alpha")
+    a:SetFromAlpha(0.55)
     a:SetToAlpha(1.00)
     a:SetDuration(0.60)
     a:SetOrder(1)
-    ag:SetLooping("BOUNCE")
-    g.ag = ag
+    pulse:SetLooping("BOUNCE")
+    g.spin, g.pulse = spin, pulse
     self.cueGlows[key] = g
   end
   g:SetVertexColor(col[1], col[2], col[3], 1)
@@ -299,7 +310,10 @@ function R:setDotGlow(key, holder, dot, col, size)
   local d = size or 12
   g:SetSize(d * GLOW_SCALE, d * GLOW_SCALE)
   g:Show()
-  if not was and g.ag then g.ag:Play() end
+  if not was then
+    if g.spin then g.spin:Play() end
+    if g.pulse then g.pulse:Play() end
+  end
   self.glowing[key] = true
 end
 
