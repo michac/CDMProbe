@@ -37,6 +37,9 @@ stds.wow = {
     "GetSpecialization", "GetSpecializationInfo",
     -- Action-bar scan (HudBinds) ----------------------------------------------
     "HasAction", "GetActionInfo", "GetActionText",
+    -- Native spell-activation (proc) glow — the CDM's own glow manager, previewed
+    -- by `/cdmp rendertest states` (CooldownViewer.lua:1130).
+    "ActionButtonSpellAlertManager",
     -- C_ namespaces the addon uses (functions accessed via these tables) -------
     "C_AddOns", "C_CooldownViewer", "C_NamePlate", "C_Secrets",
     "C_Spell", "C_SpellActivationOverlay", "C_Timer", "C_UnitAuras", "AuraUtil",

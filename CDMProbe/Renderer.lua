@@ -430,8 +430,36 @@ local G = ns.HudGeometry
 local cue = G.cue          -- cue(handle, emphasis, keybind) -> a positioned cue
 local shards = G.resourceBar  -- shards(value, max) -> the centred discrete-pip bar
 
-local FIXTURE_ORDER = { "inventory", "hand-of-guldan", "burst-hold", "opener-midflight", "secrecy-combat" }
+local FIXTURE_ORDER = { "states", "inventory", "hand-of-guldan", "burst-hold", "opener-midflight", "secrecy-combat" }
 local FIXTURES = {
+  -- STATES — the canonical reference card: one simulated CDM square per VISIBLE cue
+  -- state the live pipeline can put on an icon, captioned, left→right roughly
+  -- least→most salient, with the NATIVE proc glow last.  Not a scenario the Coach
+  -- would emit as one frame — a palette:
+  --   IDLE      keybind hint only, no dot (the "empty board" — tracked, nothing to do)
+  --   SOON      anticipation, plain dot (not a press)
+  --   FALLBACK  ROTATION_FALLBACK — the honest runner-up, plain dot
+  --   ROTATION  press now — dot + our own breathing dot-glow
+  --   LATE      overdue — dot + our own dot-glow
+  --   PROC GLOW Blizzard's NATIVE spell-activation overlay (applied post-Draw, below),
+  --            the same glow the CDM shows on a proc — the one the "subdue the proc
+  --            glow" backlog item is about, previewed here on a dummy square.
+  -- (Supersedes `inventory` as the default: that card still lists the RETIRED
+  -- JUDGE/SEQUENCE tokens; this one is the live SOON|ROTATION|ROTATION_FALLBACK|LATE
+  -- set plus the idle + native-glow states.)
+  ["states"] = { icons = 6,
+    captions = { "IDLE", "SOON", "FALLBACK", "ROTATION", "LATE", "PROC GLOW" },
+    procGlow = { 6 },   -- icon indices to paint Blizzard's native glow onto (post-Draw)
+    drawList = {
+      cues = {
+        cue("fake1", nil, "Q"),                  -- IDLE: keybind only, no dot
+        cue("fake2", "SOON", "E"),               -- anticipation, no glow
+        cue("fake3", "ROTATION_FALLBACK", "R"),  -- runner-up, no glow
+        cue("fake4", "ROTATION", "R"),           -- press now, glows (our dot-glow)
+        cue("fake5", "LATE", "E"),               -- overdue, glows
+        cue("fake6", nil, "F"),                  -- identity only; native glow lands on top
+      },
+    } },
   -- INVENTORY — not a scenario: one dot of EVERY emphasis token side by side, each
   -- captioned, so the whole palette (and which tokens glow) reads at a glance.  The
   -- reference card for the visual language, not a state the Coach would produce.
@@ -519,6 +547,33 @@ local function buildRig(n, captions)
   return rig
 end
 
+-- PROC GLOW (native) — Blizzard's OWN spell-activation overlay, applied to a
+-- placeholder square exactly the way the Cooldown Manager applies it to a real proc'd
+-- icon: `ActionButtonSpellAlertManager:ShowAlert(item)` (CooldownViewer.lua:1130).
+-- Our placeholder has no `.action`/`.bar`, so the manager takes the plain Default
+-- path (no AssistedCombat downgrade) and creates `icon.SpellActivationAlert` from
+-- ActionButtonSpellAlertTemplate at 1.4x — the identical glow, on our dummy.  This is
+-- the glow the "subdue the proc glow" backlog item is about; previewing it here needs
+-- no live proc.  Impure by construction (a Blizzard global + a frame outside the
+-- DrawList), so it lives here and NEVER in R:Draw.
+local function clearProcGlow()
+  local rig = ns._renderTestRig
+  if not (rig and ActionButtonSpellAlertManager) then return end
+  for _, icon in ipairs(rig.icons) do
+    if ActionButtonSpellAlertManager:HasAlert(icon) then
+      ActionButtonSpellAlertManager:HideAlert(icon)
+    end
+  end
+end
+
+local function applyProcGlow(rig, indices)
+  if not (indices and ActionButtonSpellAlertManager) then return end
+  for _, i in ipairs(indices) do
+    local icon = rig.icons[i]
+    if icon then ActionButtonSpellAlertManager:ShowAlert(icon) end
+  end
+end
+
 -- ROTATE — a live demo: 5 CDM panels, one press cue hopping between them on a
 -- timer.  Shows the diff-by-key movement (the old handle's dot + glow drop as the
 -- new one lights) and the glow tracking the dot across icons.  A C_Timer ticker,
@@ -551,12 +606,16 @@ function ns.RenderTest(arg)
   arg = (arg or ""):gsub("^%s+", ""):gsub("%s+$", ""):lower()
   if arg == "list" then
     ns.Heading("rendertest views")
-    for _, name in ipairs(FIXTURE_ORDER) do ns.Printf("  |cff88ff88%s|r", name) end
+    ns.Print("  |cff88ff88states|r — every cue state + the native proc glow (default)")
+    for _, name in ipairs(FIXTURE_ORDER) do
+      if name ~= "states" then ns.Printf("  |cff88ff88%s|r", name) end
+    end
     ns.Print("  |cff88ff88rotate|r — one cue hopping across 5 panels (live)")
     ns.Print("usage: |cffffffff/cdmp rendertest <name>|r | rotate | off")
     return
   end
   stopRotate()                               -- any view change cancels a live rotate
+  clearProcGlow()                            -- ...and drops any native proc glow
   if arg == "off" then
     if ns._renderTestRig then
       ns._renderTestRig.renderer:Draw({})    -- clear every dot / panel / pip
@@ -580,6 +639,7 @@ function ns.RenderTest(arg)
   local rig = buildRig(fx.icons, fx.captions)
   rig.container:Show()
   rig.renderer:Draw(fx.drawList)
+  applyProcGlow(rig, fx.procGlow)            -- native glow on top (impure; post-Draw)
   ns.Printf("rendertest: |cffffffff%s|r (%d icon%s) — |cffffffff/cdmp rendertest off|r to clear",
     arg, fx.icons, fx.icons == 1 and "" or "s")
 end
