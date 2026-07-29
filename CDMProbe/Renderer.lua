@@ -441,18 +441,23 @@ local FIXTURES = {
   --   FALLBACK  ROTATION_FALLBACK — the honest runner-up, plain dot
   --   ROTATION  press now — dot + our own breathing dot-glow
   --   LATE      overdue — dot + our own dot-glow
-  --   FB+GLOW   a FALLBACK dot + keybind UNDER Blizzard's NATIVE spell-activation
-  --            overlay (applied post-Draw, below) — the exact conflict the "subdue
-  --            the proc glow" backlog item is about: the native glow stomping OUR
-  --            chrome.  Pairs with the plain FALLBACK square (fake3) as the A/B.
+  --   GLOW      a FALLBACK dot + keybind UNDER Blizzard's NATIVE (gold) spell-
+  --            activation overlay (applied post-Draw, below) — the exact conflict
+  --            the "subdue the proc glow" backlog item is about: the native glow
+  --            stomping OUR chrome.  Pairs with the plain FALLBACK square (fake3).
+  --   GLOW·RED  the SAME native overlay, RECOLORED via SetVertexColor on its flipbook
+  --            textures — proof the borrowed glow is tintable, i.e. the backlog item
+  --            could RECOLOR (to a tamer hue) rather than fully replace it.
   -- Squares carry real spell-icon ART (buildRig), so the chrome is judged against a
   -- busy icon like the live CDM, not a flat fill.
   -- (Supersedes `inventory` as the default: that card still lists the RETIRED
   -- JUDGE/SEQUENCE tokens; this one is the live SOON|ROTATION|ROTATION_FALLBACK|LATE
   -- set plus the idle + native-glow states.)
-  ["states"] = { icons = 6,
-    captions = { "IDLE", "SOON", "FALLBACK", "ROTATION", "LATE", "FB+GLOW" },
-    procGlow = { 6 },   -- icon indices to paint Blizzard's native glow onto (post-Draw)
+  ["states"] = { icons = 7,
+    captions = { "IDLE", "SOON", "FALLBACK", "ROTATION", "LATE", "GLOW", "GLOW·RED" },
+    -- Each proc-glow entry is { index, color? }: no color = Blizzard's native gold;
+    -- a color = SetVertexColor tint on the flipbook art (multiplicative).
+    procGlow = { { index = 6 }, { index = 7, color = { 1.00, 0.25, 0.20 } } },
     drawList = {
       cues = {
         cue("fake1", nil, "Q"),                  -- IDLE: keybind only, no dot
@@ -460,7 +465,8 @@ local FIXTURES = {
         cue("fake3", "ROTATION_FALLBACK", "R"),  -- runner-up, no glow
         cue("fake4", "ROTATION", "R"),           -- press now, glows (our dot-glow)
         cue("fake5", "LATE", "E"),               -- overdue, glows
-        cue("fake6", "ROTATION_FALLBACK", "F"),  -- FALLBACK dot + keybind, native glow on top
+        cue("fake6", "ROTATION_FALLBACK", "F"),  -- FALLBACK dot + keybind, NATIVE glow on top
+        cue("fake7", "ROTATION_FALLBACK", "F"),  -- same, but the glow is RECOLORED (red)
       },
     } },
   -- INVENTORY — not a scenario: one dot of EVERY emphasis token side by side, each
@@ -575,6 +581,23 @@ end
 -- the glow the "subdue the proc glow" backlog item is about; previewing it here needs
 -- no live proc.  Impure by construction (a Blizzard global + a frame outside the
 -- DrawList), so it lives here and NEVER in R:Draw.
+-- RECOLOR the borrowed glow.  The alert is three atlas FLIPBOOK textures
+-- (ProcStartFlipbook / ProcLoopFlipbook — gold by art — + the hidden ProcAltGlow),
+-- so SetVertexColor MULTIPLIES the art toward a hue: it recolors without touching
+-- the animation.  `color = nil` resets to native gold.  Multiplicative, so it tints
+-- cleanly toward red/green/warm hues the gold art has energy in; pure blue goes dim.
+-- This is the cheap end of the "subdue the proc glow" item — recolor, not replace.
+local GLOW_REGIONS = { "ProcStartFlipbook", "ProcLoopFlipbook", "ProcAltGlow" }
+local function tintAlert(icon, color)
+  local alert = icon and icon.SpellActivationAlert
+  if not alert then return end
+  local r, g, b = 1, 1, 1
+  if color then r, g, b = color[1], color[2], color[3] end
+  for _, key in ipairs(GLOW_REGIONS) do
+    if alert[key] then alert[key]:SetVertexColor(r, g, b) end
+  end
+end
+
 local function clearProcGlow()
   local rig = ns._renderTestRig
   if not (rig and ActionButtonSpellAlertManager) then return end
@@ -582,14 +605,21 @@ local function clearProcGlow()
     if ActionButtonSpellAlertManager:HasAlert(icon) then
       ActionButtonSpellAlertManager:HideAlert(icon)
     end
+    tintAlert(icon, nil)   -- reset to native gold so a later glow isn't stuck tinted
   end
 end
 
-local function applyProcGlow(rig, indices)
-  if not (indices and ActionButtonSpellAlertManager) then return end
-  for _, i in ipairs(indices) do
-    local icon = rig.icons[i]
-    if icon then ActionButtonSpellAlertManager:ShowAlert(icon) end
+-- `specs` = list of { index, color? }: no color = Blizzard's native gold; a color
+-- recolors that square's glow (tintAlert).  ShowAlert creates icon.SpellActivationAlert
+-- synchronously, so the tint lands on an existing frame.
+local function applyProcGlow(rig, specs)
+  if not (specs and ActionButtonSpellAlertManager) then return end
+  for _, spec in ipairs(specs) do
+    local icon = rig.icons[spec.index]
+    if icon then
+      ActionButtonSpellAlertManager:ShowAlert(icon)
+      tintAlert(icon, spec.color)
+    end
   end
 end
 
@@ -625,7 +655,7 @@ function ns.RenderTest(arg)
   arg = (arg or ""):gsub("^%s+", ""):gsub("%s+$", ""):lower()
   if arg == "list" then
     ns.Heading("rendertest views")
-    ns.Print("  |cff88ff88states|r — every cue state + the native proc glow (default)")
+    ns.Print("  |cff88ff88states|r — every cue state + the native proc glow, gold & recolored (default)")
     for _, name in ipairs(FIXTURE_ORDER) do
       if name ~= "states" then ns.Printf("  |cff88ff88%s|r", name) end
     end
