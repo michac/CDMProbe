@@ -15,7 +15,7 @@
 --     fraction, no pulse.
 --   * panel = a plain titled list of step rows (state · keybind · label), shown
 --     only when the DrawList carries one.
---   * resourceBar = a minimal discrete-pip row (optional).
+--   * resourceBars = an array of minimal discrete-pip rows, stacked (optional).
 --   * NO transient/animation (the phase-edge flash is a later Phase-3 increment)
 --     and NO CRT chrome (bracket / glow ring / DEMO.SYS / scanlines stay retired).
 --
@@ -119,7 +119,7 @@ function R.New(cfg)
   self.cueKeys    = {}          -- anchorTo -> keybind-hint fontstring (diff-by-key)
   self.cueGlows   = {}          -- anchorTo -> the dot's glow-halo texture
   self.glowing    = {}          -- anchorTo -> true while its dot is glowing
-  self.pips       = {}          -- 1..N -> pip texture (resource bar pool)
+  self.pipRows    = {}          -- barIndex -> { 1..N pip textures } (per-bar pool)
   self.panelWidget = nil        -- { frame, title, rows = {} }, built on first panel
   -- UIPARENT is a sanctioned root token (architecture.md :341); pre-register it so
   -- a hand-authored DrawList can anchor a panel/bar to the screen with no ceremony.
@@ -417,22 +417,27 @@ end
 -- fixture's centring dx (G.resourceBar) can't drift (W4 Phase 4).
 local PIP_SIZE, PIP_GAP = ns.HudGeometry.BAR.pip, ns.HudGeometry.BAR.gap
 
--- `max` pips in a row; the first `value` filled with the powerType colour, the
--- rest a faint empty ring.  Pooled + surplus hidden like the cue dots.
-function R:drawResource(bar)
-  if not bar then
-    for _, pip in ipairs(self.pips) do pip:Hide() end
+-- One bar's pip row (barIndex-keyed pool, so bar 2's pips don't stomp bar 1's): `max`
+-- pips, the first `value` filled with the powerType colour, the rest a faint empty ring.
+-- ONLY the discrete path is implemented; a `continuous` bar draws nothing (no live
+-- consumer) — continuous fill: Phase-when-needed.
+function R:drawResourceRow(barIndex, bar)
+  local row = self.pipRows[barIndex]
+  if not row then row = {}; self.pipRows[barIndex] = row end
+  if bar.display == "continuous" then
+    -- continuous fill: Phase-when-needed — the contract carries the enum, no pixel path yet.
+    for _, pip in ipairs(row) do pip:Hide() end
     return
   end
   local col = self.powerColor[bar.powerType] or self.powerColor.SOUL_SHARDS
   local anchor = self.registry[bar.anchorTo] or self.registry.UIPARENT
   local max, value = bar.max or 0, bar.value or 0
   for i = 1, max do
-    local pip = self.pips[i]
+    local pip = row[i]
     if not pip then
       pip = self:ensureRoot():CreateTexture(nil, "OVERLAY")
       pip:SetTexture(WHITE8)
-      self.pips[i] = pip
+      row[i] = pip
     end
     pip:SetSize(PIP_SIZE, PIP_SIZE)
     pip:ClearAllPoints()
@@ -445,7 +450,17 @@ function R:drawResource(bar)
     end
     pip:Show()
   end
-  for i = max + 1, #self.pips do self.pips[i]:Hide() end
+  for i = max + 1, #row do row[i]:Hide() end
+end
+
+-- Draw N stacked meters (multi-spec Phase 3).  Each bar owns its own pip-row pool; rows
+-- beyond the current bar count are hidden (a spec that shed a bar, or the no-bars case).
+function R:drawResources(bars)
+  bars = bars or {}
+  for i, bar in ipairs(bars) do self:drawResourceRow(i, bar) end
+  for i = #bars + 1, #self.pipRows do
+    for _, pip in ipairs(self.pipRows[i]) do pip:Hide() end
+  end
 end
 
 --------------------------------------------------------------------------------
@@ -455,7 +470,7 @@ function R:Draw(drawList)
   drawList = drawList or {}
   self:drawCues(drawList.cues)
   self:drawPanel(drawList.panel)
-  self:drawResource(drawList.resourceBar)
+  self:drawResources(drawList.resourceBars)
   return self
 end
 
@@ -546,20 +561,20 @@ local FIXTURES = {
   -- One ROTATION press: HoG is the single call (3 shards, no proc, summons cooling).
   ["hand-of-guldan"] = { icons = 1, drawList = {
     cues = { cue("fake1", "ROTATION", "R") },
-    resourceBar = shards(3, 5),
+    resourceBars = { shards(3, 5) },
   } },
   -- LATE + JUDGE (TCT redesign): not TCT (Tyrant far) so it's STEADY — an overdue
   -- Dreadstalkers presses (LATE, glows), Implosion is your-call (JUDGE).  No HoG dot.
   ["burst-hold"] = { icons = 3, drawList = {
     cues = { cue("fake2", "LATE", "E"), cue("fake3", "JUDGE", "1") },
-    resourceBar = shards(3, 5),
+    resourceBars = { shards(3, 5) },
   } },
   -- ROTATION + SOON, no panel (TCT redesign — the opener panel is retired): mid-opener
   -- the burst walk still owes a shard, so Shadow Bolt caps (ROTATION) while Tyrant rides
   -- the SOON anchor.  The one-press cue walk replaced the sequence panel.
   ["opener-midflight"] = { icons = 2, drawList = {
     cues = { cue("fake1", "ROTATION", "Q"), cue("fake2", "SOON", "sQ") },
-    resourceBar = shards(3, 5),
+    resourceBars = { shards(3, 5) },
   } },
   -- ROTATION + SOON with every cd unreadable: Demonbolt presses (Core up via a
   -- readable buff+glow); Tyrant draws SOON off the napkin estimate (anticipation).
@@ -567,7 +582,7 @@ local FIXTURES = {
   -- fixture equals what the Binder emits from that golden).
   ["secrecy-combat"] = { icons = 2, drawList = {
     cues = { cue("fake1", "ROTATION", "F"), cue("fake2", "SOON", "sQ") },
-    resourceBar = shards(2, 5),
+    resourceBars = { shards(2, 5) },
   } },
 }
 

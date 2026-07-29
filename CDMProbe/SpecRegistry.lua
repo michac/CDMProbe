@@ -1,7 +1,7 @@
 -- SpecRegistry.lua — the spec registry + active-spec resolver (multi-spec Phase 1).
 --
 -- THE SEAM.  Before this file, SpecDemonology.lua clobbered ns.SpecIDs / SpecInfo /
--- SpecShardDelta / … unconditionally at load — two specs could never coexist, because
+-- SpecPowerDelta / … unconditionally at load — two specs could never coexist, because
 -- the last file loaded owned the globals.  Now each spec file self-registers a `spec`
 -- OBJECT into ns.Specs (keyed by numeric specID), and the resolver DERIVES the legacy
 -- ns.Spec* globals from whichever spec is active.  Every existing consumer keeps reading
@@ -20,8 +20,11 @@ ns.Specs = ns.Specs or {}
 ns.SpecFields = {
   "SpecGroups", "SpecIDs", "SpecBindAlias", "SHARD_CAP", "Spec",
   "SpecNoCue", "SpecProcGlow", "SpecStacks", "SpecOpener", "SpecBurst",
-  "SpecInfo", "SpecColor", "SpecPole", "SpecGhost", "SpecShardDelta",
+  "SpecInfo", "SpecColor", "SpecPole", "SpecGhost", "SpecPowerDelta",
 }
+-- NOTE: `spec.powers` (the Phase-3 resource array) is deliberately NOT a SpecField —
+-- State reads it off ns.ActiveSpec.powers directly (the same object-read pattern Phase 2
+-- used for self.SHARD_CAP), so ns stays uncluttered by a rarely-read array.
 
 -- Register a spec object under its numeric specID.  Called at load by each spec file.
 function ns.RegisterSpec(specID, spec)

@@ -4,7 +4,7 @@
 --   * cues (4b)         — the layout-gated geometry/keybind merge: corner geometry,
 --                         emphasis pass-through, keybind-by-spellID, glow rule, and
 --                         the DROP of a cue whose cooldownID isn't displayed.
---   * panel/bar (4c)    — sequence -> panel rows, resourceBar -> centred pip bar.
+--   * panel/bar (4c)    — sequence -> panel rows, resourceBars -> centred pip bars.
 --   * close-the-loop (4d) — the payoff: feed each golden's guidance.json + a Layout
 --                         and keybind map DERIVED FROM the same golden's state.json
 --                         through Binder:Bind, and assert the DrawList EQUALS the
@@ -188,7 +188,7 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
   end)
 
   ------------------------------------------------------------------------------
-  -- 4c — panel + resourceBar
+  -- 4c — panel + resourceBars
   ------------------------------------------------------------------------------
   describe("panel", function()
     it("maps a shown sequence to a self-anchored titled step list", function()
@@ -221,27 +221,40 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
     end)
   end)
 
-  describe("resourceBar", function()
+  describe("resourceBars", function()
     it("passes value/max/powerType through and centres the pip row", function()
       local b = Binder.New({})
-      local bar = b:Bind({ resourceBar = {
+      local bars = b:Bind({ resourceBars = { {
         value = 3, max = 5, incoming = 0, display = "discrete", powerType = "SOUL_SHARDS",
-      } }, {}).resourceBar
+      } } }, {}).resourceBars
 
+      assert.are.equal(1, #bars)
+      local bar = bars[1]
       assert.are.equal("UIPARENT", bar.anchorTo)
       assert.are.equal("CENTER", bar.point)
       assert.are.equal(3, bar.value)
       assert.are.equal(5, bar.max)
       assert.are.equal("SOUL_SHARDS", bar.powerType)
-      -- centred: width = 5*14 + 4*4 = 86, dx = -43; dy = -18.
+      -- centred: width = 5*14 + 4*4 = 86, dx = -43; index 0 => dy -18.
       assert.are.equal(-43, bar.dx)
       assert.are.equal(-18, bar.dy)
-      assert.is_nil(bar.incoming)   -- v1 pip bar doesn't render a projection yet
-      assert.is_nil(bar.display)
+      assert.is_nil(bar.incoming)          -- pip bar doesn't render a projection yet
+      assert.are.equal("discrete", bar.display)  -- display rides for the discrete/continuous route
     end)
 
-    it("omits the bar when Guidance carries none", function()
-      assert.is_nil(Binder.New({}):Bind({}, {}).resourceBar)
+    it("stacks a second bar one step below the first", function()
+      local b = Binder.New({})
+      local bars = b:Bind({ resourceBars = {
+        { value = 3, max = 5, display = "discrete", powerType = "SOUL_SHARDS" },
+        { value = 2, max = 4, display = "discrete", powerType = "SOUL_SHARDS" },
+      } }, {}).resourceBars
+      assert.are.equal(2, #bars)
+      assert.are.equal(-18, bars[1].dy)          -- index 0: base dy
+      assert.are.equal(-18 - 20, bars[2].dy)     -- index 1: one `stack` (20) below
+    end)
+
+    it("omits the bars when Guidance carries none", function()
+      assert.is_nil(Binder.New({}):Bind({}, {}).resourceBars)
     end)
   end)
 
@@ -268,7 +281,7 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
     local SCENARIOS = {
       ["opener-midflight"] = {
         guidance = {
-          resourceBar = { value = 3, max = 5, incoming = 0, display = "discrete", powerType = "SOUL_SHARDS" },
+          resourceBars = { { value = 3, max = 5, incoming = 0, display = "discrete", powerType = "SOUL_SHARDS" } },
           cues = {   -- keyed by base spellID (686 = Shadow Bolt, 265187 = Tyrant)
             [686]    = { draw = true, emphasis = "ROTATION", note = "pool to 5 for the flood" },
             [265187] = { draw = true, emphasis = "SOON" },
@@ -285,7 +298,7 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
       },
       ["burst-hold"] = {
         guidance = {
-          resourceBar = { value = 3, max = 5, incoming = 0, display = "discrete", powerType = "SOUL_SHARDS" },
+          resourceBars = { { value = 3, max = 5, incoming = 0, display = "discrete", powerType = "SOUL_SHARDS" } },
           cues = {   -- keyed by base spellID (104316 = Dreadstalkers, 196277 = Implosion)
             [104316] = { draw = true, emphasis = "LATE" },
             [196277] = { draw = true, emphasis = "JUDGE", note = "imps uncertain — your call" },
@@ -302,7 +315,7 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
       },
       ["secrecy-combat"] = {
         guidance = {
-          resourceBar = { value = 2, max = 5, incoming = 0, display = "discrete", powerType = "SOUL_SHARDS" },
+          resourceBars = { { value = 2, max = 5, incoming = 0, display = "discrete", powerType = "SOUL_SHARDS" } },
           cues = {   -- keyed by base spellID (264178 = Demonbolt, 265187 = Tyrant)
             [264178] = { draw = true, emphasis = "ROTATION" },
             [265187] = { draw = true, emphasis = "SOON" },
@@ -357,7 +370,7 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
         for _, c in ipairs(drawList.cues) do if c.emphasis then dots[#dots + 1] = c end end
         assertEqual(expectedCues(scenario), byAnchor(dots), scenario .. ".cues")
         assertEqual(fixture.panel, drawList.panel, scenario .. ".panel")
-        assertEqual(fixture.resourceBar, drawList.resourceBar, scenario .. ".resourceBar")
+        assertEqual(fixture.resourceBars, drawList.resourceBars, scenario .. ".resourceBars")
       end)
     end
   end)

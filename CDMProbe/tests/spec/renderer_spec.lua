@@ -383,37 +383,69 @@ describe("Renderer", function()
   end)
 
   ------------------------------------------------------------------------------
-  -- 3d — resource bar
+  -- 3d — resource bars (multi-spec Phase 3: an ARRAY of stacked pip rows)
   ------------------------------------------------------------------------------
   local function shardCol(r) return r.powerColor.SOUL_SHARDS end
 
   it("draws `max` pips with `value` filled in the powerType colour", function()
     local r = rigged(1)
-    r:Draw({ resourceBar = { anchorTo = "UIPARENT", point = "BOTTOM",
-                             value = 3, max = 5, powerType = "SOUL_SHARDS" } })
-    assert.equals(5, #r.pips)
+    r:Draw({ resourceBars = { { anchorTo = "UIPARENT", point = "BOTTOM",
+                                value = 3, max = 5, powerType = "SOUL_SHARDS" } } })
+    local row = r.pipRows[1]
+    assert.equals(5, #row)
     local col, filled = shardCol(r), 0
     for i = 1, 5 do
-      if colorEq(r.pips[i]._color, col[1], col[2], col[3]) then filled = filled + 1 end
-      assert.is_true(r.pips[i]._shown)
+      if colorEq(row[i]._color, col[1], col[2], col[3]) then filled = filled + 1 end
+      assert.is_true(row[i]._shown)
     end
     assert.equals(3, filled)
   end)
 
   it("hides surplus pips when a later bar has a smaller max", function()
     local r = rigged(1)
-    r:Draw({ resourceBar = { value = 3, max = 5, powerType = "SOUL_SHARDS" } })
-    r:Draw({ resourceBar = { value = 1, max = 2, powerType = "SOUL_SHARDS" } })
-    assert.is_true(r.pips[1]._shown)
-    assert.is_true(r.pips[2]._shown)
-    for i = 3, 5 do assert.is_false(r.pips[i]._shown) end
+    r:Draw({ resourceBars = { { value = 3, max = 5, powerType = "SOUL_SHARDS" } } })
+    r:Draw({ resourceBars = { { value = 1, max = 2, powerType = "SOUL_SHARDS" } } })
+    local row = r.pipRows[1]
+    assert.is_true(row[1]._shown)
+    assert.is_true(row[2]._shown)
+    for i = 3, 5 do assert.is_false(row[i]._shown) end
   end)
 
   it("hides the whole bar when the next DrawList carries none", function()
     local r = rigged(1)
-    r:Draw({ resourceBar = { value = 3, max = 5, powerType = "SOUL_SHARDS" } })
+    r:Draw({ resourceBars = { { value = 3, max = 5, powerType = "SOUL_SHARDS" } } })
     r:Draw({})
-    for i = 1, 5 do assert.is_false(r.pips[i]._shown) end
+    for i = 1, 5 do assert.is_false(r.pipRows[1][i]._shown) end
+  end)
+
+  -- The full-seam proof at the Renderer's own layer: two stacked bars, each with its OWN
+  -- pip-row pool, so bar 2's pips never stomp bar 1's (a dual-resource spec is drawable).
+  it("draws two stacked bars in independent pip-row pools", function()
+    local r = rigged(1)
+    r:Draw({ resourceBars = {
+      { value = 3, max = 5, powerType = "SOUL_SHARDS", display = "discrete" },
+      { value = 2, max = 4, powerType = "SOUL_SHARDS", display = "discrete" },
+    } })
+    assert.equals(5, #r.pipRows[1])
+    assert.equals(4, #r.pipRows[2])
+    -- Independent pools: bar 1 keeps all 5 pips shown while bar 2 owns its own 4.
+    for i = 1, 5 do assert.is_true(r.pipRows[1][i]._shown) end
+    for i = 1, 4 do assert.is_true(r.pipRows[2][i]._shown) end
+  end)
+
+  -- Only the discrete path is implemented; a `continuous` bar draws nothing (stub).
+  it("draws nothing for a continuous bar (Phase-when-needed stub)", function()
+    local r = rigged(1)
+    r:Draw({ resourceBars = { { value = 50, max = 100, powerType = "MANA", display = "continuous" } } })
+    assert.same({}, r.pipRows[1])   -- no pips created for the continuous path
+  end)
+
+  it("hides a former discrete row when its bar goes continuous", function()
+    local r = rigged(1)
+    r:Draw({ resourceBars = { { value = 3, max = 5, powerType = "SOUL_SHARDS", display = "discrete" } } })
+    assert.is_true(r.pipRows[1][1]._shown)
+    r:Draw({ resourceBars = { { value = 3, max = 5, powerType = "SOUL_SHARDS", display = "continuous" } } })
+    for i = 1, 5 do assert.is_false(r.pipRows[1][i]._shown) end
   end)
 
   ------------------------------------------------------------------------------
@@ -427,12 +459,12 @@ describe("Renderer", function()
         { anchorTo = "fake2", emphasis = "JUDGE" },
         { anchorTo = "fake3", emphasis = "JUDGE" },
       },
-      resourceBar = { value = 3, max = 5, powerType = "SOUL_SHARDS" },
+      resourceBars = { { value = 3, max = 5, powerType = "SOUL_SHARDS" } },
     })
     assert.is_true(r.cueFrames["fake1"]._shown)
     assert.is_true(r.cueFrames["fake2"]._shown)
     assert.is_true(r.cueFrames["fake3"]._shown)
     assert.is_nil(r.panelWidget)          -- no panel authored => never built
-    assert.equals(5, #r.pips)
+    assert.equals(5, #r.pipRows[1])
   end)
 end)

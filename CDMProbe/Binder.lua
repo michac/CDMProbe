@@ -19,7 +19,7 @@
 --                  A spellID cue whose ability isn't in a displayed icon viewer is DROPPED
 --                  (the Coach ranked it, but there's no icon to anchor to).
 --   * panel:       Guidance.sequence -> DrawList.panel (self-anchored).
---   * resourceBar: Guidance.resourceBar -> DrawList.resourceBar (self-anchored).
+--   * resourceBars: Guidance.resourceBars[] -> DrawList.resourceBars[] (self-anchored, stacked).
 --
 -- COLOUR-FREE BY CONTRACT: the Binder never resolves a token to RGBA (guidance-
 -- contract.json).  It also holds NO geometry constants of its own — the dot corner,
@@ -130,14 +130,20 @@ function B:bindPanel(guidance)
 end
 
 --------------------------------------------------------------------------------
--- resourceBar — value/max/powerType through, geometry stamped on.  The v1 bar is a
--- discrete pip row (the Renderer reads value/max/powerType only), so `incoming` and
--- `display` are not forwarded — they land when the bar renders a projection.
+-- resourceBars — the ARRAY of power meters (multi-spec Phase 3), each stamped with
+-- geometry and STACKED vertically by index.  value/max/powerType/display pass through;
+-- `incoming` is not forwarded (the discrete pip row doesn't render a projection yet), and
+-- `display` rides along so the Renderer can route discrete vs continuous.  A single-power
+-- spec (Demo) yields a one-element array at the unchanged position.
 --------------------------------------------------------------------------------
-function B:bindResource(guidance)
-  local r = guidance.resourceBar
-  if not r then return nil end
-  return self.geometry.resourceBar(r.value, r.max, r.powerType)
+function B:bindResources(guidance)
+  local bars = guidance.resourceBars
+  if not bars then return nil end
+  local out = {}
+  for i, r in ipairs(bars) do
+    out[i] = self.geometry.resourceBar(r.value, r.max, r.powerType, i - 1, r.display)
+  end
+  return out
 end
 
 --------------------------------------------------------------------------------
@@ -148,6 +154,6 @@ function B:Bind(guidance, layout)
   return {
     cues = self:bindCues(guidance, layout),
     panel = self:bindPanel(guidance),
-    resourceBar = self:bindResource(guidance),
+    resourceBars = self:bindResources(guidance),
   }
 end

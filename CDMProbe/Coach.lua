@@ -24,7 +24,7 @@
 --   5. Emit      — a SEPARATE pass over the abilities the winner did NOT claim: the
 --      ROTATION_FALLBACK runner-up (winner's ability pulled, list re-run) and the
 --      dumb per-ability SOON decoration, non-press BY CONSTRUCTION and coexisting
---      with the one press; plus resourceBar.  (JUDGE retired — the runner-up now
+--      with the one press; plus resourceBars.  (JUDGE retired — the runner-up now
 --      carries the uncertainty the hedge used to.)
 --
 -- PURE of frames, timers, and the live client — like HudBoard, a FACTORY
@@ -38,7 +38,7 @@
 -- Phase-5e cutover.
 --
 -- SPEC-AGNOSTIC (Phase 2): the Coach is now a GENERIC SHELL — Classify / Emit /
--- ResourceBar / Sequence + the Compute orchestration — that any spec drives.  The
+-- ResourceBars / Sequence + the Compute orchestration — that any spec drives.  The
 -- rotation BRAIN (Context / RankWinner / Escalate + the Demo tunables + HoG's cost) moved
 -- to CoachDemonology.lua, which attaches those methods to the active spec object (see
 -- SpecRegistry / SpecDemonology).  Compute reads ns.ActiveSpec and delegates; an
@@ -62,9 +62,11 @@ local SOON_LEAD  = 3.0    -- a tracked cooldown anticipated within this => a dum
                          -- decoration lead (not asserted spec-specific), so it stays here.
 local CAST_FRESH = 1.0    -- a history 'start' this fresh => the cast_started edge
 
--- Phase 3 (resourceBar generalization) — these two stay here until the resourceBars[]
--- array + generic power-colour work lands.  ResourceBar reads them for its Demo default.
-local SHARD_CAP   = 5     -- full soul-shard bar; ResourceBar's max fallback
+-- Pure SAFETY FALLBACKS for ResourceBars (multi-spec Phase 3).  The resource shape is now
+-- an ARRAY the spec brain fills (ctx.powers, each entry carrying its own value/max/display/
+-- powerType); these only backstop a spec that left max/token off an entry.  The Demo facts
+-- (which power, its cap) live on the spec object now, not here.
+local SHARD_CAP   = 5     -- max fallback when a power entry omits it
 local POWER_TOKEN = { SoulShards = "SOUL_SHARDS" }   -- Enum.PowerType name -> render token
 
 --------------------------------------------------------------------------------
@@ -211,7 +213,7 @@ end
 --------------------------------------------------------------------------------
 -- 5. Emit — the full Guidance object.  A SEPARATE pass over the NON-winner
 --    abilities, so the fallback (ROTATION_FALLBACK) and SOON are non-press by
---    construction and coexist with the one press; plus resourceBar.
+--    construction and coexist with the one press; plus resourceBars.
 --------------------------------------------------------------------------------
 -- fallbackKey/fallbackNote — the SECOND place from RankWinner(ctx, winnerKey): the
 -- honest "what would I press instead" once the winner's ability is removed.  Always
@@ -249,28 +251,31 @@ function C:Emit(state, ctx, winnerKey, level, winnerNote, fallbackKey, fallbackN
   end
 
   return {
-    resourceBar = self:ResourceBar(ctx),
+    resourceBars = self:ResourceBars(ctx),
     cues = cues,
     sequence = self:Sequence(state, ctx),
   }
 end
 
 --------------------------------------------------------------------------------
--- resourceBar — value + max + the in-flight incoming projection, forwarded from
--- State's napkin (the Coach ranks on value + incoming).
+-- resourceBars — the ARRAY of power meters (multi-spec Phase 3).  Generic pass-through
+-- of ctx.powers (the spec brain's Context fills it off spec.powers × state.power): one
+-- entry per declared power, each carrying value + max + the in-flight incoming projection
+-- + its display token + render powerType.  A single-power spec (Demo) yields a one-element
+-- array — the same shard meter as before.  The shell owns only the safety fallbacks.
 --------------------------------------------------------------------------------
--- Phase 3 (resourceBar generalization) — this single-bar shape + the SOUL_SHARDS /
--- discrete constants are still Demo-shaped; the resourceBars[] array + generic
--- power-colour lands in Phase 3.  For now it reads the ctx fields the brain's Context
--- already fills (shards / smax / incoming) and keeps its shell-local defaults.
-function C:ResourceBar(ctx)
-  return {
-    value = ctx.shards or 0,
-    max = ctx.smax or SHARD_CAP,
-    incoming = ctx.incoming or 0,
-    display = "discrete",       -- soul shards are whole segments
-    powerType = POWER_TOKEN.SoulShards or "SOUL_SHARDS",
-  }
+function C:ResourceBars(ctx)
+  local out = {}
+  for _, p in ipairs((ctx and ctx.powers) or {}) do
+    out[#out + 1] = {
+      value = p.value or 0,
+      max = p.max or SHARD_CAP,
+      incoming = p.incoming or 0,
+      display = p.display or "discrete",
+      powerType = p.powerType or POWER_TOKEN.SoulShards or "SOUL_SHARDS",
+    }
+  end
+  return out
 end
 
 --------------------------------------------------------------------------------
@@ -286,14 +291,13 @@ end
 --------------------------------------------------------------------------------
 -- EmptyGuidance — the passive HUD (Phase-1 unsupported-spec contract).  When no spec is
 -- active (ns.ActiveSpec == nil, e.g. a spec with no profile), Compute returns this: no
--- cues, a zeroed resourceBar, no sequence.  Demo is always active in-game, so this is
--- correctness insurance, not a visible path yet (Phase 5 builds the "no profile" UX on it).
+-- cues, an EMPTY resourceBars array, no sequence.  Demo is always active in-game, so this
+-- is correctness insurance, not a visible path yet (Phase 5 builds the "no profile" UX on it).
 --------------------------------------------------------------------------------
 function C:EmptyGuidance()
   return {
     cues = {},
-    resourceBar = { value = 0, max = 0, incoming = 0, display = "discrete",
-                    powerType = POWER_TOKEN.SoulShards or "SOUL_SHARDS" },
+    resourceBars = {},
     sequence = { show = false },
   }
 end

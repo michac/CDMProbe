@@ -6,7 +6,7 @@
 -- decides no cue, knows no rotation, imports no SpecDemonology — that is invariant
 -- #3 (State names no spell and no role; the rotational meaning stays Coach-only).
 -- (It DOES consult a couple of injected `ns.Spec*` READERS — the napkin's base
--- cooldowns, and `ns.SpecShardDelta` for the signed shard-incoming projection — exactly as the
+-- cooldowns, and `ns.SpecPowerDelta` for the signed per-power incoming projection — exactly as the
 -- architecture sanctions "a game-fact input like base cooldowns": State's code names
 -- no spell and no role; the rotational meaning stays Coach-only.)
 --
@@ -657,11 +657,16 @@ eframe:SetScript("OnEvent", function(_, event, a1, a2, a3)
       pushCast("start", a3)
       -- Snapshot shards at a SPENDER's start (signed delta < 0) so inflightIncoming can
       -- guard the completion-frame double-deduction (P6 Part 2).  Spec-agnostic: State
-      -- reads the injected signed delta, names no spell.
+      -- reads the injected signed delta (Phase 3: a { power, delta } record), names no
+      -- spell.  ⚠ multi-power guard: Phase-when-needed — currentShardValue() is the
+      -- SoulShards live value, correct because Demo has one spender-power; a second spec
+      -- with a spender on a different power would want that power's live value here.
       local base = St.BaseOfCast(a3)
-      if ns.SpecShardDelta and type(base) == "number" then
-        local d = ns.SpecShardDelta(base)
-        if type(d) == "number" and d < 0 then spendStartShards[base] = currentShardValue() end
+      if ns.SpecPowerDelta and type(base) == "number" then
+        local r = ns.SpecPowerDelta(base)
+        if type(r) == "table" and type(r.delta) == "number" and r.delta < 0 then
+          spendStartShards[base] = currentShardValue()
+        end
       end
       pushEvent({ kind = "cast_started", spellID = a3,
                   base = ns.Stash(St.BaseOfCast(a3)), at = GetTime() })
@@ -711,10 +716,15 @@ end)
 -- projection and never reaches into the old HUD's `S.cast`.
 --
 -- SPEC-AGNOSTIC BY THE SAME RULE AS THE NAPKIN.  The per-cast delta comes from the
--- INJECTED `ns.SpecShardDelta(base)` reader — the "injected mechanical shard-yield table"
+-- INJECTED `ns.SpecPowerDelta(base)` reader — the "injected mechanical shard-yield table"
 -- the architecture sanctions as "a game-fact input like base cooldowns, so State's CODE
 -- stays spec-agnostic; the rotational ROLE stays Coach-only".  State names no spell and
 -- no role; it sums an injected SIGNED number: a builder is +, a spender is − (P6 Part 2).
+--
+-- PER-POWER (multi-spec Phase 3).  SpecPowerDelta now returns `{ power, delta }`, so the
+-- sum is a MAP `sums[power] = total` rather than a scalar — a dual-resource spec's casts
+-- accumulate onto their OWN named power.  Demo's casts all name "SoulShards", so the map
+-- carries the single old scalar under that one key.
 --
 -- The SIGNED direction is why the projection now clears an in-flight HoG (−3) instead of
 -- only promoting builders (the v0.32.2 bug: the overlay re-cued the spell you were
@@ -724,43 +734,71 @@ end)
 -- fallen below it, covering the one-frame race at completion before 'succeeded' lands.
 -- Builders need no guard — they credit, never over-credit.
 --
--- Attached to the SoulShards power via the game Enum.PowerType name (game vocabulary,
--- the contract's sanctioned power-token exception — the same names State keys every
--- power by).  The second-spec seam is exactly here: a spec whose casts move a different
--- resource names it in place of SoulShards, with its own SpecShardDelta.
-local function inflightIncoming(now, liveShards)
-  if not (ns.SpecShardDelta) then return 0 end
+-- Attached to each power via the game Enum.PowerType name (game vocabulary, the
+-- contract's sanctioned power-token exception — the same names State keys every power
+-- by).  The second-spec seam is exactly here: a spec whose casts move a different
+-- resource names it in `{ power, delta }`, with its own SpecPowerDelta.
+--
+-- `hist` defaults to the file-local history; it is a parameter so the off-game harness
+-- (resource_multipower_spec) can drive the per-power accumulation with a synthetic
+-- in-flight history — the multi-power seam proof (this is the pure core Build calls).
+local function inflightIncoming(now, liveShards, hist)
+  local sums = {}
+  if not ns.SpecPowerDelta then return sums end
+  hist = hist or history
   -- Latest phase per base within the flight window (a fresh 'start' still in flight; a
   -- 'succeeded'/'stopped' supersedes it and stops it counting).
   local latest = {}
-  for i = 1, #history do
-    local h = history[i]
+  for i = 1, #hist do
+    local h = hist[i]
     local id = h.base or h.spellID
     if type(id) == "number" and type(h.at) == "number" and (now - h.at) <= INFLIGHT_WINDOW then
       local prev = latest[id]
       if not prev or h.at >= prev.at then latest[id] = { phase = h.phase, at = h.at } end
     end
   end
-  local sum = 0
   for id, e in pairs(latest) do
     if e.phase == "start" then
-      local d = ns.SpecShardDelta(id)
-      if type(d) == "number" and d ~= 0 then
+      local r = ns.SpecPowerDelta(id)
+      local power = r and r.power
+      local d = r and r.delta
+      if power and type(d) == "number" and d ~= 0 then
         if d > 0 then
-          sum = sum + d               -- builder: credit unconditionally
+          sums[power] = (sums[power] or 0) + d   -- builder: credit unconditionally
         else
           -- Spender: apply the −delta only while the deduction has NOT landed (live value
           -- still at/above the start snapshot).  No snapshot / unreadable live => apply
           -- (the projecting-the-clear direction; the Coach ignores it anyway when shards
-          -- read unreadable).
+          -- read unreadable).  ⚠ multi-power guard: Phase-when-needed — `liveShards`/the
+          -- snapshot are SoulShards-keyed, correct because Demo has one spender-power.
           local snap = spendStartShards[id]
-          if snap == nil or liveShards == nil or liveShards >= snap then sum = sum + d end
+          if snap == nil or liveShards == nil or liveShards >= snap then
+            sums[power] = (sums[power] or 0) + d
+          end
         end
       end
     end
   end
-  return sum
+  return sums
 end
+
+-- Fold the per-power in-flight projection onto the live power table, walking the active
+-- spec's declared powers (spec-agnostic; State names no power, the spec's `powers` does).
+-- Each power flagged `incoming` and present in `power` gets its `incoming` field set to
+-- the summed projection (0 when nothing is in flight).  Demo declares one power
+-- (SoulShards), so this restores the exact single-bar behaviour.  Exposed alongside
+-- inflightIncoming as the pure cores Build uses, for the off-game seam proof.
+local function projectIncoming(power, sums, powers)
+  if not (power and powers) then return end
+  for _, p in ipairs(powers) do
+    if p.incoming and p.name and power[p.name] then
+      power[p.name].incoming = (sums and sums[p.name]) or 0
+    end
+  end
+end
+
+St.InflightIncoming = inflightIncoming   -- test seam (multi-power proof)
+St.ProjectIncoming  = projectIncoming    -- test seam (multi-power proof)
 
 --------------------------------------------------------------------------------
 -- Build — the pulse
@@ -843,16 +881,19 @@ function St.Build(drain)
     if (now - c.at) <= HISTORY_WINDOW then hist[#hist + 1] = c end
   end
 
-  -- Power, with the in-flight SIGNED shard projection folded onto the shard bar (P5b;
-  -- signed in P6 Part 2 so an in-flight spender clears itself).  The live value doubles
-  -- as inflightIncoming's double-deduction guard input.
+  -- Power, with the in-flight SIGNED projection folded PER POWER onto each bar (P5b;
+  -- signed in P6 Part 2 so an in-flight spender clears itself; per-power in Phase 3).
+  -- We walk the active spec's declared powers rather than hardwiring SoulShards; the
+  -- SoulShards live value still doubles as inflightIncoming's double-deduction guard input.
   local power = readPower()
   local shardName = Enum and Enum.PowerType and POWER_NAME[Enum.PowerType.SoulShards]
+  local liveShards
   if shardName and power[shardName] then
     local v = power[shardName].value
-    local liveShards = (type(v) == "number") and v or nil
-    power[shardName].incoming = inflightIncoming(now, liveShards)
+    liveShards = (type(v) == "number") and v or nil
   end
+  local sums = inflightIncoming(now, liveShards)
+  projectIncoming(power, sums, ns.ActiveSpec and ns.ActiveSpec.powers)
 
   -- ── THE DOMAIN VIEW (W4 re-layer) — the pipeline's actual input, keyed by BASE
   -- spellID, folding the N CDM rows of one ability into one.  `cooldowns` above is the

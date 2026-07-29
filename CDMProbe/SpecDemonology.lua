@@ -118,6 +118,21 @@ spec.SpecBindAlias = {
 -- past this stops being a ROTATION call even when its proc is genuinely up.
 spec.SHARD_CAP = 5
 
+-- The POWER ARRAY (multi-spec Phase 3, the resource seam).  A spec declares an ORDERED
+-- list of the named powers its HUD renders; the pipeline is now array-shaped end to end
+-- (State projects `incoming` per power, the Coach emits one resourceBar per entry, the
+-- Renderer stacks them).  Demo has exactly ONE — the Soul Shard bar — so the HUD renders
+-- the identical single shard meter it always did.  A dual-resource spec (energy+combo,
+-- runes+runic power) simply lists two entries here.
+--   name     the Enum.PowerType member name State keys the power by (state.power[name]).
+--   display  the guidance-contract resourceDisplay token (discrete pips | continuous fill).
+--   incoming true => this power receives State's in-flight projection (the +/- shard math).
+--   token    the game power render token the Renderer resolves to a colour (PowerBarColor).
+-- Read off ns.ActiveSpec.powers (an object read, like SHARD_CAP), NOT a rebound SpecField.
+spec.powers = {
+  { name = "SoulShards", display = "discrete", incoming = true, token = "SOUL_SHARDS" },
+}
+
 spec.Spec = {
   -- ── Essential: the burst summons (§3 "summon" / fel green) ────────────────
   -- cadence = "oncd": these are the abilities the user rates the biggest win —
@@ -439,28 +454,35 @@ function spec.SpecGhost(spellID)
   return (ns.SpecInfo(spellID).generates) or 0
 end
 
--- SIGNED net Soul Shard delta of an in-flight cast (W4 P6 Part 2) — what the shard
--- bar will read AFTER this cast resolves, relative to now.  Positive for a builder
--- (Shadow Bolt +1, Demonbolt +2, Infernal Bolt +3), NEGATIVE for a pure spender
--- (Hand of Gul'dan −cost).  Supersedes SpecGhost as State's `incoming` reader so an
--- in-flight HoG projects −3 and the Coach (ranking on projected = value + incoming)
--- clears it to the builder mid-cast instead of re-cuing the spell you are casting.
+-- SIGNED net power delta of an in-flight cast (multi-spec Phase 3; was SpecShardDelta,
+-- W4 P6 Part 2) — what the power bar will read AFTER this cast resolves, relative to now,
+-- AND which named power it moves.  Positive for a builder (Shadow Bolt +1, Demonbolt +2,
+-- Infernal Bolt +3), NEGATIVE for a pure spender (Hand of Gul'dan −cost).  Supersedes
+-- SpecGhost as State's `incoming` reader so an in-flight HoG projects −3 and the Coach
+-- (ranking on projected = value + incoming) clears it to the builder mid-cast instead of
+-- re-cuing the spell you are casting.
 --
 --   delta = (generates or 0) − (live shard cost IFF this ability spends shards)
+--
+-- Returns `{ power, delta }` — Phase 3 made the projection per-power (State sums delta
+-- into sums[power]), so the reader now NAMES the power it moves ("SoulShards" for Demo).
+-- A zero net delta (an art spender with no refund, or an unknown id) returns
+-- `{ power = nil, delta = 0 }`; State's accumulator skips a nil-power entry.
 --
 -- The spend is counted only when `spends == "shards"` — Demonbolt spends a CORE, not
 -- shards, so its +2 refund stands uncosted (same rule as SpecPole's C2 ordering).  The
 -- cost is read LIVE (talent-dependent) via ns.ShardCost; an UNREADABLE cost drops the
 -- spend term (delta = generates only) rather than guessing — the safe direction (never
 -- pre-deducts shards on an unreadable read).
-function spec.SpecShardDelta(spellID)
+function spec.SpecPowerDelta(spellID)
   local info = ns.SpecInfo(spellID)
   local delta = info.generates or 0
   if info.spends == "shards" and ns.ShardCost then
     local cost = ns.ShardCost(spellID)
     if type(cost) == "number" then delta = delta - cost end
   end
-  return delta
+  if delta == 0 then return { power = nil, delta = 0 } end
+  return { power = "SoulShards", delta = delta }
 end
 
 -- Self-register + statically activate (multi-spec Phase 1) ---------------------

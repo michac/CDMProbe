@@ -28,7 +28,7 @@ describe("SpecRegistry (multi-spec Phase 1 seam)", function()
     -- Spot-check the three fields with external readers (State / Coach / Probe / …).
     assert.equals(ns.ActiveSpec.SpecIDs, ns.SpecIDs)
     assert.equals(ns.ActiveSpec.SpecInfo, ns.SpecInfo)
-    assert.equals(ns.ActiveSpec.SpecShardDelta, ns.SpecShardDelta)
+    assert.equals(ns.ActiveSpec.SpecPowerDelta, ns.SpecPowerDelta)
   end)
 
   it("clears every legacy field when the active spec is unknown (unsupported-spec contract)", function()

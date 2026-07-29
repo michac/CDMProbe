@@ -3,7 +3,7 @@
 -- WHY THIS EXISTS.  Coach.lua used to BE Demonology: RankWinner was the Demo cascade,
 -- Context computed Demo facts (coreUp / artFrame / tct / tyrant proximity), and the
 -- tunables (TCT_LEAD / LATE_LEAD / SHARD_CAP / HoG cost) were file-locals.  Phase 2 split
--- that in two: Coach.lua is now a GENERIC shell (Classify / Emit / ResourceBar / Sequence /
+-- that in two: Coach.lua is now a GENERIC shell (Classify / Emit / ResourceBars / Sequence /
 -- the Compute orchestration) that any spec drives, and this file is the Demo BRAIN it
 -- delegates to — Context / RankWinner / Escalate plus the Demo tunables.  A second spec is
 -- now a sibling Coach<Spec>.lua that attaches the same three methods to its own spec object.
@@ -85,6 +85,23 @@ function spec:Context(state, env)
     atCap = projected and projected >= self.SHARD_CAP or false,
     powerReadable = ss.readable ~= false and shards ~= nil,
   }
+
+  -- ctx.powers — the GENERIC power array the shell's ResourceBars emits from (multi-spec
+  -- Phase 3).  Driven off self.powers × state.power[name], so a dual-resource spec fills
+  -- two entries; Demo declares exactly SoulShards, so this is one bar carrying the same
+  -- value/max/incoming the pre-Phase-3 single resourceBar did.  ctx.shards/projected/smax/
+  -- incoming stay above too — RankWinner/Escalate still read the SoulShards scalars.
+  ctx.powers = {}
+  for _, p in ipairs(self.powers or {}) do
+    local pw = (state.power or {})[p.name] or {}
+    ctx.powers[#ctx.powers + 1] = {
+      value     = num(pw.value),
+      max       = num(pw.max) or self.SHARD_CAP,
+      incoming  = num(pw.incoming) or 0,
+      display   = p.display or "discrete",
+      powerType = p.token,
+    }
+  end
 
   -- HoG's shard cost, resolved ONCE (talent-dependent at runtime).  The shell owns the
   -- INJECTED reader (env.shardCostFn = cfg.shardCost); the Demo brain owns WHICH spell it

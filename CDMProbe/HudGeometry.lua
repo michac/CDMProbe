@@ -28,7 +28,7 @@ G.DOT = { point = "TOPRIGHT", relPoint = "TOPRIGHT", dx = -3, dy = -3, size = 12
 -- Our own self-anchored widgets: the sequence panel and the discrete-pip bar.  Cues
 -- ride foreign frames; these two we position ourselves against a root token.
 G.PANEL = { anchorTo = "UIPARENT", point = "TOP", dx = 0, dy = -200 }
-G.BAR   = { anchorTo = "UIPARENT", point = "CENTER", dy = -18, pip = 14, gap = 4 }
+G.BAR   = { anchorTo = "UIPARENT", point = "CENTER", dy = -18, pip = 14, gap = 4, stack = 20 }
 
 --------------------------------------------------------------------------------
 -- Builders — stamp the geometry onto one DrawList entry.  The Binder calls these
@@ -48,15 +48,19 @@ function G.cue(anchorTo, emphasis, keybind)
 end
 
 -- The discrete-pip resource bar, self-anchored and CENTRED on its anchor: `dx`
--- spans half the pip row so the row is centred (row width = max pips + gaps).
-function G.resourceBar(value, max, powerType)
+-- spans half the pip row so the row is centred (row width = max pips + gaps).  `index`
+-- (0-based, default 0) STACKS multiple bars vertically for a multi-power spec — each
+-- successive bar drops one `stack` step; a single-bar spec (Demo) passes index 0 and
+-- lands at the unchanged dy.
+function G.resourceBar(value, max, powerType, index, display)
   local b = G.BAR
   local m = max or 5
   local width = m * b.pip + (m - 1) * b.gap
   return {
     anchorTo = b.anchorTo, point = b.point,
-    dx = -width / 2, dy = b.dy,
+    dx = -width / 2, dy = b.dy - (index or 0) * b.stack,
     value = value, max = m, powerType = powerType or "SOUL_SHARDS",
+    display = display or "discrete",   -- routes the Renderer's discrete/continuous path
   }
 end
 
