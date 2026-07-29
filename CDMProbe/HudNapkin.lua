@@ -154,10 +154,17 @@ function N.Start()
   ev:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
 end
 
+-- Drop every per-spellID estimate.  Public so the spec resolver can wipe the previous
+-- spec's estimates on a swap (the napkin keys are base spellIDs, spec-scoped) without
+-- tearing down the event listener the way Stop() does.
+function N.Reset()
+  wipe(N.casts)
+end
+
 function N.Stop()
   evStarted = false
   ev:UnregisterAllEvents()
-  wipe(N.casts)
+  N.Reset()
 end
 
 -- Is the whole feature actually live?  Reported rather than assumed — see (3).

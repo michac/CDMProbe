@@ -47,6 +47,18 @@ H.combat = false
 H.secret = {}          -- value -> true means issecretvalue() reports it secret
 H.frames = {}          -- every CreateFrame result, in order (napkin grabs its ev)
 
+-- Spec detection (Phase 5).  GetSpecialization returns an INDEX; GetSpecializationInfo
+-- maps that index -> (specID, name).  Default: index 1 = Demonology (266), so the resolver
+-- lands on the shipping spec exactly as the old static activation did.  Tests flip
+-- H.specIndex (nil = no spec chosen) to exercise the passive / swap paths.
+H.specIndex = 1
+H.specByIndex = {
+  [1] = { 266, "Demonology" },
+  [2] = { 265, "Affliction" },   -- registered? NO — the unsupported/passive fixture
+  [3] = { 267, "Destruction" },
+}
+function H.setSpecIndex(i) H.specIndex = i end
+
 function H.setClock(t) H.clock = t end
 function H.advance(dt) H.clock = H.clock + dt end
 function H.setCombat(v) H.combat = v and true or false end
@@ -143,6 +155,12 @@ _G.CreateFrame = function(_, name, _, _)
   if type(name) == "string" then _G[name] = f end
   return f
 end
+_G.GetSpecialization     = function() return H.specIndex end
+_G.GetSpecializationInfo = function(idx)
+  local s = H.specByIndex[idx]
+  if not s then return nil end
+  return s[1], s[2]   -- specID, name (real API also returns description/icon/role — unused)
+end
 _G.UIParent = _G.UIParent or newStub()   -- the Renderer's default root token target
 
 --------------------------------------------------------------------------------
@@ -160,14 +178,19 @@ end
 function H.fresh()
   H.frames = {}
   H.clock, H.combat, H.secret = 0, false, {}
+  H.specIndex = 1               -- default to Demonology so the resolver activates 266
   local ns = {}
   H.ns = ns
 
   -- Real, shipping implementations (data + lookups + Secret-Values-aware helpers).
   H.load("Util.lua")
-  H.load("SpecRegistry.lua")    -- registry + SetActiveSpec, needed before Demo self-activates
-  H.load("SpecDemonology.lua")  -- self-registers spec 266 + statically activates it
+  H.load("SpecRegistry.lua")    -- registry + SetActiveSpec + ResolveActiveSpec
+  H.load("SpecDemonology.lua")  -- self-registers spec 266 (activation is now the resolver's job)
   H.load("CoachDemonology.lua") -- attaches the Demo brain (Context/RankWinner/Escalate) to spec 266
+
+  -- Static activation is gone (Phase 5) — activate via the REAL resolver so every spec
+  -- ships with ns.ActiveSpec = Demo exactly as before, transparently to the 137 tests.
+  ns.ResolveActiveSpec()
 
   -- The fixture handle every spec pokes.  Tables are keyed by spellID.
   local fx = {

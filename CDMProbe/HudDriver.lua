@@ -62,7 +62,25 @@ end
 -- Build(false): does NOT drain State's pending-events delta (the Coach reads `history`,
 -- not `events`, so the driver never needs the drain — the bounded `pending` ring just
 -- keeps the last N events).
+-- One-shot chat notice when the resolved spec is UNSUPPORTED (HUD goes passive), so going
+-- dark isn't silent.  Latched per distinct specID: a Demo->Aff->Demo->Aff swap notices Aff
+-- once until the resolution changes away and back.  Supported specs stay quiet (ActiveSpec
+-- present clears the latch) — Demonology never announces itself.
+local function maybeNotifyUnsupported()
+  if ns.ActiveSpec ~= nil then
+    D.notifiedSpecID = nil   -- supported / unresolved: re-arm for a later swap to passive
+    return
+  end
+  local id = ns.detectedSpecID
+  if id == nil or id == D.notifiedSpecID then return end
+  D.notifiedSpecID = id
+  ns.Printf("HUD |cffff8080passive|r — no profile for %s (spec %d); "
+    .. "only Demonology is supported. |cffffffff/cdmp hud status|r for details.",
+    ns.detectedSpecName or "this spec", id)
+end
+
 local function tick()
+  maybeNotifyUnsupported()
   local pulse = ns.State.Build(false)
   local guidance = D.coach:Compute(pulse)
   -- Live Layout + registry from the same icon-viewer walk (Phase 5a).  Register every
@@ -159,6 +177,13 @@ local function status()
   ns.Printf("  state: %s   ingestion consumers: %d",
     D.on and "|cff88ff88ON|r" or "|cffff8080OFF|r",
     ns.State.consumers or 0)
+  -- Which spec resolved, and whether it carries a profile (Phase 5).  ns.ActiveSpec set =>
+  -- a registered spec is driving the pipeline; nil => passive (detected but no profile).
+  if ns.ActiveSpec then
+    ns.Printf("  spec: %s |cff88ff88(profile active)|r", ns.detectedSpecName or "?")
+  else
+    ns.Printf("  spec: %s |cffff8080— no profile, HUD passive|r", ns.detectedSpecName or "?")
+  end
   ns.Printf("  last tick: %d cue(s) drawn%s", D.lastCues,
     D.lastError and ("   |cffff4040error:|r " .. D.lastError) or "   |cff88ff88clean|r")
   ns.Print("  |cffffffff/cdmp hud layout|r dumps the live Layout.")

@@ -506,9 +506,9 @@ function spec.SpecPowerDelta(spellID)
   return { power = "SoulShards", delta = delta }
 end
 
--- Self-register + statically activate (multi-spec Phase 1) ---------------------
--- The resolver rebinds ns.SpecIDs / ns.SpecInfo / … from this object.  Activation is
--- STATIC here; Phase 5 replaces the SetActiveSpec line with the login /
--- PLAYER_SPECIALIZATION_CHANGED resolver.
+-- Self-register (multi-spec) --------------------------------------------------
+-- The resolver rebinds ns.SpecIDs / ns.SpecInfo / … from this object.  Registration is
+-- static; ACTIVATION is the resolver's job (Phase 5) — ns.ResolveActiveSpec detects the
+-- player's real spec on login / PLAYER_SPECIALIZATION_CHANGED and activates 266 only when
+-- Demonology is actually the current spec.
 ns.RegisterSpec(266 --[[ Demonology ]], spec)
-ns.SetActiveSpec(266)

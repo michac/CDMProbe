@@ -7,8 +7,10 @@
 -- ns.Spec* globals from whichever spec is active.  Every existing consumer keeps reading
 -- ns.SpecIDs / ns.SpecInfo / … untouched — only this file knows a swap is possible.
 --
--- Phase 1 sets the active spec STATICALLY (SpecDemonology self-activates 266 at load).
--- Live spec-detection on login / PLAYER_SPECIALIZATION_CHANGED is Phase 5.
+-- Phase 5 makes activation DYNAMIC: the resolver below reads the player's real spec on
+-- login and on PLAYER_SPECIALIZATION_CHANGED, activates the matching REGISTERED spec, or
+-- goes passive (ActiveSpec = nil + a status line) when none is registered.  Registration
+-- stays static per spec file; only *which* spec is active is now detected, not hardcoded.
 local ADDON, ns = ...
 
 ns.Specs = ns.Specs or {}
@@ -33,8 +35,8 @@ end
 
 -- Set the active spec and re-bind the legacy globals from it.  An unknown/unsupported
 -- specID leaves ActiveSpec = nil and CLEARS every legacy field to nil — the passive-HUD
--- contract Phase 5 builds its "no profile for <spec>" UX on.  Phase 1 only ever activates
--- Demonology (266).
+-- contract the "no profile for <spec>" UX is built on.  Only Demonology (266) is
+-- registered today, so every other spec resolves to this passive state — intended.
 function ns.SetActiveSpec(specID)
   local spec = ns.Specs[specID]
   ns.ActiveSpec = spec
@@ -42,3 +44,50 @@ function ns.SetActiveSpec(specID)
     ns[k] = spec and spec[k] or nil
   end
 end
+
+--------------------------------------------------------------------------------
+-- Phase 5 — the live resolver.
+--------------------------------------------------------------------------------
+-- Detect the player's real spec and activate the matching REGISTERED profile, or clear
+-- to passive when none is registered.  Everything here is pure Lua (SetActiveSpec is a
+-- table rebind, the cache clears are wipes/flag-flips), so it is taint-free and safe to
+-- run in combat — combat spec swaps are NOT deferred.  `ns.detectedSpecID/Name` are
+-- stashed even for an unsupported spec so the status line can name what we saw.
+function ns.ResolveActiveSpec()
+  local idx = GetSpecialization and GetSpecialization()
+  if not idx then return end   -- no spec chosen yet (fresh char) — leave passive, no churn
+  local specID, specName = GetSpecializationInfo(idx)
+  if type(specID) ~= "number" then return end   -- unreadable / secret — leave state as-is
+
+  local changed = (specID ~= ns.detectedSpecID)
+  ns.detectedSpecID   = specID
+  ns.detectedSpecName = specName
+  -- Already resolved to this exact spec (supported or passive) — nothing to rebind.
+  if not changed and ns.ActiveSpec == ns.Specs[specID] then return end
+
+  ns.SetActiveSpec(specID)   -- activate the registered spec, or clear to passive
+
+  if changed then
+    -- New spec: drop caches scoped to the PREVIOUS spec so the new one never reads a
+    -- stale per-spellID estimate.  HudBinds self-invalidates on the same event, but the
+    -- napkin has no listener of its own — this is the one cache the resolver must clear.
+    -- pcall'd: these run inside an event handler, where a silent throw must never wedge.
+    pcall(function() if ns.HudNapkin and ns.HudNapkin.Reset then ns.HudNapkin.Reset() end end)
+    pcall(function() if ns.HudBinds and ns.HudBinds.Invalidate then ns.HudBinds.Invalidate() end end)
+  end
+end
+
+-- Initial detection: fold into the ns.OnLogin chain.  SpecRegistry loads right after
+-- Probe (which defines the base ns.OnLogin), so `prev` is Probe's body; HudDriver's outer
+-- wrapper runs this whole chain BEFORE its C_Timer SetHud(true), so ActiveSpec is resolved
+-- before the HUD ever enables.
+local prevOnLogin = ns.OnLogin
+function ns.OnLogin()
+  if prevOnLogin then prevOnLogin() end
+  ns.ResolveActiveSpec()
+end
+
+-- Live swaps: a small event frame of our own (HudBinds' frame reacts too — both fine).
+local ev = CreateFrame("Frame")
+ev:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
+ev:SetScript("OnEvent", function() pcall(ns.ResolveActiveSpec) end)
