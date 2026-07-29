@@ -78,16 +78,17 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
   -- 4b — cues
   ------------------------------------------------------------------------------
   describe("cues", function()
-    it("stamps corner geometry + emphasis + keybind + glow for a displayed cue", function()
+    it("stamps corner geometry + emphasis + keybind for a displayed cue", function()
       local b = Binder.New({ keybindFor = keybindsFrom({ [105174] = "R" }) })
       local drawList = b:Bind(
         { cues = { [105174] = { draw = true, emphasis = "ROTATION" } } },   -- keyed by spellID
         { ["34991"] = { spellID = 105174 } })
 
       assert.are.equal(1, #drawList.cues)
+      -- No `glow` bool any more — ring behaviour is emphasis-derived in the Renderer.
       assertEqual({
         anchorTo = "34991", point = "TOPRIGHT", relPoint = "TOPRIGHT",
-        dx = -3, dy = -3, size = 12, emphasis = "ROTATION", keybind = "R", glow = true,
+        dx = -3, dy = -3, size = 12, emphasis = "ROTATION", keybind = "R",
       }, drawList.cues[1], "cue")
     end)
 
@@ -105,26 +106,8 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
       assert.is_nil(m["671"])          -- dropped: the CDM isn't showing that icon (no anchor)
     end)
 
-    it("glows only the press-level emphases (ROTATION/LATE), not JUDGE/SOON/SEQUENCE", function()
-      local b = Binder.New({ keybindFor = keybindsFrom({}) })
-      local layout = {
-        ["1"] = { spellID = 1 }, ["2"] = { spellID = 2 }, ["3"] = { spellID = 3 },
-        ["4"] = { spellID = 4 }, ["5"] = { spellID = 5 },
-      }
-      local drawList = b:Bind({ cues = {
-        [1] = { draw = true, emphasis = "ROTATION" },   -- keyed by spellID (== layout spellID)
-        [2] = { draw = true, emphasis = "LATE" },
-        [3] = { draw = true, emphasis = "SOON" },
-        [4] = { draw = true, emphasis = "JUDGE" },
-        [5] = { draw = true, emphasis = "SEQUENCE" },
-      } }, layout)
-      local m = byAnchor(drawList.cues)
-      assert.is_true(m["1"].glow)
-      assert.is_true(m["2"].glow)
-      assert.is_nil(m["3"].glow)
-      assert.is_nil(m["4"].glow)
-      assert.is_nil(m["5"].glow)
-    end)
+    -- (The old "glows only ROTATION/LATE" test is retired: the `glow` bool is gone and
+    -- ring behaviour is now emphasis-derived in the Renderer — covered by renderer_spec.)
 
     it("carries no keybind when the spell is unbound (never a placeholder)", function()
       local b = Binder.New({ keybindFor = keybindsFrom({}) })   -- nothing bound
@@ -161,10 +144,9 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
       -- HoG: a full cue.
       assert.are.equal("ROTATION", m["34991"].emphasis)
       assert.are.equal("R", m["34991"].keybind)
-      -- SB: an empty cue — key hint, no emphasis, no glow.
+      -- SB: an empty cue — key hint, no emphasis.
       assert.is_not_nil(m["34990"])
       assert.is_nil(m["34990"].emphasis)
-      assert.is_nil(m["34990"].glow)
       assert.are.equal("Q", m["34990"].keybind)
     end)
 

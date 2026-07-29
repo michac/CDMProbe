@@ -18,16 +18,12 @@ ns.HudGeometry = {}
 local G = ns.HudGeometry
 
 --------------------------------------------------------------------------------
--- The constants (were the fixture locals DOT / GLOW_EMPHASIS + the shards()/panel
--- literals in Renderer.lua).
+-- The constants (were the fixture locals DOT + the shards()/panel literals in
+-- Renderer.lua).
 --------------------------------------------------------------------------------
 -- The cue dot rides INSIDE the icon's upper-right corner (3px inset), 12px square.
 -- Anchored RELATIVE to its handle's frame, so it ride-alongs the icon for free.
 G.DOT = { point = "TOPRIGHT", relPoint = "TOPRIGHT", dx = -3, dy = -3, size = 12 }
-
--- The PRESS-level emphases glow like a proc; the softer signals (SOON/JUDGE/
--- SEQUENCE) stay plain corner dots, so the glow keeps meaning "press this now".
-G.GLOW_EMPHASIS = { ROTATION = true, LATE = true }
 
 -- Our own self-anchored widgets: the sequence panel and the discrete-pip bar.  Cues
 -- ride foreign frames; these two we position ourselves against a root token.
@@ -38,19 +34,16 @@ G.BAR   = { anchorTo = "UIPARENT", point = "CENTER", dy = -18, pip = 14, gap = 4
 -- Builders — stamp the geometry onto one DrawList entry.  The Binder calls these
 -- per ability/bar/panel; the Renderer fixtures call the same.
 --------------------------------------------------------------------------------
--- Whether a cue of this emphasis glows.  Returns nil (not false) when it doesn't,
--- so an absent `glow` key and `glow = nil` compare equal.
-function G.glowFor(emphasis) return G.GLOW_EMPHASIS[emphasis] or nil end
-
 -- One cue entry: corner-dot geometry + emphasis TOKEN (not colour) + optional
--- keybind string + the glow flag.  `anchorTo` is the opaque handle (live: a
--- cooldownID; test rig: "fake1").
+-- keybind string.  `anchorTo` is the opaque handle (live: a cooldownID; test rig:
+-- "fake1").  Ring/glow behaviour is now emphasis-derived in the Renderer (GLOW_SPEC),
+-- so there is no `glow` bool on the DrawList any more.
 function G.cue(anchorTo, emphasis, keybind)
   local d = G.DOT
   return {
     anchorTo = anchorTo, point = d.point, relPoint = d.relPoint,
     dx = d.dx, dy = d.dy, size = d.size,
-    emphasis = emphasis, keybind = keybind, glow = G.glowFor(emphasis),
+    emphasis = emphasis, keybind = keybind,
   }
 end
 

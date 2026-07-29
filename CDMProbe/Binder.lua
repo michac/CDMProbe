@@ -11,8 +11,9 @@
 --   * cues:        Layout{cooldownID -> {spellID}} + Guidance.cues{spellID} -> DrawList.
 --                  For each DISPLAYED icon, look its Coach cue up by the icon's spellID,
 --                  stamp the corner-dot geometry, pass the emphasis TOKEN through (colour
---                  stays the Renderer's job), look the keybind up by the entry's spellID,
---                  and set the glow flag — anchoring to the icon's cooldownID.  An icon
+--                  stays the Renderer's job), look the keybind up by the entry's spellID —
+--                  anchoring to the icon's cooldownID.  (Ring/glow is emphasis-derived in
+--                  the Renderer now, so there is no glow flag to set.)  An icon
 --                  the Coach did NOT signal still gets an EMPTY CUE (no emphasis -> no dot)
 --                  as long as it has a keybind, so the key hint rides every button (P5d).
 --                  A spellID cue whose ability isn't in a displayed icon viewer is DROPPED
@@ -22,7 +23,7 @@
 --
 -- COLOUR-FREE BY CONTRACT: the Binder never resolves a token to RGBA (guidance-
 -- contract.json).  It also holds NO geometry constants of its own — the dot corner,
--- glow rule, panel + bar positions live in ns.HudGeometry, which the Renderer's
+-- panel + bar positions live in ns.HudGeometry, which the Renderer's
 -- `/cdmp rendertest` fixtures read too, so the two producers agree by construction.
 --
 -- PURE FACTORY, like Coach/Renderer: Binder.New(cfg) / __index, deterministic

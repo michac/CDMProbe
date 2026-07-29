@@ -88,16 +88,21 @@ describe("Renderer", function()
     assert.equals(-28, pt.dy)
   end)
 
-  it("paints a ROTATION_FALLBACK dot (dim green) and does NOT glow it", function()
+  it("paints a ROTATION_FALLBACK cue in ROTATION green with a STATIC (non-animating) ring", function()
     local r = rigged(1)
-    -- The Binder never sets glow on a fallback (glow is press-only), so no glow flag here.
     r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION_FALLBACK" } } })
     local dot = r.cueFrames["fake1"]
     assert.is_not_nil(dot, "fallback fell into the empty-cue path — no theme colour")
     assert.is_true(dot._shown)
-    assert.is_true(colorEq(dot._color, theme.ROTATION_FALLBACK[1],
-                           theme.ROTATION_FALLBACK[2], theme.ROTATION_FALLBACK[3]))
-    assert.is_falsy(r.glowing["fake1"])   -- a runner-up never glows
+    -- The runner-up borrows ROTATION's green for BOTH circle and ring; MOTION (a static
+    -- ring), not a dimmer hue, marks it as the backup.
+    assert.is_true(colorEq(dot._color, theme.ROTATION[1], theme.ROTATION[2], theme.ROTATION[3]))
+    local glow = r.cueGlows["fake1"]
+    assert.is_not_nil(glow, "fallback should still show its ring, just not animate it")
+    assert.is_true(glow._shown)
+    assert.is_true(colorEq(glow._color, theme.ROTATION[1], theme.ROTATION[2], theme.ROTATION[3]))
+    assert.is_falsy(glow._spinOn)    -- STATIC: neither group is playing
+    assert.is_falsy(glow._pulseOn)
   end)
 
   -- P5d strata fix: decorations ride a per-icon holder that sits ABOVE the icon (so a
@@ -225,57 +230,68 @@ describe("Renderer", function()
   ------------------------------------------------------------------------------
   -- proc glow (rides the icon, driven by the cue's `glow` flag)
   ------------------------------------------------------------------------------
-  it("glows the solid dot with a round glow when the cue asks for it", function()
+  it("shows a spinning + pulsing ring on a ROTATION cue, centred on the still-visible dot", function()
     local r = rigged(1)
-    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION", glow = true } } })
+    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" } } })
     assert.is_true(r.glowing["fake1"])
     local glow = r.cueGlows["fake1"]
     assert.is_true(glow._shown)
     assert.equals(r.cueFrames["fake1"], glow._points[1].rel)   -- centred on the solid dot
     -- tinted to the cue's own emphasis hue
     assert.is_true(colorEq(glow._color, theme.ROTATION[1], theme.ROTATION[2], theme.ROTATION[3]))
+    assert.is_true(glow._spinOn)     -- both animation groups play
+    assert.is_true(glow._pulseOn)
+    assert.is_true(r.cueFrames["fake1"]._shown)   -- centre dot stays VISIBLE (no longer ring-only)
   end)
 
-  it("does not glow a cue without the flag", function()
+  it("draws no ring for an emphasis with no GLOW_SPEC entry (e.g. JUDGE)", function()
     local r = rigged(1)
     r:Draw({ cues = { { anchorTo = "fake1", emphasis = "JUDGE" } } })
     assert.is_nil(r.glowing["fake1"])
+    assert.is_true(r.cueFrames["fake1"]._shown)   -- still a solid circle, just no ring
   end)
 
   it("stops the glow when the cue drops out", function()
     local r = rigged(2)
-    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION", glow = true },
-                      { anchorTo = "fake2", emphasis = "ROTATION", glow = true } } })
+    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" },
+                      { anchorTo = "fake2", emphasis = "ROTATION" } } })
     assert.is_not_nil(r.glowing["fake2"])
-    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION", glow = true } } })
+    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" } } })
     assert.is_nil(r.glowing["fake2"])
     assert.is_not_nil(r.glowing["fake1"])
   end)
 
-  it("stops the glow when the cue stays but no longer asks to glow", function()
+  it("stops the glow when the cue's emphasis changes to a no-ring one", function()
     local r = rigged(1)
-    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION", glow = true } } })
-    assert.is_not_nil(r.glowing["fake1"])
     r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" } } })
+    assert.is_not_nil(r.glowing["fake1"])
+    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "JUDGE" } } })   -- ROTATION -> no GLOW_SPEC
     assert.is_nil(r.glowing["fake1"])
   end)
 
   it("a glowing cue draws without error off-game (fallback path)", function()
     local r = rigged(1)
     assert.has_no.errors(function()
-      r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION", glow = true } } })
+      r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" } } })
     end)
   end)
 
   ------------------------------------------------------------------------------
   -- the shipped fixtures place the dot in the corner + carry keybinds + glow
   ------------------------------------------------------------------------------
-  it("fixtures glow the press cue but not the softer JUDGE/SOON cues", function()
+  it("fixtures ring the press cue (ROTATION/LATE) but not the softer JUDGE cue", function()
     local ns = H.ns
-    assert.is_true(ns.RenderTestFixtures["hand-of-guldan"].drawList.cues[1].glow)
-    local burst = ns.RenderTestFixtures["burst-hold"].drawList.cues
-    assert.is_true(burst[1].glow)        -- ROTATION
-    assert.is_nil(burst[2].glow)         -- JUDGE
+    -- Drawn, not read off a retired field: hand-of-guldan is one ROTATION press.
+    local hog = Rr.New()
+    hog:Register("fake1", H.newStub())
+    hog:Draw(ns.RenderTestFixtures["hand-of-guldan"].drawList)
+    assert.is_true(hog.glowing["fake1"])
+    -- burst-hold: LATE rings, JUDGE does not.
+    local bh = Rr.New()
+    for i = 1, 3 do bh:Register("fake" .. i, H.newStub()) end
+    bh:Draw(ns.RenderTestFixtures["burst-hold"].drawList)
+    assert.is_true(bh.glowing["fake2"])   -- LATE
+    assert.is_nil(bh.glowing["fake3"])    -- JUDGE
   end)
 
   it("the inventory fixture carries one dot of every emphasis token, captioned", function()
@@ -287,14 +303,15 @@ describe("Renderer", function()
       assert.is_true(seen[tok], "inventory missing " .. tok)
     end
     assert.equals(5, #inv.captions)
-    -- rendered together, all five draw + only the press cues glow
+    -- rendered together: ROTATION/LATE/SOON all ring now; JUDGE/SEQUENCE do not
     local r = Rr.New()
     for i = 1, 5 do r:Register("fake" .. i, H.newStub()) end
     r:Draw(inv.drawList)
     assert.is_true(r.cueFrames["fake1"]._shown)   -- ROTATION
     assert.is_true(r.glowing["fake1"])            -- ROTATION glows
     assert.is_true(r.glowing["fake2"])            -- LATE glows
-    assert.is_nil(r.glowing["fake3"])             -- SOON does not
+    assert.is_true(r.glowing["fake3"])            -- SOON glows now (moving = anticipation)
+    assert.is_nil(r.glowing["fake4"])             -- JUDGE does not
   end)
   it("fixtures anchor the cue dot to the icon's upper-right corner with a keybind", function()
     local ns = H.ns

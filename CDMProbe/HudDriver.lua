@@ -31,6 +31,10 @@ local D = ns.HudDriver
 
 D.on = false
 D.ticker = nil
+
+-- HUD-on predicate the HudProcGlow hooks read (the native-proc-glow dim is gated on it,
+-- since hooksecurefunc hooks can never be uninstalled).
+function ns.HudOn() return D.on end
 D.lastCues = 0        -- diagnostics: cues drawn on the last tick
 D.lastError = nil     -- diagnostics: last tick error text (nil = clean)
 
@@ -77,6 +81,9 @@ local function tick()
   local drawList = D.binder:Bind(guidance, layout)
   D.renderer:Draw(drawList)
   D.lastCues = drawList.cues and #drawList.cues or 0
+  -- Re-hook newly-pooled CDM frames + re-apply the native-proc-glow dim (idempotent,
+  -- cheap — a per-instance flag skips already-hooked frames).
+  if ns.HudProcGlow then ns.HudProcGlow.Install() end
   -- HUD2 decision log — append one greppable line on any decision change.  Inside the
   -- pcall'd tick, so a logging throw can never wedge the HUD.
   if ns.Hud2Log then ns.Hud2Log.Record(pulse, guidance, drawList) end
@@ -103,6 +110,7 @@ function ns.SetHud(on)
   if on then
     ensureInstances()
     ns.State.Acquire()                    -- ingestion live (State's ref-counted lifecycle)
+    if ns.HudProcGlow then ns.HudProcGlow.Install() end  -- dim the native proc glow (hooks + one pass)
     if not D.ticker then D.ticker = C_Timer.NewTicker(TICK_PERIOD, safeTick) end
     safeTick()                            -- draw immediately, don't wait a tick
     ns.Print("HUD |cff88ff88ON|r — the W4 pipeline (State -> Coach -> Binder -> Renderer). "
@@ -110,6 +118,7 @@ function ns.SetHud(on)
   else
     if D.ticker then D.ticker:Cancel(); D.ticker = nil end
     if D.renderer then pcall(D.renderer.Draw, D.renderer, {}) end  -- clear every dot/panel/pip
+    if ns.HudProcGlow then pcall(ns.HudProcGlow.Restore) end       -- native proc glow back to full alpha
     ns.State.Release()
     ns.Print("HUD |cffff8080OFF|r — pipeline overlay cleared.")
   end

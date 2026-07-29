@@ -49,18 +49,33 @@ R.__index = R
 local function defaultTheme()
   return {
     ROTATION          = { 0.30, 1.00, 0.48, 1.00 },  -- green:      press now
-    -- ROTATION_FALLBACK (W4 Phase 8): the honest runner-up.  A dimmer, desaturated
-    -- green — same hue family as ROTATION but clearly subordinate ("what I'd press
-    -- instead").  Never glows (glow stays reserved for the real press, set by the
-    -- Binder for ROTATION/LATE only), so a nil-col miss is the only way it vanishes —
-    -- which is exactly the bug this entry closes.
-    ROTATION_FALLBACK = { 0.20, 0.55, 0.32, 1.00 },  -- dim green:  the runner-up press
+    -- ROTATION_FALLBACK: SUPERSEDED for cues — the runner-up now borrows ROTATION's
+    -- green for BOTH circle and ring (see GLOW_SPEC.ROTATION_FALLBACK.color) and reads
+    -- as the backup by its ring being STATIC, not by a dimmer hue.  This dim-green entry
+    -- is left harmless (no cue path resolves it any more).
+    ROTATION_FALLBACK = { 0.20, 0.55, 0.32, 1.00 },  -- dim green:  (superseded, unused for cues)
     LATE              = { 1.00, 0.42, 0.10, 1.00 },  -- amber:      overdue, catch up
     SOON              = { 1.00, 0.86, 0.15, 1.00 },  -- yellow:     anticipation
     JUDGE             = { 0.27, 0.88, 1.00, 1.00 },  -- cyan:       your-call (retired)
     SEQUENCE          = { 0.64, 0.42, 1.00, 1.00 },  -- violet:     look at the panel (retired)
   }
 end
+
+-- Per-emphasis GLOW/RING spec — the source of truth for ring behaviour (token ->
+-- pixels lives in the Renderer, per architecture invariant #5).  Supersedes
+-- HudGeometry.G.GLOW_EMPHASIS / the `glow` bool.
+--   * an entry ⇒ this emphasis draws a spinning glow RING (+ a solid circle dot).
+--   * `spin`/`pulse` ⇒ whether the ring rotates / breathes.  Both false ⇒ ring shown
+--     but STATIC (the runner-up reads as backup by its lack of MOTION, not by colour).
+--   * `color` overrides the colour key for BOTH the circle and the ring (fallback ->
+--     ROTATION green).
+--   * no entry (IDLE / unknown) ⇒ no circle, no ring (keybind-only if it carries one).
+local GLOW_SPEC = {
+  ROTATION          = { spin = true,  pulse = true },
+  LATE              = { spin = true,  pulse = true },
+  SOON              = { spin = true,  pulse = true },
+  ROTATION_FALLBACK = { spin = false, pulse = false, color = "ROTATION" },
+}
 
 -- powerType -> RGBA.  SOUL_SHARDS is the soul-violet HudChrome's rail paints a
 -- GENERATE edge with (HudChrome.lua:1051) — the shard colour by construction.
@@ -164,16 +179,17 @@ end
 --------------------------------------------------------------------------------
 -- Cue dots (3b)
 --------------------------------------------------------------------------------
--- A cue is a solid square, coloured by its emphasis token and anchored to its
--- handle's frame — a corner treatment INSIDE the icon (the DrawList geometry puts
--- it upper-right; see the fixtures).  Diff-by-key on `anchorTo`: only handles in
--- THIS DrawList are (re)painted; a handle that dropped out is hidden, never
--- destroyed.
+-- A cue is a solid coloured CIRCLE (a masked fill, see the dot creation) + a
+-- spinning glow RING, coloured by its emphasis token and anchored to its handle's
+-- frame — a corner treatment INSIDE the icon (the DrawList geometry puts it
+-- upper-right; see the fixtures).  Diff-by-key on `anchorTo`: only handles in THIS
+-- DrawList are (re)painted; a handle that dropped out is hidden, never destroyed.
 --
 -- THE DOT AND THE KEY HINT ARE DECOUPLED (P5d).  A cue carries an optional emphasis
 -- token AND an optional `keybind` string, and they draw INDEPENDENTLY:
---   * emphasis the theme knows -> a coloured dot (+ glow if flagged); an absent or
---     unknown token draws NO dot (never guess a colour), hiding any prior one.
+--   * emphasis with a GLOW_SPEC entry -> a coloured circle + its glow ring (motion per
+--     the spec); an absent or unknown token draws NO circle (never guess a colour),
+--     hiding any prior one.
 --   * a `keybind` string -> a hint in the icon's UPPER-LEFT corner, drawn WHENEVER
 --     present regardless of emphasis (identity chrome — which button is which).
 -- So an EMPTY CUE (keybind, no emphasis) is a key hint with no dot — that is how the
@@ -189,13 +205,22 @@ function R:drawCues(cues)
     if key ~= nil and anchor then
       active[key] = true
       local holder = self:ensureHolder(key, anchor)
-      local col = self.theme[c.emphasis]
+      -- GLOW_SPEC drives BOTH the colour (a fallback borrows ROTATION's key) and the
+      -- ring: an entry ⇒ a spinning glow ring; `spin`/`pulse` gate its motion.  No
+      -- entry (IDLE / unknown token) ⇒ no circle, no ring.
+      local gs       = GLOW_SPEC[c.emphasis]                 -- nil ⇒ no ring
+      local colorKey = (gs and gs.color) or c.emphasis
+      local col      = self.theme[colorKey]
       local sz = c.size or 12
       if col then
         local dot = self.cueFrames[key]
         if not dot then
           dot = holder:CreateTexture(nil, "OVERLAY")
           dot:SetTexture(WHITE8)
+          -- Clip the solid fill to a disc — Blizzard's own solid-fill->circle idiom
+          -- (RingedFrameTemplate.lua:103-117).  Emphasis-independent, so set ONCE at
+          -- creation; the dot is pooled/reused across redraws.
+          dot:SetMask("Interface\\CharacterFrame\\TempPortraitAlphaMask")
           self.cueFrames[key] = dot
         end
         dot:SetColorTexture(col[1], col[2], col[3], col[4] or 1)
@@ -203,12 +228,12 @@ function R:drawCues(cues)
         dot:ClearAllPoints()
         dot:SetPoint(c.point or "CENTER", anchor,
                      c.relPoint or c.point or "CENTER", c.dx or 0, c.dy or 0)
-        -- A glowing press cue is the spinning RING alone: the centre dot is drawn
-        -- INVISIBLE (alpha 0) but kept positioned, so the glow still centres on it.
-        -- Non-glow cues (SOON / FALLBACK) keep the solid dot — it is their only signal.
-        dot:SetAlpha(c.glow and 0 or 1)
+        -- EVERY cue shows the solid circle now; the glow ring (when the emphasis has a
+        -- GLOW_SPEC entry) rides a layer BELOW it, so the crisp dot + keybind stay on top.
+        dot:SetAlpha(1)
         dot:Show()
-        self:setDotGlow(key, holder, dot, c.glow and col or nil, sz)
+        self:setDotGlow(key, holder, dot, gs and col or nil, sz,
+                        gs and gs.spin, gs and gs.pulse)
       else
         -- EMPTY CUE (keybind-only): no emphasis the theme knows -> no dot, no glow.
         -- Hide any dot/glow this handle had, but keep the handle ACTIVE so its keybind
@@ -234,6 +259,7 @@ function R:drawCues(cues)
       g:Hide()
       if g.spin then g.spin:Stop() end
       if g.pulse then g.pulse:Stop() end
+      g._spinOn, g._pulseOn = nil, nil   -- so a re-shown glow re-plays each group
       self.glowing[key] = nil
     end
   end
@@ -273,39 +299,44 @@ end
 -- loop MODES differ: `spin` (Rotation, REPEAT — a seamless full turn) and `pulse`
 -- (Alpha, BOUNCE — a gentle breathe); one group can't do both.  Sits a layer BELOW the
 -- dot (ARTWORK vs the dot's OVERLAY) so the crisp dot + keybind stay on top.  Pooled
--- per handle; idempotent — both loops only (re)start on the not-glowing -> glowing
--- edge, so a steady redraw (colour/size change) doesn't hitch either animation.
+-- per handle.  Each group is driven independently to match its `spin`/`pulse` flag and
+-- tracked per-glow (g._spinOn / g._pulseOn), so a steady redraw doesn't hitch a running
+-- animation and a STATIC ring (both flags false — the runner-up) simply never plays.
 local GLOW_ATLAS = "services-ring-large-glowspin"   -- round ring glow, built to spin
 local GLOW_SCALE = 3.6    -- relative to the DOT (the solid box it's centred on)
 local SPIN_SECS  = 4.0    -- one full rotation
 
-function R:setDotGlow(key, holder, dot, col, size)
+function R:setDotGlow(key, holder, dot, col, size, spin, pulse)
   local g = self.cueGlows[key]
   if not col then                              -- no glow this frame: hide + park
-    if g then g:Hide(); if g.spin then g.spin:Stop() end; if g.pulse then g.pulse:Stop() end end
+    if g then
+      g:Hide()
+      if g.spin then g.spin:Stop() end
+      if g.pulse then g.pulse:Stop() end
+      g._spinOn, g._pulseOn = nil, nil         -- clear so a re-shown glow re-plays
+    end
     self.glowing[key] = nil
     return
   end
-  local was = self.glowing[key]
   if not g then
     g = holder:CreateTexture(nil, "ARTWORK")
     g:SetAtlas(GLOW_ATLAS)
     g:SetBlendMode("ADD")
-    local spin = g:CreateAnimationGroup()      -- continuous rotation (REPEAT)
-    local rot = spin:CreateAnimation("Rotation")
+    local spinGroup = g:CreateAnimationGroup()  -- continuous rotation (REPEAT)
+    local rot = spinGroup:CreateAnimation("Rotation")
     rot:SetDegrees(-360)
     rot:SetDuration(SPIN_SECS)
     rot:SetOrigin("CENTER", 0, 0)
     rot:SetOrder(1)
-    spin:SetLooping("REPEAT")
-    local pulse = g:CreateAnimationGroup()      -- breathe (BOUNCE) — own group
-    local a = pulse:CreateAnimation("Alpha")
+    spinGroup:SetLooping("REPEAT")
+    local pulseGroup = g:CreateAnimationGroup() -- breathe (BOUNCE) — own group
+    local a = pulseGroup:CreateAnimation("Alpha")
     a:SetFromAlpha(0.55)
     a:SetToAlpha(1.00)
     a:SetDuration(0.60)
     a:SetOrder(1)
-    pulse:SetLooping("BOUNCE")
-    g.spin, g.pulse = spin, pulse
+    pulseGroup:SetLooping("BOUNCE")
+    g.spin, g.pulse = spinGroup, pulseGroup
     self.cueGlows[key] = g
   end
   g:SetVertexColor(col[1], col[2], col[3], 1)
@@ -314,10 +345,14 @@ function R:setDotGlow(key, holder, dot, col, size)
   local d = size or 12
   g:SetSize(d * GLOW_SCALE, d * GLOW_SCALE)
   g:Show()
-  if not was then
-    if g.spin then g.spin:Play() end
-    if g.pulse then g.pulse:Play() end
+  -- Drive each group to match its flag, tracked per-glow so a steady redraw doesn't
+  -- restart it.  Static FALLBACK (both false) ⇒ the ring is shown but never animates.
+  local function drive(group, want, flag)
+    if want and not g[flag] then group:Play(); g[flag] = true
+    elseif not want and g[flag] then group:Stop(); g[flag] = false end
   end
+  drive(g.spin,  spin,  "_spinOn")
+  drive(g.pulse, pulse, "_pulseOn")
   self.glowing[key] = true
 end
 
@@ -455,10 +490,11 @@ local FIXTURES = {
   -- least→most salient, with the NATIVE proc glow last.  Not a scenario the Coach
   -- would emit as one frame — a palette:
   --   IDLE      keybind hint only, no dot (the "empty board" — tracked, nothing to do)
-  --   SOON      anticipation, plain dot (not a press)
-  --   FALLBACK  ROTATION_FALLBACK — the honest runner-up, plain dot
-  --   ROTATION  press now — dot + our own breathing dot-glow
-  --   LATE      overdue — dot + our own dot-glow
+  --   SOON      anticipation — yellow circle + spinning/pulsing ring
+  --   FALLBACK  ROTATION_FALLBACK — the runner-up: GREEN circle + STATIC ring (reads as
+  --            backup by lack of MOTION, not by a dimmer hue)
+  --   ROTATION  press now — green circle + spinning/pulsing ring
+  --   LATE      overdue — amber circle + spinning/pulsing ring
   --   GLOW      a FALLBACK dot + keybind UNDER Blizzard's NATIVE (gold) spell-
   --            activation overlay (applied post-Draw, below) — the exact conflict
   --            the "subdue the proc glow" backlog item is about: the native glow
@@ -468,8 +504,8 @@ local FIXTURES = {
   --            could RECOLOR (to a tamer hue) rather than fully replace it.
   --   GLOW·DIM  the native gold overlay DIMMED via frame alpha — proof it can be
   --            de-emphasized by turning it down, the other subdue lever.
-  -- (ROTATION / LATE show OUR spinning ring glow with NO centre dot; the non-glow
-  -- states keep their solid dot.)  Squares carry real spell-icon ART (buildRig), so the
+  -- (Every cue now shows its solid circle AND a glow ring; ROTATION/LATE/SOON spin +
+  -- pulse, FALLBACK's ring is static.)  Squares carry real spell-icon ART (buildRig), so the
   -- chrome is judged against a busy icon like the live CDM, not a flat fill.
   -- (Supersedes `inventory` as the default: that card still lists the RETIRED
   -- JUDGE/SEQUENCE tokens; this one is the live SOON|ROTATION|ROTATION_FALLBACK|LATE
@@ -486,10 +522,10 @@ local FIXTURES = {
     drawList = {
       cues = {
         cue("fake1", nil, "Q"),                  -- IDLE: keybind only, no dot
-        cue("fake2", "SOON", "E"),               -- anticipation, no glow
-        cue("fake3", "ROTATION_FALLBACK", "R"),  -- runner-up, no glow
-        cue("fake4", "ROTATION", "R"),           -- press now: spinning ring, no centre dot
-        cue("fake5", "LATE", "E"),               -- overdue: spinning ring, no centre dot
+        cue("fake2", "SOON", "E"),               -- anticipation: yellow circle + spinning ring
+        cue("fake3", "ROTATION_FALLBACK", "R"),  -- runner-up: green circle + STATIC ring
+        cue("fake4", "ROTATION", "R"),           -- press now: green circle + spinning ring
+        cue("fake5", "LATE", "E"),               -- overdue: amber circle + spinning ring
         cue("fake6", "ROTATION_FALLBACK", "F"),  -- FALLBACK dot + keybind, NATIVE glow on top
         cue("fake7", "ROTATION_FALLBACK", "F"),  -- same, but the glow is RECOLORED (red)
         cue("fake8", "ROTATION_FALLBACK", "F"),  -- same, but the glow is DIMMED (alpha)

@@ -20,4 +20,5 @@ Renderer.lua
 HudLayout.lua
 State.lua
 Hud2Log.lua
+HudProcGlow.lua
 HudDriver.lua
