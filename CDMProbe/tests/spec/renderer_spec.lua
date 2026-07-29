@@ -225,13 +225,13 @@ describe("Renderer", function()
   ------------------------------------------------------------------------------
   -- proc glow (rides the icon, driven by the cue's `glow` flag)
   ------------------------------------------------------------------------------
-  it("glows around the ICON (proc-style) when the cue asks for it", function()
+  it("glows the solid dot with a round glow when the cue asks for it", function()
     local r = rigged(1)
     r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION", glow = true } } })
     assert.is_true(r.glowing["fake1"])
     local glow = r.cueGlows["fake1"]
     assert.is_true(glow._shown)
-    assert.equals(r.registry["fake1"], glow._points[1].rel)   -- centred on the icon (proc-style)
+    assert.equals(r.cueFrames["fake1"], glow._points[1].rel)   -- centred on the solid dot
     -- tinted to the cue's own emphasis hue
     assert.is_true(colorEq(glow._color, theme.ROTATION[1], theme.ROTATION[2], theme.ROTATION[3]))
   end)
