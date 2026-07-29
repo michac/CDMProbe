@@ -12,6 +12,7 @@ Viewers.lua
 Probe.lua
 SpecRegistry.lua
 SpecDemonology.lua
+CoachDemonology.lua
 HudBinds.lua
 HudNapkin.lua
 Coach.lua

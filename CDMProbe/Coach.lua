@@ -37,12 +37,14 @@
 -- PARALLEL to the old default `/cdmp hud` (HudBoard/HudScore), which stays until the
 -- Phase-5e cutover.
 --
--- SPEC-AGNOSTIC-ISH: the Coach reads identity/signal buckets from SpecDemonology
--- (ns.SpecInfo / ns.SpecIDs), holds no colour constants, and takes its one
--- talent-dependent number (HoG's shard cost) through cfg.shardCost with a Demo
--- fallback.  The cascade ORDER is Demo rotation knowledge (rotation.md steps 1-12 +
--- diabolist-sequences.md); a second spec overrides RankWinner in pure Lua, exactly
--- as HudBoard documents.
+-- SPEC-AGNOSTIC (Phase 2): the Coach is now a GENERIC SHELL — Classify / Emit /
+-- ResourceBar / Sequence + the Compute orchestration — that any spec drives.  The
+-- rotation BRAIN (Context / RankWinner / Escalate + the Demo tunables + HoG's cost) moved
+-- to CoachDemonology.lua, which attaches those methods to the active spec object (see
+-- SpecRegistry / SpecDemonology).  Compute reads ns.ActiveSpec and delegates; an
+-- unsupported spec (ActiveSpec == nil) yields EmptyGuidance (the Phase-1 passive-HUD
+-- contract).  A second spec is a sibling Coach<Spec>.lua overriding the same three methods
+-- — exactly the seam the old HudBoard documented, now realized.
 local ADDON, ns = ...
 
 ns.Coach = {}
@@ -50,56 +52,34 @@ local C = ns.Coach
 C.__index = C
 
 --------------------------------------------------------------------------------
--- Tunables (seconds / shards).  Named + commented so the cascade reads as rules.
+-- Shell tunables (seconds / shards).  The DECISION tunables (TCT_LEAD / LATE_LEAD /
+-- SHARD_CAP / HoG cost) belong to the spec brain now (CoachDemonology.lua); what stays
+-- here is generic to the shell's own passes.
 --------------------------------------------------------------------------------
-local SHARD_CAP  = 5      -- full soul-shard bar (ns.SHARD_CAP mirrors this)
-local TCT_LEAD   = 3.0    -- Tyrant Condition (TCT): Tyrant napkin remaining <= this (OR off
-                         -- cooldown) => the burst window: cap -> demons -> Tyrant -> flood
-local LATE_LEAD  = 4.0    -- a probably-up press left elapsed this long => overdue
 local SOON_LEAD  = 3.0    -- a tracked cooldown anticipated within this => a dumb SOON
                          -- decoration (W4 Phase 8): "coming off cooldown", independent
-                         -- of the winner/burst logic — NOT a press claim
+                         -- of the winner/burst logic — NOT a press claim.  A generic
+                         -- decoration lead (not asserted spec-specific), so it stays here.
 local CAST_FRESH = 1.0    -- a history 'start' this fresh => the cast_started edge
-local HOG_COST_FALLBACK = 3   -- Hand of Gul'dan's cost when no live reader is wired
 
--- The game's own power token per Enum.PowerType name (contract's sanctioned
--- pass-through — the Renderer resolves colour via PowerBarColor).  Demo only reads
--- SoulShards today; a second power name lands here when a second spec needs it.
-local POWER_TOKEN = { SoulShards = "SOUL_SHARDS" }
-
--- Demo shard-cost fallback (talent-dependent at runtime; cfg.shardCost overrides).
--- Only HoG is gated on a readable shard COST in the corpus; the summons are
--- phase/proc-gated, not cost-gated in the cascade.
-local DEMO_COST = nil  -- built lazily from ns.SpecIDs on first use
+-- Phase 3 (resourceBar generalization) — these two stay here until the resourceBars[]
+-- array + generic power-colour work lands.  ResourceBar reads them for its Demo default.
+local SHARD_CAP   = 5     -- full soul-shard bar; ResourceBar's max fallback
+local POWER_TOKEN = { SoulShards = "SOUL_SHARDS" }   -- Enum.PowerType name -> render token
 
 --------------------------------------------------------------------------------
 -- Construction
 --------------------------------------------------------------------------------
 -- cfg (all optional):
 --   shardCost  fn(spellID) -> cost   the LIVE cost reader (ns.ShardCost) when wired;
---              nil in the golden harness, where the Demo fallback answers.
+--              nil in the golden harness, where the spec's fallback answers.  The shell
+--              owns the INJECTED reader (threaded to the brain's Context as env.shardCostFn);
+--              the brain owns WHICH spell it costs.
 function C.New(cfg)
   cfg = cfg or {}
   local self = setmetatable({}, C)
   self.shardCostFn = cfg.shardCost
   return self
-end
-
-local function ids()
-  return ns.SpecIDs or {}
-end
-
-local function hogCost(self)
-  local S = ids()
-  if self.shardCostFn and S.HAND_OF_GULDAN then
-    local c = self.shardCostFn(S.HAND_OF_GULDAN)
-    if type(c) == "number" then return c end
-  end
-  if not DEMO_COST then
-    DEMO_COST = {}
-    if S.HAND_OF_GULDAN then DEMO_COST[S.HAND_OF_GULDAN] = HOG_COST_FALLBACK end
-  end
-  return (S.HAND_OF_GULDAN and DEMO_COST[S.HAND_OF_GULDAN]) or HOG_COST_FALLBACK
 end
 
 --------------------------------------------------------------------------------
@@ -111,7 +91,9 @@ local function num(v) return type(v) == "number" and v or nil end
 -- Has `base` been COMMITTED within `window` — a cast STARTED or SUCCEEDED?  The burst
 -- walk advances on the cast-start edge (the "next move" rule: the instant a demon is
 -- committed, move to the next step), so it must not wait for the landed `succeeded`.
-local function committedWithin(state, base, window)
+-- EXPOSED (Phase 2) as ns.Coach.CommittedWithin: the Demo brain's Context reads it (the
+-- staging walk), so it is public shell kit rather than a file-local.
+function C.CommittedWithin(state, base, window)
   local now = state.at or 0
   local hist = state.history or {}
   for i = 1, #hist do
@@ -193,251 +175,23 @@ function C.Classify(cd, state)
   rec.cdChangedAt = num(c.changedAt)
   rec.cdSource    = c.source
 
-  -- Armed proc / transform.  A live override whose spell `spends == "art"` IS the
-  -- Demonic Art transform (Ruination on the HoG frame, Infernal Bolt on the SB
-  -- frame) — the precise, combat-readable trigger (mirrors HudScore.ProcArmed's
-  -- override branch).  `glow` is State's own combat-readable proc-highlight.
-  rec.transformed = (live ~= base and info.spends == "art") or false
+  -- Armed proc / transform.  GENERIC in the shell: a live override (live ~= base) is a
+  -- transform.  The spec-specific meaning of that override (Demo: `spends == "art"` IS the
+  -- Demonic Art — Ruination on the HoG frame, Infernal Bolt on the SB frame) is re-applied
+  -- by the spec brain's Context, which owns the filter.  `glow` is State's own
+  -- combat-readable proc-highlight.
+  rec.transformed = (live ~= base) or false
   rec.glowActive  = (g.active and g.readable ~= false) or false
   rec.glowChangedAt = num(g.changedAt)
 
   -- overdue — a probably-up press that has SAT elapsed past the lead (readable off
-  -- cd.changedAt).  Only meaningful for the winner (Escalate drives the clock).
+  -- cd.changedAt).  Only meaningful for the winner (Escalate drives the clock).  The lead
+  -- is the ACTIVE spec's LATE_LEAD (Demo = 4.0); no active spec -> a neutral 4.0 default.
+  local lead = (ns.ActiveSpec and ns.ActiveSpec.LATE_LEAD) or 4.0
   rec.overdue = rec.probablyUp and rec.cdChangedAt
-    and (now - rec.cdChangedAt) >= LATE_LEAD or false
+    and (now - rec.cdChangedAt) >= lead or false
 
   return rec
-end
-
---------------------------------------------------------------------------------
--- 2. Context — the whole-board facts the cascade reads.
---------------------------------------------------------------------------------
--- Returns ctx + the facts index (records by BASE spellID) so RankWinner/Emit can
--- address abilities by identity.  The Coach decides in spellID terms (the domain view);
--- cooldownID is transport the Binder owns — it never appears in the Coach's vocabulary.
-function C:Context(state)
-  local S = ids()
-  local factsByBase = {}
-  for _, entry in pairs(state.abilities or {}) do
-    local rec = C.Classify(entry, state)
-    if rec and rec.base then
-      -- One record per base spellID BY CONSTRUCTION: `abilities` already folded the CDM's
-      -- N rows of an ability into one pressable representative, so the buggy last-writer-
-      -- wins `cidByBase[rec.base] = key` is gone — there is nothing to overwrite.
-      factsByBase[rec.base] = rec
-    end
-  end
-
-  -- Buff presence (Core, Tyrant-window, Wild Imps) straight off the domain view's
-  -- spellID-keyed `buffs` set — secrecy already folded in by State (an unreadable aura is
-  -- absence there, never a false true).
-  local function buffActive(spellID)
-    return (state.buffs and state.buffs[spellID] == true) or false
-  end
-
-  local ss = (state.power or {}).SoulShards or {}
-  local shards   = num(ss.value)
-  local incoming = num(ss.incoming) or 0
-  local smax     = num(ss.max) or SHARD_CAP
-  local projected = shards and (shards + incoming) or nil
-
-  local ctx = {
-    facts = factsByBase,
-    mode = state.mode,
-    shards = shards, incoming = incoming, smax = smax,
-    projected = projected,
-    atCap = projected and projected >= SHARD_CAP or false,
-    powerReadable = ss.readable ~= false and shards ~= nil,
-  }
-
-  -- Core proc: readable via the Demonbolt glow OR the Demonic Core buff presence.
-  local dbolt = S.DEMONBOLT and factsByBase[S.DEMONBOLT]
-  ctx.coreUp = (dbolt and dbolt.glowActive) or buffActive(S.DEMONIC_CORE) or false
-
-  -- Demonic Art armed + which ABILITY carries the transform (Ruination -> HoG, Infernal
-  -- Bolt -> SB).  `artFrame` is a BASE spellID key (the domain-view identity), not a cid.
-  for base, rec in pairs(factsByBase) do
-    if rec.transformed then ctx.artFrame = base; ctx.artInfo = rec.info; break end
-  end
-
-  -- Tyrant proximity + the window.
-  ctx.tyrantWindowActive = buffActive(S.TYRANT)
-  local ty = S.TYRANT and factsByBase[S.TYRANT]
-  ctx.tyrant = ty
-  -- Off cooldown = probably-up.  A never-cast Tyrant now reads `ready` off the OOC
-  -- baseline (Phase 7), so the pre-first-Tyrant opener is a burst WITHOUT a per-ability
-  -- carve-out — the old `cdSource == "none"` special-case is deleted.
-  ctx.tyrantProbablyUp = (ty and ty.probablyUp) or false
-  ctx.tyrantAnticipated = ty and ty.anticipated or false
-  ctx.tyrantRemaining = ty and ty.remaining or nil
-  ctx.tyrantSource = ty and ty.cdSource or nil
-  -- Tyrant Condition (TCT) — the single burst trigger: Tyrant off cooldown (probably-up)
-  -- OR its napkin countdown within the lead.  Replaces OPENER/ENTRY/STAGING/IMMINENT.
-  ctx.tct = ctx.tyrantProbablyUp
-    or (ctx.tyrantAnticipated and ctx.tyrantRemaining and ctx.tyrantRemaining <= TCT_LEAD)
-    or false
-
-  -- Dreadstalkers + Grimoire: Imp Lord — the two pre-Tyrant demon summons (SEQUENCE 2).
-  -- `*Committed` reads the cast-START edge so the staging walk advances the instant a
-  -- demon is pressed, without waiting for the summon to land (the "next move" rule).
-  local dr = S.DREADSTALKERS and factsByBase[S.DREADSTALKERS]
-  ctx.dread = dr
-  ctx.dreadProbablyUp = dr and dr.probablyUp or false
-  ctx.dreadCommitted = committedWithin(state, S.DREADSTALKERS, 3.0)
-  local gr = S.IMP_LORD and factsByBase[S.IMP_LORD]
-  ctx.grimoire = gr
-  ctx.grimoireProbablyUp = gr and gr.probablyUp or false
-  ctx.grimoireCommitted = committedWithin(state, S.IMP_LORD, 3.0)
-
-  -- Implosion — its true gate (Wild Imps >= 6) is secret.  The priority list treats it
-  -- as castable-when-off-cooldown (pseudocode L3); the "your call" softening for the
-  -- unreadable imp count is Emit's job, not a gate here.
-  local im = S.IMPLOSION and factsByBase[S.IMPLOSION]
-  ctx.implosion = im
-  ctx.implosionProbablyUp = im and im.probablyUp or false
-
-  -- NO phase field (W4 Phase 8).  The OOC_IDLE / TYRANT_WINDOW / BURST / STEADY
-  -- state-machine is gone: RankWinner is a single flat priority list, and combat is a
-  -- plain State fact (state.combat) a gate may read — never a top-level branch.
-
-  return ctx
-end
-
---------------------------------------------------------------------------------
--- 3. RankWinner — the FLAT PRIORITY LIST (W4 Phase 8, apl-prototype/pseudocode.md).
---    Evaluated top to bottom; the FIRST line whose ability is usable is the one press.
---    Returns winnerKey, level, note.  No phase branch, and no nil "panel owns it" case:
---    at pull start Dreadstalkers (held for the window, released by L6) is the answer,
---    not a hardcoded SB+DB display.  Pooling is emergent — the build gates + the bottom
---    filler fill the bar on their own between higher-priority presses.
---------------------------------------------------------------------------------
--- `excluded` (optional) — a cooldownID key removed from consideration at EVERY line
--- that names it, so the caller can recompute the honest SECOND place (the winner's
--- ability pulled, list re-run from the top — NOT "the next line").  Ported from
--- apl-prototype/apl.lua's evaluate_once(excluded).  `excluded` is a BASE spellID (the
--- winner), and since each ability is one base-keyed record, excluding it suppresses the
--- ability everywhere (Demonbolt in the block + L5; Dreadstalkers in the block + L3).
-function C:RankWinner(ctx, excluded)
-  local S = ids()
-  local projected = ctx.projected or ctx.shards or 0   -- value + signed incoming
-  local cost = hogCost(self)
-
-  -- The Coach decides in BASE spellIDs (the domain view), so `key()` is IDENTITY — the
-  -- winner IS a base spellID.  It still gates on the ability being TRACKED (present in
-  -- ctx.facts): an untracked line (e.g. Shadow Bolt when the CDM isn't tracking it) yields
-  -- nil and evaluation continues, exactly as the old `cidByBase[base]` lookup did.  The
-  -- Binder resolves the winning spellID to its display cooldownID.
-  local function key(base) return (base and ctx.facts[base]) and base or nil end
-
-  -- pick — the line's candidate, or nil to keep evaluating: nil when the ability
-  -- isn't tracked (key == nil) OR it is the excluded ability.  Callers do
-  -- `local k,lv,nt = pick(...); if k then return k,lv,nt end`.
-  local function pick(k, level, note)
-    if k and k ~= excluded then return k, level, note end
-    return nil
-  end
-  local k, lv, nt
-
-  -- Which Demonic Art is armed?  Infernal Bolt refills +3 (generates == 3); Ruination
-  -- is the no-refund triple-imp Art.  Only one is ever armed at a time.
-  local artIsInfernal = (ctx.artInfo and ctx.artInfo.generates == 3) or false
-
-  -- L1 — Ruination: the free triple-imp Art, top press whenever armed.
-  if ctx.artFrame and not artIsInfernal then
-    k, lv, nt = pick(ctx.artFrame, "ROTATION", "Ruination — free triple-imp (Pit Lord)")
-    if k then return k, lv, nt end
-  end
-
-  -- L2 — the Tyrant-window setup walk (SETUP sense of tct): cap shards, dump a Core,
-  -- stage the held demons, then Summon Tyrant.  The demon steps advance on the
-  -- cast-START edge (ctx.*Committed) so a committed summon yields to the next move
-  -- instead of re-pressing itself.  This OUTRANKS Dreadstalkers/Implosion below so the
-  -- setup is never preempted by them.  (pseudocode.md: burning cooldowns with no shard
-  -- cost beat the build outside a Tyrant window — hence the block sits above L5.)
-  if ctx.tct then
-    -- IB (the +3 refill Art) leads the block when nearly empty: pool shards FAST for
-    -- the flood.  A procced SB frame IS Infernal Bolt (the transform), so outside the
-    -- window the L5 build reaches IB the same way via key(SHADOW_BOLT).
-    if projected < 2 and ctx.artFrame and artIsInfernal then
-      k, lv, nt = pick(ctx.artFrame, "ROTATION", "Infernal Bolt"); if k then return k, lv, nt end
-    end
-    if projected < 4 and ctx.coreUp then
-      k, lv, nt = pick(key(S.DEMONBOLT), "ROTATION"); if k then return k, lv, nt end
-    end
-    if projected < SHARD_CAP then
-      k, lv, nt = pick(key(S.SHADOW_BOLT), "ROTATION", "pool to 5 for the flood"); if k then return k, lv, nt end
-    end
-    if ctx.dreadProbablyUp and not ctx.dreadCommitted then
-      k, lv, nt = pick(key(S.DREADSTALKERS), "ROTATION", "stage — last summon before Tyrant"); if k then return k, lv, nt end
-    end
-    if ctx.grimoireProbablyUp and not ctx.grimoireCommitted then
-      k, lv, nt = pick(key(S.IMP_LORD), "ROTATION", "Imp Lord — pair with Dreadstalkers"); if k then return k, lv, nt end
-    end
-    if ctx.tyrantProbablyUp then
-      k, lv, nt = pick(key(S.TYRANT), "ROTATION"); if k then return k, lv, nt end
-    end
-  end
-
-  -- L3 — Call Dreadstalkers on cooldown, OUTSIDE a Tyrant window (inside, the block above
-  -- staged it; the guard stops this line from re-pressing the staged summon).
-  if ctx.dreadProbablyUp and not ctx.tct then
-    k, lv, nt = pick(key(S.DREADSTALKERS), "ROTATION"); if k then return k, lv, nt end
-  end
-
-  -- L4 — Implosion when off cooldown.  Its real gate is a SECRET imp count, so the press
-  -- cannot be conditioned on it; sitting below the Tyrant block, it never hijacks the
-  -- setup, and the ROTATION_FALLBACK offers the alternative instead of a JUDGE hedge.
-  if ctx.implosionProbablyUp then
-    k, lv, nt = pick(key(S.IMPLOSION), "ROTATION"); if k then return k, lv, nt end
-  end
-
-  -- L5 — low-shard builder: dump a Core with Demonbolt if one is present, else Shadow
-  -- Bolt.  Sits BELOW the no-shard-cost cooldowns above (Dreadstalkers/Implosion) per
-  -- pseudocode.md — outside a Tyrant window those beat the build.  Ordered DB-then-SB so
-  -- excluding Demonbolt (fallback recompute) lets the Shadow Bolt branch surface.
-  if projected < 3 then
-    if ctx.coreUp then
-      k, lv, nt = pick(key(S.DEMONBOLT), "ROTATION"); if k then return k, lv, nt end
-    end
-    k, lv, nt = pick(key(S.SHADOW_BOLT), "ROTATION"); if k then return k, lv, nt end
-  end
-
-  -- L6 — Hand of Gul'dan: the primary spender and the bottom filler.  Post-Tyrant flood
-  -- (Tyrant buff up -> spam HoG) falls out here on its own, no special case.  Below its
-  -- cost (a higher-cost talent + a partial bar) the Shadow Bolt floor keeps building.
-  if projected >= cost then
-    k, lv, nt = pick(key(S.HAND_OF_GULDAN), "ROTATION"); if k then return k, lv, nt end
-  end
-  k, lv, nt = pick(key(S.SHADOW_BOLT), "ROTATION"); if k then return k, lv, nt end
-  return nil
-end
-
---------------------------------------------------------------------------------
--- 4. Escalate — ROTATION -> LATE only from READABLE overdue-ness.  Secret buckets
---    (Demonic Core stacks) can never go LATE.
---------------------------------------------------------------------------------
-function C:Escalate(winnerKey, level, ctx)
-  if not winnerKey or level ~= "ROTATION" then return level end
-  local S = ids()
-  local rec = ctx.facts[winnerKey]
-  if not rec then return level end
-  -- A probably-up summon (Dreadstalkers) left sitting past the lead.  Suppressed in
-  -- the burst/window, where a ready summon is a STAGED press, not a forgotten one:
-  -- since Phase 7 the OOC baseline makes a never-cast summon read `ready` (with an
-  -- OOC-old changedAt) at pull start, so the burst walk must not escalate its staged
-  -- Dreadstalkers to LATE (mirrors the HoG-at-cap guard below).
-  if rec.base == S.DREADSTALKERS and rec.overdue
-      and not ctx.tct and not ctx.tyrantWindowActive then
-    return "LATE"
-  end
-  -- HoG parked at a FULL bar (actual shards, not the projection) — the readable dump.
-  -- Suppressed during the burst / window, where a full bar is intentional pooling for
-  -- the flood, not overcap-parking.
-  if rec.base == S.HAND_OF_GULDAN and ctx.shards and ctx.shards >= SHARD_CAP
-      and not ctx.tct and not ctx.tyrantWindowActive then
-    return "LATE"
-  end
-  return level
 end
 
 --------------------------------------------------------------------------------
@@ -505,6 +259,10 @@ end
 -- resourceBar — value + max + the in-flight incoming projection, forwarded from
 -- State's napkin (the Coach ranks on value + incoming).
 --------------------------------------------------------------------------------
+-- Phase 3 (resourceBar generalization) — this single-bar shape + the SOUL_SHARDS /
+-- discrete constants are still Demo-shaped; the resourceBars[] array + generic
+-- power-colour lands in Phase 3.  For now it reads the ctx fields the brain's Context
+-- already fills (shards / smax / incoming) and keeps its shell-local defaults.
 function C:ResourceBar(ctx)
   return {
     value = ctx.shards or 0,
@@ -526,18 +284,38 @@ function C:Sequence(_state, _ctx)
 end
 
 --------------------------------------------------------------------------------
--- Compute — the one public entry.  State pulse in, Guidance out.
+-- EmptyGuidance — the passive HUD (Phase-1 unsupported-spec contract).  When no spec is
+-- active (ns.ActiveSpec == nil, e.g. a spec with no profile), Compute returns this: no
+-- cues, a zeroed resourceBar, no sequence.  Demo is always active in-game, so this is
+-- correctness insurance, not a visible path yet (Phase 5 builds the "no profile" UX on it).
+--------------------------------------------------------------------------------
+function C:EmptyGuidance()
+  return {
+    cues = {},
+    resourceBar = { value = 0, max = 0, incoming = 0, display = "discrete",
+                    powerType = POWER_TOKEN.SoulShards or "SOUL_SHARDS" },
+    sequence = { show = false },
+  }
+end
+
+--------------------------------------------------------------------------------
+-- Compute — the one public entry.  State pulse in, Guidance out.  Pure ORCHESTRATION
+-- (Phase 2): the shell delegates the DECISION to the active spec brain (Context /
+-- RankWinner / Escalate on ns.ActiveSpec) and owns only the Emit assembly.
 --------------------------------------------------------------------------------
 function C:Compute(state)
-  local ctx = self:Context(state)
-  local winnerKey, level, note = self:RankWinner(ctx)
-  level = self:Escalate(winnerKey, level, ctx)
+  local spec = ns.ActiveSpec
+  if not spec then return self:EmptyGuidance() end   -- unsupported spec -> passive HUD
+  -- `self` is the env the brain's Context reads (env.shardCostFn = the injected cost reader).
+  local ctx = spec:Context(state, self)
+  local winnerKey, level, note = spec:RankWinner(ctx)
+  level = spec:Escalate(winnerKey, level, ctx)
   -- The honest second place: re-run the list with the winner's ability excluded.  Always
   -- computed (the "always try to calculate a fallback" directive); Emit shows it whenever
   -- it is castable, so the runner-up carries the uncertainty the JUDGE cue used to hedge.
   local fbKey, fbNote
   if winnerKey then
-    local k, _, nt = self:RankWinner(ctx, winnerKey)
+    local k, _, nt = spec:RankWinner(ctx, winnerKey)
     fbKey, fbNote = k, nt
   end
   return self:Emit(state, ctx, winnerKey, level, note, fbKey, fbNote)
