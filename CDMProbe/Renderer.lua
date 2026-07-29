@@ -1,6 +1,6 @@
 -- Renderer.lua — Stage 4 of the W4 pipeline: DrawList -> **Renderer** -> pixels.
 --
--- WHY THIS EXISTS (docs/architecture.md Stage-4 :352-361, w4-build-plan.md Phase 3).
+-- WHY THIS EXISTS (docs/architecture.md Stage-4 :352-361, docs/archive/w4-build-plan.md Phase 3).
 -- The pipeline is State -> Coach -> Guidance -> Binder -> DrawList -> Renderer.
 -- Stages 1-2 (State, Coach) are the DECISION half and are done + golden-tested.
 -- This is the DRAW half's terminal stage: given a positioned, token-carrying

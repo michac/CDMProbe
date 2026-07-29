@@ -1,6 +1,6 @@
 -- Binder.lua — Stage 3 of the W4 pipeline: Guidance + Layout -> **Binder** -> DrawList.
 --
--- WHY THIS EXISTS (docs/w4-phase4-binder-plan.md, architecture.md Stage-3).  The
+-- WHY THIS EXISTS (docs/archive/w4-phase4-binder-plan.md, architecture.md Stage-3).  The
 -- pipeline is State -> Coach -> Guidance -> Binder -> DrawList -> Renderer.  The
 -- Coach (Stage 2) decides: it emits a BASE-spellID-keyed, colour-free, GEOMETRY-free
 -- Guidance (the W4 re-layer — cooldownID is transport the Coach never speaks).  The

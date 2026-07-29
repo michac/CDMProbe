@@ -1,6 +1,6 @@
 -- Coach.lua — Stage 2 of the W4 pipeline: State -> **Coach** -> Guidance.
 --
--- WHY THIS EXISTS (docs/w4-build-plan.md Phase 2, the ⛔ decision gate).  The live
+-- WHY THIS EXISTS (docs/archive/w4-build-plan.md Phase 2, the ⛔ decision gate).  The live
 -- HUD (HudState -> HudScore -> HudBoard -> HudChrome) scores every ability
 -- INDEPENDENTLY, with no priority order.  The committed Guidance v1 contract
 -- (guidance-contract.json) requires SINGLE-TOP-PRESS: at most ONE cue is the
@@ -516,7 +516,7 @@ function C:ResourceBar(ctx)
 end
 
 --------------------------------------------------------------------------------
--- sequence — RETIRED at the TCT redesign (docs/w4-phase6-tct-redesign.md).  The
+-- sequence — RETIRED at the TCT redesign (docs/archive/w4-phase6-tct-redesign.md).  The
 -- one-press-at-a-time cue walk replaced the opener panel (6e = drop the panel), so
 -- the Coach never emits a panel now.  The contract field stays (show:false) for the
 -- Binder/Renderer; 5e deletes HudPane/HudOpener/HudBurst.

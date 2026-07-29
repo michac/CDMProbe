@@ -1,6 +1,6 @@
 -- HudLayout.lua — the LIVE Layout + registry source for the W4 pipeline (Phase 5a).
 --
--- WHY THIS EXISTS (docs/w4-phase5-cutover-plan.md 5a, architecture.md Stage-3).  The
+-- WHY THIS EXISTS (docs/archive/w4-phase5-cutover-plan.md 5a, architecture.md Stage-3).  The
 -- Binder (Stage 3) merges the Coach's cooldownID-keyed Guidance with a **Layout** —
 -- geometry/identity per displayed icon, keyed the SAME way — and the Renderer (Stage 4)
 -- needs a **registry** mapping each handle to its live Blizzard item frame.  Both come

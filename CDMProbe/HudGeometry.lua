@@ -1,6 +1,6 @@
 -- HudGeometry.lua — the SHARED geometry/binding table for the DrawList (W4 Phase 4).
 --
--- WHY THIS EXISTS (docs/w4-phase4-binder-plan.md, resolution #4).  Two producers
+-- WHY THIS EXISTS (docs/archive/w4-phase4-binder-plan.md, resolution #4).  Two producers
 -- must emit the SAME DrawList geometry: the Binder (live, Guidance -> DrawList) and
 -- the Renderer's hand-authored `/cdmp rendertest` fixtures (the reference the
 -- Renderer was dialled in against).  If each carried its own dot-corner / glow rule /
