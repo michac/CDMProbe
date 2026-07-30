@@ -293,6 +293,31 @@ describe("State aura-lifecycle latch (field-fix C)", function()
     assert.equals("fresh", St.dotEdge[IMM_CAST_CID].state)
   end)
 
+  -- ⚠ FROM THE FIELD (2026-07-30).  A DoT REFRESH raises OnAuraRemoved AND OnAuraApplied
+  -- with the IDENTICAL timestamp — the live capture has both on cid 133441 and 164597 at
+  -- 131184.611.  Last-write-wins would let Blizzard's dispatch ORDER decide whether the HUD
+  -- thinks the DoT is up or gone.  A re-application supersedes the removal it replaces.
+  describe("a same-frame refresh (removed + applied at one timestamp)", function()
+    it("resolves to fresh when applied arrives LAST", function()
+      alert(IMM_CAST_CID, A.OnAuraRemoved)
+      alert(IMM_CAST_CID, A.OnAuraApplied)
+      assert.equals("fresh", St.dotEdge[IMM_CAST_CID].state)
+    end)
+
+    it("resolves to fresh when applied arrives FIRST, too", function()
+      alert(IMM_CAST_CID, A.OnAuraApplied)
+      alert(IMM_CAST_CID, A.OnAuraRemoved)   -- must NOT clobber the re-application
+      assert.equals("fresh", St.dotEdge[IMM_CAST_CID].state)
+    end)
+
+    it("a removal in a LATER frame still clears it — the DoT really did fall off", function()
+      alert(IMM_CAST_CID, A.OnAuraApplied)
+      H.advance(0.1)
+      alert(IMM_CAST_CID, A.OnAuraRemoved)
+      assert.equals("absent", St.dotEdge[IMM_CAST_CID].state)
+    end)
+  end)
+
   it("ignores the alert while no consumer holds ingestion", function()
     St.Release()
     alert(IMM_CAST_CID, A.PandemicTime)

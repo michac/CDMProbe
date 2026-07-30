@@ -643,7 +643,18 @@ local function onAlert(item, event)
   elseif event == A.OnAuraApplied then st = "fresh"
   elseif event == A.OnAuraRemoved then st = "absent" end
   if st then
-    St.dotEdge[cid] = { state = st, at = now }
+    -- ⚠ SAME-FRAME TIE, measured 2026-07-30.  A DoT REFRESH fires OnAuraRemoved AND
+    -- OnAuraApplied with the IDENTICAL timestamp (capture: cid 133441 + 164597, both events
+    -- at 131184.611), so a bare last-write-wins latch is decided by Blizzard's dispatch
+    -- ORDER rather than by what happened.  It landed the right way round in that capture,
+    -- which is exactly why it is worth pinning: a re-application SUPERSEDES the removal it
+    -- replaces, so "absent" must never overwrite a "fresh" recorded at the same instant.
+    local prev = St.dotEdge[cid]
+    local sameFrameRefresh = prev and prev.at == now
+      and st == "absent" and prev.state == "fresh"
+    if not sameFrameRefresh then
+      St.dotEdge[cid] = { state = st, at = now }
+    end
     pushEvent({ kind = "dot_edge", cooldownID = cid, state = st, at = now })
     return
   end
