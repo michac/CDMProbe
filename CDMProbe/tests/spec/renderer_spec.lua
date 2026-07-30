@@ -39,11 +39,11 @@ describe("Renderer", function()
   -- Factory + theme
   ------------------------------------------------------------------------------
   it("resolves the DISTINCT emphasis tokens to glanceable, separable colours", function()
-    -- ROTATION_FALLBACK is DELIBERATELY excluded: it is a dim green in ROTATION's own
-    -- family (subordinate by brightness, not a distinct hue), so it must NOT satisfy the
-    -- separation bound below.  Its subordination is asserted by its own test instead.
+    -- ROTATION_FALLBACK is now INCLUDED.  It used to be excluded as a dim green in
+    -- ROTATION's own family (subordinate by brightness, not hue); it is now its own violet,
+    -- so it must clear the same separation bound as every other token.
     local t = Rr.New().theme
-    local toks = { "ROTATION", "LATE", "SOON", "JUDGE", "SEQUENCE" }
+    local toks = { "ROTATION", "ROTATION_FALLBACK", "LATE", "SOON", "JUDGE", "SEQUENCE" }
     for i = 1, #toks do
       for j = i + 1, #toks do
         local a, b = t[toks[i]], t[toks[j]]
@@ -53,17 +53,23 @@ describe("Renderer", function()
     end
   end)
 
-  it("gives ROTATION_FALLBACK a dim green in ROTATION's family (subordinate, not distinct)", function()
-    local t = Rr.New().theme
-    local rot, fb = t.ROTATION, t.ROTATION_FALLBACK
+  it("keeps ROTATION_FALLBACK's violet clear of the SHARD BAR's violet", function()
+    -- The constraint that picked this hue.  A fallback cue in the shard colour reads as
+    -- "resource" at a glance, because the pips sit in the same frame — so the separation
+    -- that matters is against the POWER palette, not just the emphasis palette.
+    local r = Rr.New()
+    local fb = r.theme.ROTATION_FALLBACK
     assert.is_not_nil(fb, "ROTATION_FALLBACK missing from the theme (would render as an empty cue)")
-    -- Same hue family: close to ROTATION (the opposite of the >0.30 separation bound).
-    local dist = math.abs(rot[1] - fb[1]) + math.abs(rot[2] - fb[2]) + math.abs(rot[3] - fb[3])
-    assert.is_true(dist < 0.75, "fallback should read as related to ROTATION, not a new hue")
-    -- Subordinate: dimmer overall than the real press.
-    assert.is_true(fb[1] + fb[2] + fb[3] < rot[1] + rot[2] + rot[3], "fallback should be dimmer than ROTATION")
-    -- Green stays dominant so it still reads as a press-family cue.
-    assert.is_true(fb[2] > fb[1] and fb[2] > fb[3])
+    local dist = function(a, b)
+      return math.abs(a[1] - b[1]) + math.abs(a[2] - b[2]) + math.abs(a[3] - b[3])
+    end
+    local pips = r.powerColor.SOUL_SHARDS
+    assert.is_true(dist(fb, pips) > 0.30,
+      "fallback is too close to the shard pips (" .. dist(fb, pips) .. ") — it will read as resource")
+    -- Blue stays dominant (it is a violet, not a second green/amber).
+    assert.is_true(fb[3] > fb[1] and fb[3] > fb[2])
+    -- Separated from the pale pips by SATURATION: markedly less green than the lavender.
+    assert.is_true(fb[2] < pips[2] - 0.15, "fallback should be more saturated than the pips")
   end)
 
   it("takes an injected theme through cfg", function()
@@ -88,19 +94,22 @@ describe("Renderer", function()
     assert.equals(-28, pt.dy)
   end)
 
-  it("paints a ROTATION_FALLBACK cue in ROTATION green with a STATIC (non-animating) ring", function()
+  it("paints a ROTATION_FALLBACK cue in its OWN violet with a STATIC (non-animating) ring", function()
     local r = rigged(1)
     r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION_FALLBACK" } } })
     local dot = r.cueFrames["fake1"]
     assert.is_not_nil(dot, "fallback fell into the empty-cue path — no theme colour")
     assert.is_true(dot._shown)
-    -- The runner-up borrows ROTATION's green for BOTH circle and ring; MOTION (a static
-    -- ring), not a dimmer hue, marks it as the backup.
-    assert.is_true(colorEq(dot._color, theme.ROTATION[1], theme.ROTATION[2], theme.ROTATION[3]))
+    -- Hue ON TOP OF motion: the runner-up resolves its own violet (it no longer borrows
+    -- ROTATION's green via GLOW_SPEC.color), AND its ring stays static.  Both tells.
+    local fb = theme.ROTATION_FALLBACK
+    assert.is_true(colorEq(dot._color, fb[1], fb[2], fb[3]))
+    assert.is_false(colorEq(dot._color, theme.ROTATION[1], theme.ROTATION[2], theme.ROTATION[3]),
+      "fallback is still borrowing ROTATION's green")
     local glow = r.cueGlows["fake1"]
     assert.is_not_nil(glow, "fallback should still show its ring, just not animate it")
     assert.is_true(glow._shown)
-    assert.is_true(colorEq(glow._color, theme.ROTATION[1], theme.ROTATION[2], theme.ROTATION[3]))
+    assert.is_true(colorEq(glow._color, fb[1], fb[2], fb[3]))
     assert.is_falsy(glow._spinOn)    -- STATIC: neither group is playing
     assert.is_falsy(glow._pulseOn)
   end)

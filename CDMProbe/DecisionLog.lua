@@ -45,7 +45,11 @@ ns.DecisionLog = {}
 local DL = ns.DecisionLog
 
 local CAP     = 5000     -- entries kept per session ("let it get big")
-local SESSIONS = 3       -- sessions kept on disk
+-- Sessions kept on disk.  A "session" is ONE ADDON LOAD (see Record's lazy header), so
+-- every `/reload` burns a slot — and a verification pass that respecs between hero trees
+-- and specs reloads 4-5 times.  At 3 the earliest pull silently rolled off before it could
+-- be extracted, which is a data-loss trap in exactly the sessions that matter most.
+local SESSIONS = 6       -- sessions kept on disk
 
 -- Guidance emphasis -> compact Binder token.  Generic (spec-agnostic), so it stays a
 -- shell local rather than moving to the per-spec log vocabulary.

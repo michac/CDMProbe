@@ -49,11 +49,17 @@ R.__index = R
 local function defaultTheme()
   return {
     ROTATION          = { 0.30, 1.00, 0.48, 1.00 },  -- green:      press now
-    -- ROTATION_FALLBACK: SUPERSEDED for cues — the runner-up now borrows ROTATION's
-    -- green for BOTH circle and ring (see GLOW_SPEC.ROTATION_FALLBACK.color) and reads
-    -- as the backup by its ring being STATIC, not by a dimmer hue.  This dim-green entry
-    -- is left harmless (no cue path resolves it any more).
-    ROTATION_FALLBACK = { 0.20, 0.55, 0.32, 1.00 },  -- dim green:  (superseded, unused for cues)
+    -- ROTATION_FALLBACK: hue ON TOP OF motion.  v0.32.17 made the runner-up read by its
+    -- ring being STATIC rather than by a dimmer green ("motion, not colour") — that stands;
+    -- this ADDS a hue so the backup is separable at a glance without waiting to see whether
+    -- the ring turns.  ⚠ Deliberately NOT the shard violet: SOUL_SHARDS pips are
+    -- {0.690, 0.420, 1.000} and the retired SEQUENCE token was {0.64, 0.42, 1.00} — a cue in
+    -- that hue reads as "resource" next to the bar.  This is pushed bluer and deeper
+    -- (a deep saturated violet), so it separates from BOTH the pips and ROTATION's green.
+    -- The separating channel is GREEN: the pips are a pale lavender (G .42), this is vivid
+    -- (G .16).  A first cut at {0.42, 0.36, 1.00} was rejected — only 0.28 from SEQUENCE
+    -- under the theme's own separation metric, i.e. the pips collision this must avoid.
+    ROTATION_FALLBACK = { 0.52, 0.16, 0.98, 1.00 },  -- violet:     the runner-up
     LATE              = { 1.00, 0.42, 0.10, 1.00 },  -- amber:      overdue, catch up
     SOON              = { 1.00, 0.86, 0.15, 1.00 },  -- yellow:     anticipation
     JUDGE             = { 0.27, 0.88, 1.00, 1.00 },  -- cyan:       your-call (retired)
@@ -74,7 +80,9 @@ local GLOW_SPEC = {
   ROTATION          = { spin = true,  pulse = true },
   LATE              = { spin = true,  pulse = true },
   SOON              = { spin = true,  pulse = true },
-  ROTATION_FALLBACK = { spin = false, pulse = false, color = "ROTATION" },
+  -- No `color` override: the runner-up now resolves its OWN theme entry (indigo) instead
+  -- of borrowing ROTATION's green.  Still static — motion remains the primary tell.
+  ROTATION_FALLBACK = { spin = false, pulse = false },
 }
 
 -- powerType -> RGBA.  SOUL_SHARDS is the soul-violet HudChrome's rail paints a
@@ -102,6 +110,11 @@ local STATE_TINT = {
 }
 
 local WHITE8 = "Interface\\Buttons\\WHITE8X8"
+
+-- The cue dot's disc.  Blizzard's raid-blip circle — a white filled circle authored to be
+-- tinted per-unit (UnitPositionFrameTemplates.lua:17, :111-112), which is exactly our use:
+-- one small solid disc, recoloured per emphasis token.  Round by asset, so no mask.
+local DOT_ATLAS = "WhiteCircle-RaidBlips"
 
 --------------------------------------------------------------------------------
 -- Factory
@@ -216,14 +229,21 @@ function R:drawCues(cues)
         local dot = self.cueFrames[key]
         if not dot then
           dot = holder:CreateTexture(nil, "OVERLAY")
-          dot:SetTexture(WHITE8)
-          -- Clip the solid fill to a disc — Blizzard's own solid-fill->circle idiom
-          -- (RingedFrameTemplate.lua:103-117).  Emphasis-independent, so set ONCE at
-          -- creation; the dot is pooled/reused across redraws.
-          dot:SetMask("Interface\\CharacterFrame\\TempPortraitAlphaMask")
+          -- A REAL round asset, not a masked square.  The previous cut drew WHITE8X8 and
+          -- clipped it with SetMask(TempPortraitAlphaMask), citing RingedFrameTemplate as
+          -- the "solid-fill->circle idiom" — but that template masks textures set with
+          -- SetAtlas, via a MaskTexture object, and NO file in the 12.0.7 client combines
+          -- SetColorTexture with a mask on one texture.  The idiom was never Blizzard's,
+          -- and in play the dot read square next to its own round glow.
+          -- DOT_ATLAS is Blizzard's raid-blip disc: a white circle built to be TINTED
+          -- (UnitPositionFrameTemplates.lua:17,111 draws it in class colour), so it needs
+          -- no mask and no alpha channel of ours.
+          dot:SetAtlas(DOT_ATLAS)
           self.cueFrames[key] = dot
         end
-        dot:SetColorTexture(col[1], col[2], col[3], col[4] or 1)
+        -- Tint, not fill: with an atlas the colour rides SetVertexColor.  (SetColorTexture
+        -- would REPLACE the atlas with a solid square and put the bug straight back.)
+        dot:SetVertexColor(col[1], col[2], col[3], col[4] or 1)
         dot:SetSize(sz, sz)
         dot:ClearAllPoints()
         dot:SetPoint(c.point or "CENTER", anchor,
