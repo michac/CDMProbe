@@ -91,8 +91,14 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
     CDMProbe.toc
     Core.lua                      namespace, saved vars, slash cmds, registry
     Util.lua                      color, spell-name, Secret-Values-aware describe
-    Viewers.lua                   locate viewers, enumerate items (ns.GetViewer /
-                                  ns.GetItemFrames — read by HudLayout/State)
+    Viewers.lua                   locate viewers, enumerate items, and resolve each item's
+                                  IDENTITY: ns.GetViewer / ns.GetItemFrames /
+                                  ns.ItemCooldownID / ns.ItemSpellID / ns.ItemBaseSpellID
+                                  (read by HudLayout + State). ⚠ ItemCooldownID is the
+                                  pipeline's BINDING KEY — it was deleted with HudCore at
+                                  the W4 cutover and its nil-guarded call sites turned that
+                                  into a silent total HUD outage (fixed v0.32.25). Do not
+                                  reintroduce `ns.X and ns.X(...)` guards on our own symbols.
     Mode.lua                      the single/AoE target-mode toggle (`ns.Mode.aoe`
                                   + `single`/`multi`/`aoe`); State forwards it, the
                                   Coach reads it (extracted from HudCore at the cutover)
@@ -187,6 +193,13 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   hand-built State pulses assert winner + fallback + SOON
                                   per BRANCH of the flat list + shard boundaries, authored
                                   from apl-prototype/pseudocode.md (the independent oracle)
+      spec/viewers_spec.lua       the item->identity resolvers, loaded from the REAL
+                                  Viewers.lua with only frame DISCOVERY faked — the
+                                  companion that proves ns.ItemCooldownID actually SHIPS.
+                                  hudlayout_spec stubs it, which is exactly why the
+                                  v0.32.25 outage stayed green for two days: a stub proves
+                                  the caller works given the collaborator, never that the
+                                  collaborator exists.
       spec/coach_destruction_apl_spec.lua  the same gate for DESTRUCTION (267), authored
                                   from specs/destruction/rotation.md L1-L13 — plus the
                                   spec-specific channels: banked charges, the three-way DoT
@@ -223,8 +236,8 @@ put `~/.luarocks/bin` on PATH.
 - **`busted CDMProbe/tests/spec`** — unit tests for the pure-logic pipeline modules
   (`Coach`, `Binder`, `Renderer`, `HudLayout`, `DecisionLog`, `HudNapkin`,
   `SpecDemonology`) + the multi-spec seam (`SpecRegistry`/`ResolveActiveSpec`, the
-  resource-array projection) + the **Destruction** rotation gate. **198 tests**
-  (141 pipeline/Demonology + 57 Destruction). The harness is
+  resource-array projection) + the **Destruction** rotation gate. **209 tests**
+  (141 pipeline/Demonology + 57 Destruction + 11 viewers_spec). The harness is
   **`CDMProbe/tests/mock_ns.lua`**: a chainable `CreateFrame`/FontString/animation
   stub, a **settable `GetTime` fake clock**, global fakes
   (`wipe`/`InCombatLockdown`/`issecretvalue`/`C_Timer`/`Enum`/`GetSpecialization`/…),
