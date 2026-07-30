@@ -727,12 +727,37 @@ describe("Destruction rotation list (from specs/destruction/rotation.md)", funct
       assert.truthy(table.concat(H.printed, "\n"):find("defaulted", 1, true))
     end)
 
+    local function heroLines()
+      local n = 0
+      for _, line in ipairs(H.printed) do if line:find("hero tree", 1, true) then n = n + 1 end end
+      return n
+    end
+
     it("announces the resolution ONCE, not once per pulse", function()
       _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return 58 end }
       contextOf(live({ shards = 1 })); contextOf(live({ shards = 1 }))
-      local n = 0
-      for _, line in ipairs(H.printed) do if line:find("hero tree", 1, true) then n = n + 1 end end
-      assert.equals(1, n)
+      assert.equals(1, heroLines())
+    end)
+
+    it("an invalidation that resolves to the SAME tree does not re-announce", function()
+      -- TRAIT_CONFIG_UPDATED fires several times for one loadout swap; re-printing an
+      -- unchanged answer each time would be noise, so the announcement latch survives the
+      -- cache drop.
+      _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return 58 end }
+      contextOf(live({ shards = 1 }))
+      ns.Specs[267]:Invalidate()
+      contextOf(live({ shards = 1 }))
+      assert.equals(1, heroLines())
+    end)
+
+    it("but a REAL hero change does re-announce", function()
+      local sub = 58
+      _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return sub end }
+      contextOf(live({ shards = 1 }))
+      sub = 59
+      ns.Specs[267]:Invalidate()
+      assert.equals("diabolist", contextOf(live({ shards = 1 })).hero)
+      assert.equals(2, heroLines())
     end)
 
     ------------------------------------------------------------------------

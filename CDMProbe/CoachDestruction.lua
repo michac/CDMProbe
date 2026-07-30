@@ -166,7 +166,11 @@ end
 -- PLAYER_SPECIALIZATION_CHANGED alone is not enough — TRAIT_CONFIG_UPDATED is the one that
 -- actually fires for a hero swap.
 function spec:Invalidate()
-  heroCached, heroSaid = nil, nil
+  -- ⚠ `heroSaid` is deliberately NOT cleared.  TRAIT_CONFIG_UPDATED fires several times for
+  -- one loadout swap (and on login), so clearing the announcement latch here would print the
+  -- same unchanged hero tree three or four times in a row.  Keeping it means the chat line
+  -- fires on a real CHANGE of the resolved answer, which is what it is for.
+  heroCached = nil
 end
 
 --------------------------------------------------------------------------------
@@ -319,9 +323,13 @@ function spec:Context(state, env)
   -- pressable, so it is the only one that reaches `abilities` at all.  This file used to key
   -- L8 on 157736 alone, which means the line could NEVER fire on a live build.  Resolve
   -- through the candidate list, most-specific first.
-  local DOT_CANDIDATES = { S.WITHER, S.IMMOLATE, S.IMMOLATE_CAST }
+  -- Keyed by NAME, not by value: `{ S.WITHER, S.IMMOLATE, ... }` would be a table with a
+  -- HOLE the moment any one id were nil, and ipairs stops at the first hole — so a single
+  -- missing constant would silently drop every candidate after it.
+  local DOT_KEYS = { "WITHER", "IMMOLATE", "IMMOLATE_CAST" }
   local dotID
-  for _, id in ipairs(DOT_CANDIDATES) do
+  for _, name in ipairs(DOT_KEYS) do
+    local id = S[name]
     if id and factsByBase[id] then dotID = id; break end
   end
   ctx.dotID = dotID
@@ -340,7 +348,8 @@ function spec:Context(state, env)
   --      combat and still the fallback when nothing has latched yet.
   local edges = state.dotEdges or {}
   local edge
-  for _, id in ipairs(DOT_CANDIDATES) do
+  for _, name in ipairs(DOT_KEYS) do
+    local id = S[name]
     local e = id and edges[id]
     if e and (not edge or (num(e.at) or 0) >= (num(edge.at) or 0)) then edge = e end
   end
