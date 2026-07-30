@@ -55,13 +55,16 @@ spec.CB_COST_FALLBACK  = 2   -- Chaos Bolt
 spec.ROF_COST_FALLBACK = 3   -- Rain of Fire
 spec.SB_COST_FALLBACK  = 1   -- Shadowburn
 
--- The pandemic refresh window for the maintenance DoT, in seconds.  DORMANT: it is applied
--- only to `abilities[base].uptime`, which the State pulse does not carry yet (it is the
--- open `abilities[base].uptime` backlog item in docs/status.md).  The moment State surfaces
--- the TrackedBar duration, L8's refresh half comes alive with no change here.
--- @verify-ingame — the real pandemic window is 30% of the DoT's live duration; 5s is a
--- placeholder for Immolate's ~18s, and should become a live 0.3 * duration read.
-spec.DOT_REFRESH_LEAD = 5.0
+-- ⚠ `DOT_REFRESH_LEAD` was DELETED here (field-fix C).  It was a placeholder lead applied to
+-- `abilities[base].uptime` — a field the pulse was expected to grow one day.  We now know
+-- that day never comes: the DoT's remaining duration lives in `item.pandemicEndTime`, which
+-- reads SECRET in combat, and `IsInPandemicTime` does not return a secret boolean, it
+-- THROWS (measured 2026-07-30, knowledge/addon-dev/api-events-and-discovery.md §2.8).  There
+-- is no number to compare a lead against.  What there IS is the `PandemicTime` ALERT, which
+-- fires normally in combat — and Blizzard computes the window exactly (from how much
+-- duration a recast would really carry over, not the community's 30% rule of thumb).  So the
+-- refresh half of L8 is an EDGE LATCH, and a tunable lead would be a worse answer than the
+-- one the client hands us.  See ctx.dotRefreshable below.
 
 -- ⚠ THE ONE GENUINELY UNSETTLED READ.  rotation.md L3 is "if Art is armed: cast CB", and
 -- specs/destruction/observability-map.md #4 proposes sourcing it from the Diabolic Ritual
@@ -85,6 +88,85 @@ end
 
 -- Honest pulse-number reader: a non-number reads nil, never a guess.
 local function num(v) return type(v) == "number" and v or nil end
+
+--------------------------------------------------------------------------------
+-- HERO TREE — asked, not inferred (field-fix B)
+--------------------------------------------------------------------------------
+-- ⚠ WHAT WAS WRONG.  This used to be a one-line structural inference: "Wither REPLACES
+-- Immolate on Hellcaller, so a tracked Wither is the tell."  The field falsified it on the
+-- first live session — a real Hellcaller build tracked Malevolence but IMMOLATE, and the
+-- inference confidently returned Diabolist.  A single structural signal cannot carry this:
+-- what the CDM tracks is a layout fact, and the hero tree is a talent fact.
+--
+-- So ASK.  `C_ClassTalents.GetActiveHeroTalentSpec()` returns the active SubTreeID
+-- (Blizzard_APIDocumentationGenerated/ClassTalentsDocumentation.lua:82), and TraitSubTree @
+-- 12.0.7 pins the two Warlock-Destruction values below.  Verified present in this build.
+--
+-- The ladder, in order of trustworthiness:
+--   1. the API                       — authoritative; cached, since it is respec-scoped
+--   2. MULTI-signal inference        — strictly better than the one signal that already
+--                                      failed: EITHER Hellcaller tell counts, and the
+--                                      Diabolist tells are read independently
+--   3. Diabolist, and SAY SO         — the KB's v1 profile is the least-surprising default,
+--                                      but a defaulted answer is announced, never silent
+local HERO_BY_SUBTREE = { [58] = "hellcaller", [59] = "diabolist" }   -- TraitSubTree @ 12.0.7
+
+local heroCached = nil    -- the API's answer only.  Respec-scoped; cleared by spec:Invalidate
+local heroSaid   = nil    -- the last resolution announced, so the chat line fires once
+
+-- pcall + IsSecret guarded per project doctrine: an API that is missing, restricted, or
+-- throws must degrade to the inference, never take the pipeline down with it.
+local function heroFromAPI()
+  if heroCached ~= nil then return heroCached end
+  if not (C_ClassTalents and C_ClassTalents.GetActiveHeroTalentSpec) then return nil end
+  local ok, subTreeID = pcall(C_ClassTalents.GetActiveHeroTalentSpec)
+  if not ok or ns.IsSecret(subTreeID) or type(subTreeID) ~= "number" then return nil end
+  -- An UNKNOWN subtree is not an answer: fall through to the inference rather than caching
+  -- a nil we would then have to distinguish from "not asked yet".
+  heroCached = HERO_BY_SUBTREE[subTreeID]
+  return heroCached
+end
+
+-- The fallback.  Deliberately NOT cached: it reads the tracked set, which is empty on the
+-- first pulses after a login/relayout — caching it there would freeze the wrong answer for
+-- the session, which is the failure mode we are fixing.
+local function heroFromSignals(facts, artArmed, ritualUp)
+  local S = ids()
+  local hellcaller = (facts[S.MALEVOLENCE] ~= nil) or (facts[S.WITHER] ~= nil)
+  local diabolist  = artArmed or ritualUp
+  if hellcaller and not diabolist then return "hellcaller", nil end
+  if diabolist and not hellcaller then return "diabolist", nil end
+  if hellcaller and diabolist then
+    return "diabolist", "both trees' signals are present"
+  end
+  return "diabolist", "no hero-tree signal in the tracked set"
+end
+
+local function resolveHero(facts, artArmed, ritualUp)
+  local hero = heroFromAPI()
+  local how = "talent API"
+  if not hero then
+    local why
+    hero, why = heroFromSignals(facts, artArmed, ritualUp)
+    how = why and ("defaulted — " .. why) or "inferred from the tracked set"
+  end
+  -- ANNOUNCED, once per change.  A defaulted hero tree silently deciding the rotation is
+  -- exactly what went wrong in the field; the chat line is what makes it arguable.
+  local said = hero .. "|" .. how
+  if said ~= heroSaid then
+    heroSaid = said
+    ns.Printf("Destruction: hero tree = |cffffffff%s|r (%s)", hero, how)
+  end
+  return hero
+end
+
+-- Cache invalidation.  The resolver calls this on any event that could have changed the
+-- build (see SpecRegistry): a respec changes the hero tree without changing the SPEC, so
+-- PLAYER_SPECIALIZATION_CHANGED alone is not enough — TRAIT_CONFIG_UPDATED is the one that
+-- actually fires for a hero swap.
+function spec:Invalidate()
+  heroCached, heroSaid = nil, nil
+end
 
 --------------------------------------------------------------------------------
 -- Context — the whole-board facts the cascade reads.
@@ -159,15 +241,22 @@ function spec:Context(state, env)
 
   -- ── Readiness, CHARGE-AWARE ────────────────────────────────────────────────
   -- An ability with a charge banked is usable even while its recharge timer runs, so a
-  -- charged ability's readiness is NOT its cooldown state.  ns.ReadCharges is combat-gated
-  -- (C_Spell.GetSpellCharges reads secret in restricted combat), so `charge.readable` is
-  -- true out of combat and false in it: OOC we know the count, in combat we fall back to
-  -- the plain probably-up read.  That is the documented under-press — we will hold a second
-  -- Conflagrate charge rather than claim a press we cannot justify.
+  -- charged ability's readiness is NOT its cooldown state.  `ns.ReadCharges` is combat-gated
+  -- (C_Spell.GetSpellCharges reads secret in restricted combat), so the EXACT count is an
+  -- out-of-combat luxury.
+  --
+  -- FIELD-FIX C2 changes what happens in combat.  State now carries a napkin estimate —
+  -- seeded exact OOC, decremented on each landed cast, incremented on the `ChargeGained`
+  -- alert (which fires in combat, and covers cooldown-reset procs since it triggers on any
+  -- upward move of Blizzard's cached count).  So we read `cur` whatever its source, and let
+  -- the napkin's own honesty rule do the work: it is biased to UNDERCOUNT, so the worst it
+  -- can do is hold a charge we actually have — never claim one we do not.  `readable` is
+  -- still the trust annotation for anyone who wants only measurements; here a present number
+  -- is enough, and an absent one (`{readable = false}`, no seed yet) is still not a press.
   local function chargeBanked(base)
     local row = base and abilities[base]
     local ch = row and row.charge
-    if not ch or ch.readable == false then return false end
+    if not ch then return false end
     local cur = num(ch.cur)
     return (cur ~= nil and cur >= 1) or false
   end
@@ -216,22 +305,51 @@ function spec:Context(state, env)
   ctx.chaoticInferno  = buffActive(S.CHAOTIC_INFERNO)
   ctx.fiendishCruelty = buffActive(S.FIENDISH_CRUELTY)
 
-  -- ── The maintenance DoT — Immolate, or Wither on Hellcaller ────────────────
-  -- Hero tree is read STRUCTURALLY, not from a talent API: Wither REPLACES Immolate on
-  -- Hellcaller, so a tracked Wither is the tell.  Same for Malevolence's line below.
-  local dotID = (S.WITHER and factsByBase[S.WITHER]) and S.WITHER or S.IMMOLATE
+  -- ── The hero tree, and the maintenance DoT it selects ──────────────────────
+  -- These are now resolved INDEPENDENTLY, which is the field-fix.  The old code derived the
+  -- tree FROM the DoT ("a tracked Wither means Hellcaller"), so one wrong reading of the
+  -- tracked set corrupted both answers at once — and it did, in the field.
+  ctx.hero = resolveHero(factsByBase, ctx.artArmed, ctx.ritualUp)
+  ctx.hellcaller = (ctx.hero == "hellcaller")
+
+  -- ⚠ WHICH ID IS THE DoT?  Not a constant — whichever of the candidates the pulse actually
+  -- carries.  Immolate occupies TWO cooldownIDs with DIFFERENT spellIDs (the DoT aura 157736
+  -- on the Buff-bar viewer, and the CAST id 348 on Essential), and only the CAST row is
+  -- pressable, so it is the only one that reaches `abilities` at all.  This file used to key
+  -- L8 on 157736 alone, which means the line could NEVER fire on a live build.  Resolve
+  -- through the candidate list, most-specific first.
+  local DOT_CANDIDATES = { S.WITHER, S.IMMOLATE, S.IMMOLATE_CAST }
+  local dotID
+  for _, id in ipairs(DOT_CANDIDATES) do
+    if id and factsByBase[id] then dotID = id; break end
+  end
   ctx.dotID = dotID
-  ctx.hellcaller = (dotID == S.WITHER)
 
   -- Three-way, on purpose: "up" / "missing" / "unknown".  Absence of a read must NEVER
   -- become "the DoT is missing" — that would spam the refresh press every GCD on a spec
-  -- whose DoT is its spine.  So L8 fires only on positive evidence of absence:
-  --   up      — the aura/buff item positively reads active
-  --   missing — the read WORKED and says inactive (aura.readable / buff.isActiveReadable)
-  --   unknown — no tracked row, or the read was refused: we say nothing
+  -- whose DoT is its spine.  So L8 fires only on positive evidence of absence.
+  --
+  -- TWO CHANNELS, in trust order:
+  --   1. THE ALERT LATCH (field-fix C) — `absent` / `fresh` / `pandemic`, observed off the
+  --      CDM's own choke point.  It is the only one that works IN COMBAT, and it is the only
+  --      route to "refresh it early" at all, because the pandemic STATE is secret.  Read
+  --      across every candidate id, since either Immolate row can raise the alert; the
+  --      NEWEST wins, and State has already resolved cooldownIDs to base spellIDs.
+  --   2. the aura / buff-item presence read — the pre-existing channel, still correct out of
+  --      combat and still the fallback when nothing has latched yet.
+  local edges = state.dotEdges or {}
+  local edge
+  for _, id in ipairs(DOT_CANDIDATES) do
+    local e = id and edges[id]
+    if e and (not edge or (num(e.at) or 0) >= (num(edge.at) or 0)) then edge = e end
+  end
+
   local dotRow = dotID and abilities[dotID]
   local dotState = "unknown"
-  if buffActive(dotID) then
+  if edge then
+    if edge.state == "absent" then dotState = "missing"
+    else dotState = "up" end                       -- "fresh" and "pandemic" both mean up
+  elseif buffActive(dotID) then
     dotState = "up"
   elseif dotRow then
     local a, b = dotRow.aura, dotRow.buff
@@ -244,17 +362,13 @@ function spec:Context(state, env)
   end
   ctx.dotState = dotState
 
-  -- The REFRESH half of L8 (the pandemic window), dormant until State carries a duration.
-  -- Reading a field the pulse does not have yet costs nothing (nil -> false) and means the
-  -- line comes alive the day `abilities[base].uptime` lands, with no edit here.  It is NOT
-  -- approximated from cast history on purpose: a DoT refreshed by Soul Fire, spread by
-  -- Cataclysm, or ticking on a target that has since died is not reconstructible from
-  -- "I cast Immolate 14s ago" (specs/destruction/input-contract.md).
-  local uptime = dotRow and num(dotRow.uptime)
-  ctx.dotUptime = uptime
-  ctx.dotRefreshable = (dotState == "missing")
-    or (uptime ~= nil and uptime <= self.DOT_REFRESH_LEAD)
-    or false
+  -- The REFRESH half of L8.  ALIVE now, and edge-driven: Blizzard raises `PandemicTime` when
+  -- the DoT genuinely enters its refresh window, computed per spell from the duration a
+  -- recast would carry over — a better number than any lead we could tune, and the only one
+  -- available at all, since the window's endpoints are Secret Values in combat.  A later
+  -- `fresh`/`absent` edge supersedes it, so a recast stops the cue immediately.
+  ctx.dotEdge = edge and edge.state or nil
+  ctx.dotRefreshable = (dotState == "missing") or (ctx.dotEdge == "pandemic") or false
 
   -- ── The execute gate (L7's second half) ────────────────────────────────────
   -- Target health at or below 20%.  This is NOT a Secret Value — it is ordinary unit data

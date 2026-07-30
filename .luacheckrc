@@ -41,7 +41,7 @@ stds.wow = {
     -- by `/cdmp rendertest states` (CooldownViewer.lua:1130).
     "ActionButtonSpellAlertManager",
     -- C_ namespaces the addon uses (functions accessed via these tables) -------
-    "C_AddOns", "C_CooldownViewer", "C_NamePlate", "C_Secrets",
+    "C_AddOns", "C_ClassTalents", "C_CooldownViewer", "C_NamePlate", "C_Secrets",
     "C_Spell", "C_SpellActivationOverlay", "C_Timer", "C_UnitAuras", "AuraUtil",
     -- Enums --------------------------------------------------------------------
     "Enum",

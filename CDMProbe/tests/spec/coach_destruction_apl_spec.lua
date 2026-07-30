@@ -37,6 +37,7 @@ local NOW = 1000
 -- consumes the DOMAIN VIEW keyed by base spellID, so these ARE the cue keys.
 local ID = {
   CB = 116858, INC = 29722, CONF = 17962, SBURN = 17877, IMMO = 157736,
+  IMMO_CAST = 348,
   ROF = 5740, SF = 6353, CATA = 152108, INFERNAL = 1122, MALEV = 442726,
   WITHER = 445468, UTILITY = 104773,
   -- buffs
@@ -49,6 +50,7 @@ local ID = {
 local CID = {
   CB = 3001, INC = 3002, CONF = 3003, SBURN = 3004, IMMO = 3005, ROF = 3006,
   SF = 3007, CATA = 3008, INFERNAL = 3009, MALEV = 3010, WITHER = 3011, UTILITY = 3012,
+  IMMO_CAST = 3013,
 }
 
 -- cd sub-tables per the 3-state contract (state + a trust `source`).
@@ -73,7 +75,6 @@ local function ability(base, cid, cd, extra)
     charge = extra.charge,
     aura = extra.aura,
     buff = extra.buff,
-    uptime = extra.uptime,
     glow = { active = extra.glow or false, readable = true },
     display = { cooldownID = cid, category = category },
   }
@@ -87,8 +88,12 @@ end
 --   soulFire/conflagrate/infernal/malevolence/shadowburn/cataclysm   a cd sub-table
 --   confCharge/sburnCharge       a `charge` sub-table (the OOC banked-charge read)
 --   ritual/backdraft/chaotic/fiendish   buff presence
---   dot "up"|"missing"|"unknown" the Immolate/Wither presence read; dotUptime = seconds left
+--   dot "up"|"missing"|"unknown" the Immolate/Wither presence read (the OOC channel)
+--   dotEdge "pandemic"|"fresh"|"absent"  the CDM alert latch (the COMBAT channel), and
+--                       dotEdgeOn / dotEdgesRaw pick which of the DoT's ids carries it
 --   hellcaller (bool)   swap the tracked maintenance DoT from Immolate to Wither
+--   immolateAsCast      track Immolate on its CAST id 348 (what the live build does)
+--   noWither            a Hellcaller build that does NOT track Wither (the field case)
 --   mode "st"|"aoe"     the manual target-mode toggle
 --   targetHp            target health percent (nil = no target channel, today's reality)
 --   noIncinerate        omit the Incinerate row entirely (the predicted-untracked worry)
@@ -116,13 +121,19 @@ local function build(f)
 
   -- The maintenance DoT.  `aura.readable` is what separates "missing" from "unknown": a
   -- refused read must never become a positive "the DoT is down" claim.
+  --
+  -- ⚠ WHICH IMMOLATE ID.  The live build tracks the CAST id 348 as the pressable Essential
+  -- row; the DoT aura 157736 sits on the Buff-bar viewer and never enters `abilities`.  The
+  -- fixture defaults to 157736 (what the code assumed before field-fix B) and
+  -- `immolateAsCast` swaps to the real one, so both are exercised.
   local dotID, dotCid = ID.IMMO, CID.IMMO
-  if f.hellcaller then dotID, dotCid = ID.WITHER, CID.WITHER end
+  if f.immolateAsCast then dotID, dotCid = ID.IMMO_CAST, CID.IMMO_CAST end
+  if f.hellcaller and not f.noWither then dotID, dotCid = ID.WITHER, CID.WITHER end
   local dotAura
   if f.dot == "up"      then dotAura = { readable = true, active = true }
   elseif f.dot == "missing" then dotAura = { readable = true, active = false }
   else dotAura = { readable = false } end
-  abilities[dotID] = ability(dotID, dotCid, cdUnknown(), { aura = dotAura, uptime = f.dotUptime })
+  abilities[dotID] = ability(dotID, dotCid, cdUnknown(), { aura = dotAura })
 
   if f.utility then abilities[ID.UTILITY] = ability(ID.UTILITY, CID.UTILITY, f.utility, { category = "Utility" }) end
 
@@ -133,6 +144,16 @@ local function build(f)
   if f.chaotic  then buffs[ID.CHAOTIC]  = true end
   if f.fiendish then buffs[ID.FIENDISH] = true end
 
+  -- The aura-lifecycle latch (field-fix C), base-spellID-keyed exactly as State emits it.
+  -- `dotEdgeOn` picks WHICH of the DoT's ids carries it — the two-cooldownID case.
+  local dotEdges = {}
+  if f.dotEdge then
+    dotEdges[f.dotEdgeOn or dotID] = { state = f.dotEdge, at = NOW - 1 }
+  end
+  -- Raw form, for the case where the SAME DoT has latched on both of its ids at different
+  -- times: { [spellID] = { state, at } }.
+  for id, e in pairs(f.dotEdgesRaw or {}) do dotEdges[id] = e end
+
   local shardBar = { value = f.shards or 0, incoming = f.incoming or 0, max = 5, readable = true }
   return {
     at = NOW, combat = (f.combat ~= false), combatStartedAt = NOW - 60,
@@ -141,6 +162,7 @@ local function build(f)
     buffs = buffs,
     history = {},
     abilities = abilities,
+    dotEdges = dotEdges,
     target = f.targetHp and { healthPct = f.targetHp } or nil,
   }
 end
@@ -284,9 +306,26 @@ describe("Destruction rotation list (from specs/destruction/rotation.md)", funct
                                       shards = 3 }).cid)
     end)
 
-    it("an UNREADABLE charge count (in combat) degrades to the plain cooldown read", function()
+    it("an UNREADABLE charge count with no estimate degrades to the plain cooldown read", function()
       assert.equals(ID.CB, winner({ conflagrate = cdFar(),
                                     confCharge = { readable = false },
+                                    shards = 3 }).cid)
+    end)
+
+    it("an IN-COMBAT napkin estimate counts as banked (field-fix C2)", function()
+      -- The exact read is secret in combat, so before C2 a banked charge was invisible for
+      -- the whole pull.  The estimate is trusted because it is fenced to UNDERCOUNT: it can
+      -- only ever hold a charge we really have, never claim one we do not.
+      assert.equals(ID.CONF, winner({ conflagrate = cdFar(),
+                                      confCharge = { readable = false, cur = 1, max = 2,
+                                                     source = "napkin" },
+                                      shards = 3 }).cid)
+    end)
+
+    it("a napkin estimate of ZERO is still not a press", function()
+      assert.equals(ID.CB, winner({ conflagrate = cdFar(),
+                                    confCharge = { readable = false, cur = 0, max = 2,
+                                                   source = "napkin" },
                                     shards = 3 }).cid)
     end)
 
@@ -382,14 +421,56 @@ describe("Destruction rotation list (from specs/destruction/rotation.md)", funct
       assert.equals(ID.INC, winner({ dot = "unknown", shards = 1 }).cid)
     end)
 
-    it("refreshes inside the pandemic window once an uptime read exists", function()
-      local w = winner({ dot = "up", dotUptime = 3, shards = 1 })
+    -- THE PANDEMIC HALF (field-fix C).  Driven by the CDM's own `PandemicTime` alert, not
+    -- by an uptime number: the window's endpoints are Secret Values in combat and
+    -- IsInPandemicTime THROWS, so the edge is the only signal there is — and it is the
+    -- better one, since Blizzard computes the real carry-over per spell.
+    it("refreshes when the pandemic ALERT has latched", function()
+      local w = winner({ dot = "up", dotEdge = "pandemic", shards = 1 })
       assert.equals(ID.IMMO, w.cid)
       assert.equals("pandemic refresh", w.cue.note)
     end)
 
-    it("leaves a healthy DoT alone (uptime beyond the refresh lead)", function()
-      assert.equals(ID.INC, winner({ dot = "up", dotUptime = 12, shards = 1 }).cid)
+    it("leaves a healthy DoT alone — a `fresh` edge supersedes the pandemic latch", function()
+      assert.equals(ID.INC, winner({ dot = "up", dotEdge = "fresh", shards = 1 }).cid)
+    end)
+
+    it("an `absent` edge presses it even while the aura read says otherwise", function()
+      -- The latch is the COMBAT channel; the aura read is not.  When they disagree the
+      -- observed edge wins, because the alternative is trusting a read that went dark.
+      local w = winner({ dot = "up", dotEdge = "absent", shards = 1 })
+      assert.equals(ID.IMMO, w.cid)
+      assert.equals("not up", w.cue.note)
+    end)
+
+    it("when BOTH of the DoT's ids have latched, the NEWEST edge decides", function()
+      -- Both Immolate rows raise the alerts, and they do not arrive together: the aura row
+      -- can still be sitting on a stale `pandemic` when the cast row reports the recast.
+      -- Taking the first candidate rather than the freshest would keep cueing a refresh the
+      -- player has already done.
+      local edges = {
+        [ID.IMMO]      = { state = "pandemic", at = NOW - 9 },
+        [ID.IMMO_CAST] = { state = "fresh",    at = NOW - 1 },
+      }
+      assert.equals(ID.INC, winner({ dot = "up", dotEdgesRaw = edges,
+                                     immolateAsCast = true, shards = 1 }).cid)
+      -- ...and the other way round: a fresh application followed by a real pandemic edge.
+      edges[ID.IMMO].at, edges[ID.IMMO_CAST].at = NOW - 1, NOW - 9
+      edges[ID.IMMO].state, edges[ID.IMMO_CAST].state = "pandemic", "fresh"
+      local w = winner({ dot = "up", dotEdgesRaw = edges, immolateAsCast = true, shards = 1 })
+      assert.equals(ID.IMMO_CAST, w.cid)
+      assert.equals("pandemic refresh", w.cue.note)
+    end)
+
+    it("the latch reaches the brain from EITHER of Immolate's two cooldownIDs", function()
+      -- The aura row (157736, Buff-bar) and the cast row (348, Essential) both raise
+      -- PandemicTime and both must arrive at one answer.  State keys `dotEdges` by base
+      -- spellID, so the brain reads whichever one the pulse carries.
+      local w = winner({ dot = "up", dotEdgeOn = ID.IMMO, dotEdge = "pandemic", shards = 1 })
+      assert.equals(ID.IMMO, w.cid)
+      local w2 = winner({ dot = "up", dotEdgeOn = ID.IMMO_CAST, dotEdge = "pandemic",
+                          immolateAsCast = true, shards = 1 })
+      assert.equals(ID.IMMO_CAST, w2.cid)
     end)
 
     it("maintains WITHER instead of Immolate on Hellcaller", function()
@@ -551,6 +632,135 @@ describe("Destruction rotation list (from specs/destruction/rotation.md)", funct
       -- the L11 gate, so the winner is no longer Chaos Bolt at all.
       local w = winner({ shards = 5, incoming = -4 })
       assert.are_not.equals(ID.CB, w.cid)
+    end)
+  end)
+
+  ----------------------------------------------------------------------------
+  -- Hero tree + DoT identity (field-fix B) — the two things the first live session
+  -- proved wrong.  THE LIVE CONFIGURATION IS THE FIXTURE: a real Hellcaller build
+  -- that tracked Malevolence but IMMOLATE (not Wither), with Immolate on its CAST id
+  -- 348.  The old code got both answers wrong on exactly this pulse — it inferred
+  -- Diabolist from the absent Wither, and keyed L8 on 157736, which is not in
+  -- `abilities` at all, so the DoT line could never fire.
+  ----------------------------------------------------------------------------
+  describe("hero tree + DoT identity", function()
+    -- The live build, as observed 2026-07-30.
+    local LIVE = { malevolence = cdFar(), immolateAsCast = true }
+    local function live(extra)
+      local f = {}
+      for k, v in pairs(LIVE) do f[k] = v end
+      for k, v in pairs(extra or {}) do f[k] = v end
+      return f
+    end
+    local function contextOf(facts) return ns.Specs[267]:Context(build(facts), Coach) end
+
+    after_each(function() _G.C_ClassTalents = nil end)
+
+    it("asks the talent API first: SubTreeID 58 is Hellcaller", function()
+      _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return 58 end }
+      local ctx = contextOf(live({ shards = 1 }))
+      assert.equals("hellcaller", ctx.hero)
+      assert.is_true(ctx.hellcaller)
+    end)
+
+    it("SubTreeID 59 is Diabolist", function()
+      _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return 59 end }
+      assert.equals("diabolist", contextOf(live({ shards = 1 })).hero)
+    end)
+
+    it("the API OVERRIDES the tracked set — the exact field failure", function()
+      -- Malevolence tracked, Wither NOT tracked, Immolate present: the structural
+      -- inference this replaces answered "Diabolist" here, confidently and wrongly.
+      _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return 58 end }
+      local ctx = contextOf(live({ shards = 1, ritual = true }))
+      assert.equals("hellcaller", ctx.hero)
+    end)
+
+    it("caches the API answer, and spec:Invalidate() drops it", function()
+      local calls = 0
+      _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() calls = calls + 1; return 58 end }
+      contextOf(live({ shards = 1 })); contextOf(live({ shards = 1 }))
+      assert.equals(1, calls)
+      ns.Specs[267]:Invalidate()
+      contextOf(live({ shards = 1 }))
+      assert.equals(2, calls)
+    end)
+
+    it("survives an API that throws, falling through to the inference", function()
+      _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() error("restricted") end }
+      assert.equals("hellcaller", contextOf(live({ shards = 1 })).hero)
+    end)
+
+    it("an UNKNOWN SubTreeID is not an answer — it falls through, not caches", function()
+      _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return 999 end }
+      assert.equals("hellcaller", contextOf(live({ shards = 1 })).hero)
+    end)
+
+    ------------------------------------------------------------------------
+    -- The inference path (no API): MULTI-signal, so either Hellcaller tell counts.
+    ------------------------------------------------------------------------
+    it("infers Hellcaller from MALEVOLENCE alone (no Wither)", function()
+      assert.equals("hellcaller", contextOf(live({ shards = 1 })).hero)
+    end)
+
+    it("infers Hellcaller from WITHER alone (no Malevolence)", function()
+      assert.equals("hellcaller", contextOf({ hellcaller = true, shards = 1 }).hero)
+    end)
+
+    it("infers Diabolist from an armed Ruination", function()
+      assert.equals("diabolist", contextOf({ art = "ruination", shards = 1 }).hero)
+    end)
+
+    it("infers Diabolist from the Diabolic Ritual container", function()
+      assert.equals("diabolist", contextOf({ ritual = true, shards = 1 }).hero)
+    end)
+
+    it("defaults to Diabolist on AMBIGUOUS signals, and says so", function()
+      local ctx = contextOf(live({ ritual = true, shards = 1 }))
+      assert.equals("diabolist", ctx.hero)
+      assert.truthy(table.concat(H.printed, "\n"):find("defaulted", 1, true))
+    end)
+
+    it("defaults to Diabolist with NO signal at all, and says so", function()
+      local ctx = contextOf({ shards = 1 })
+      assert.equals("diabolist", ctx.hero)
+      assert.truthy(table.concat(H.printed, "\n"):find("defaulted", 1, true))
+    end)
+
+    it("announces the resolution ONCE, not once per pulse", function()
+      _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return 58 end }
+      contextOf(live({ shards = 1 })); contextOf(live({ shards = 1 }))
+      local n = 0
+      for _, line in ipairs(H.printed) do if line:find("hero tree", 1, true) then n = n + 1 end end
+      assert.equals(1, n)
+    end)
+
+    ------------------------------------------------------------------------
+    -- DoT identity: whichever id the pulse actually carries.
+    ------------------------------------------------------------------------
+    it("resolves the DoT to the CAST id when that is the pressable row", function()
+      assert.equals(ID.IMMO_CAST, contextOf(live({ shards = 1 })).dotID)
+    end)
+
+    it("L8 targets the CAST id — the line the old key could never fire", function()
+      local w = winner(live({ dot = "missing", shards = 1 }))
+      assert.equals(ID.IMMO_CAST, w.cid)
+      assert.equals("not up", w.cue.note)
+    end)
+
+    it("still prefers Wither when a Hellcaller build actually tracks it", function()
+      assert.equals(ID.WITHER, contextOf({ hellcaller = true, shards = 1 }).dotID)
+    end)
+
+    it("still resolves the aura id when THAT is what a build tracks", function()
+      assert.equals(ID.IMMO, contextOf({ shards = 1 }).dotID)
+    end)
+
+    it("hero and DoT are now INDEPENDENT — Hellcaller maintaining Immolate", function()
+      _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return 58 end }
+      local ctx = contextOf(live({ dot = "missing", shards = 1 }))
+      assert.equals("hellcaller", ctx.hero)
+      assert.equals(ID.IMMO_CAST, ctx.dotID)      -- the pairing the old code could not express
     end)
   end)
 

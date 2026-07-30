@@ -1181,7 +1181,8 @@ function St.Build(drain)
   -- the viewers are not up (login, CDM disabled, a relayout mid-pulse), not that nothing on
   -- the board can be drawn — filtering on it would empty `abilities` outright, which is the
   -- exact shape of the v0.32.25 total outage.
-  local abilities, dropped = domainView(cooldowns, foldBase, next(items) ~= nil, St.dotEdge)
+  local abilities, dropped, dotEdges = domainView(cooldowns, foldBase, next(items) ~= nil,
+                                                  St.dotEdge)
 
   -- buffs — presence, secrecy-guarded (an entry's aura/buff reads TRUE only when it was
   -- readable, so absence never becomes a false positive).  Keyed by the entry's base for
@@ -1215,6 +1216,11 @@ function St.Build(drain)
     -- ("unlearned" | "no-icon").  Rendered by the decision log so a filter that drops a
     -- real button shows up in the trace instead of being silently absent.
     dropped   = dropped,
+    -- The aura-lifecycle latch, re-keyed cooldownID -> BASE spellID (field-fix C).  Carried
+    -- as its own map as well as on each pressable row, because an ability's latch can live
+    -- on a row that is NOT pressable — Immolate's DoT aura sits on the Buff-bar viewer and
+    -- never enters `abilities`, yet it raises PandemicTime just like the Essential cast row.
+    dotEdges  = dotEdges,
     power  = power,
     -- Every active player buff, spec-agnostically — the Coach's authoritative proc
     -- source, and the diagnostic that reveals a proc's TRUE aura id when a CDM entry's

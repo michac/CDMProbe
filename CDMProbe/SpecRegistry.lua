@@ -45,6 +45,18 @@ function ns.SetActiveSpec(specID)
   end
 end
 
+-- BUILD-SCOPED CACHE INVALIDATION (field-fix B).  A spec brain may cache a fact that is
+-- constant for a BUILD but not for a character — Destruction caches its hero tree, which it
+-- resolves once through the talent API rather than per pulse.  A spec that caches such a
+-- thing exposes `Invalidate()`; this drops every registered spec's cache, not just the
+-- active one, so swapping away and back cannot resurrect a stale answer.  pcall'd: it runs
+-- from event handlers, where a throw must never wedge the resolver.
+function ns.InvalidateSpecCaches()
+  for _, spec in pairs(ns.Specs) do
+    if type(spec.Invalidate) == "function" then pcall(spec.Invalidate, spec) end
+  end
+end
+
 --------------------------------------------------------------------------------
 -- Phase 5 — the live resolver.
 --------------------------------------------------------------------------------
@@ -74,6 +86,7 @@ function ns.ResolveActiveSpec()
     -- pcall'd: these run inside an event handler, where a silent throw must never wedge.
     pcall(function() if ns.HudNapkin and ns.HudNapkin.Reset then ns.HudNapkin.Reset() end end)
     pcall(function() if ns.HudBinds and ns.HudBinds.Invalidate then ns.HudBinds.Invalidate() end end)
+    ns.InvalidateSpecCaches()
   end
 end
 
@@ -88,6 +101,16 @@ function ns.OnLogin()
 end
 
 -- Live swaps: a small event frame of our own (HudBinds' frame reacts too — both fine).
+--
+-- TRAIT_CONFIG_UPDATED is the second registration and it is NOT redundant (field-fix B): a
+-- HERO-tree swap changes the build without changing the spec, so PLAYER_SPECIALIZATION_
+-- CHANGED never fires for it and a hero cache keyed only on that event would stay stale
+-- until relog.  Resolve on both; the resolver early-returns when nothing actually changed,
+-- so the extra event costs a couple of table reads.
 local ev = CreateFrame("Frame")
 ev:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
-ev:SetScript("OnEvent", function() pcall(ns.ResolveActiveSpec) end)
+ev:RegisterEvent("TRAIT_CONFIG_UPDATED")
+ev:SetScript("OnEvent", function(_, event)
+  if event == "TRAIT_CONFIG_UPDATED" then pcall(ns.InvalidateSpecCaches) end
+  pcall(ns.ResolveActiveSpec)
+end)
