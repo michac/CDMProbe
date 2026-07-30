@@ -23,8 +23,9 @@
 --   * NO builder projection.  Destruction generates in FRAGMENTS into a bar we read in
 --     whole shards, so SpecPowerDelta projects spenders only (see that file); the shard
 --     gates are rounded conservatively to compensate (rotation.md -> Fragments).
---   * CHARGES are real here.  Conflagrate and Shadowburn are the project's first charged
---     tracked abilities, so readiness is "probably up OR a charge banked" — see usable().
+--   * CHARGES are real here.  Conflagrate is the project's first charged tracked ability, so
+--     readiness is "probably up OR a charge banked" — see usable().  (Shadowburn is NOT one:
+--     DB2 ChargeCategory = 0 @ 12.0.7.  An earlier draft of these files claimed it had 2.)
 --
 -- LOAD ORDER.  Loads right after SpecDestruction.lua (so ns.Specs[267] exists) and may sit
 -- before Coach.lua: every ns.Coach.* reference here is runtime-only, never touched at load.

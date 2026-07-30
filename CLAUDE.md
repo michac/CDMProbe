@@ -110,6 +110,11 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   its .toc line and the `alerttape` saved-var once those
                                   rules land in knowledge/addon-dev/
                                   api-events-and-discovery.md §2.8.
+                                  ⏳ Those rules HAVE landed (§2.8 is confirmed in-client),
+                                  and the pipeline now consumes all six types — but the tape
+                                  is the instrument that CONFIRMS the field-fix C/C2 latches
+                                  against their source events, so it survives until that
+                                  in-game pass is done. Delete it straight after.
     Mode.lua                      the single/AoE target-mode toggle (`ns.Mode.aoe`
                                   + `single`/`multi`/`aoe`); State forwards it, the
                                   Coach reads it (extracted from HudCore at the cutover)
@@ -144,6 +149,16 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   the base-spellID domain view (abilities/buffs/
                                   resources); Secret-Value-guarded, napkin + edge
                                   fused for honest readiness. The pipeline's INPUT.
+                                  ⚠ `abilities` is FILTERED (field-fix A): a row that is
+                                  unlearned (isKnown==false) or undrawable (no item frame)
+                                  never enters it — both read `ready` forever, so they won
+                                  the priority list (216 dropped Soul Fire cues in one live
+                                  session). Drops are reported on `pulse.dropped`, never
+                                  silent. Consumes ALL SIX alert types now: the two cooldown
+                                  edges (readiness), the three aura edges (`dotEdge`, the
+                                  pandemic latch) and `ChargeGained` (the charge napkin) —
+                                  each promoted on measurement, see knowledge/addon-dev/
+                                  api-events-and-discovery.md §2.8.
     Coach.lua                     the generic Coach SHELL: Classify / Emit / ResourceBars
                                   / Sequence + a delegating Compute + EmptyGuidance. Reads
                                   ns.ActiveSpec live each tick; returns EmptyGuidance when
@@ -160,14 +175,19 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   rotation.md L1-L13. Structurally unlike Demo: NO burst
                                   setup block (nothing is held for Summon Infernal, so no
                                   tct / stage / go-gate and no window suppression in
-                                  Escalate), CHARGE-AWARE readiness (Conflagrate +
-                                  Shadowburn are the project's first charged tracked
-                                  abilities — banked-charge read works OOC, degrades to
-                                  binary in combat), and a three-way up/missing/unknown DoT
-                                  read so an UNREADABLE Immolate never becomes "refresh it
-                                  now". `ART_FROM_RITUAL` is the one unsettled read,
-                                  defaulted OFF — see the file header. Greened against
-                                  coach_destruction_apl_spec.
+                                  Escalate), CHARGE-AWARE readiness (Conflagrate is the
+                                  project's ONLY charged tracked ability — Shadowburn has no
+                                  charges, DB2 ChargeCategory=0; the exact count is OOC-only,
+                                  so in combat it reads State's charge napkin), and a
+                                  three-way up/missing/unknown DoT read so an UNREADABLE
+                                  Immolate never becomes "refresh it now" — now fed first by
+                                  the PandemicTime alert latch, the only combat channel.
+                                  Hero tree comes from C_ClassTalents, NOT from the tracked
+                                  set (that inference was observed wrong in the field), and
+                                  ctx.dotID resolves to whichever Immolate/Wither id the
+                                  pulse actually carries. `ART_FROM_RITUAL` is the one
+                                  unsettled read, defaulted OFF — see the file header.
+                                  Greened against coach_destruction_apl_spec.
     Binder.lua                    Binder:Bind(guidance, layout) -> DrawList: resolves
                                   each spellID cue to a display cooldownID/icon.
     Renderer.lua                  Renderer:Draw(drawList): OUR OWN textures anchored
@@ -204,6 +224,13 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   hand-built State pulses assert winner + fallback + SOON
                                   per BRANCH of the flat list + shard boundaries, authored
                                   from apl-prototype/pseudocode.md (the independent oracle)
+      spec/state_domainview_spec.lua  State's DOMAIN VIEW, loaded from the REAL State.lua
+                                  with only the CDM database + frame discovery faked: the
+                                  PRESSABLE filter (an unlearned or undrawable row never
+                                  reaches `abilities`, the raw `cooldowns` view keeps both,
+                                  and every drop is reported), the aura-lifecycle latch
+                                  across Immolate's TWO cooldownIDs, and the charge napkin's
+                                  full loop. The filter is mutation-checked three ways.
       spec/viewers_spec.lua       the item->identity resolvers, loaded from the REAL
                                   Viewers.lua with only frame DISCOVERY faked — the
                                   companion that proves ns.ItemCooldownID actually SHIPS.
@@ -247,8 +274,9 @@ put `~/.luarocks/bin` on PATH.
 - **`busted CDMProbe/tests/spec`** — unit tests for the pure-logic pipeline modules
   (`Coach`, `Binder`, `Renderer`, `HudLayout`, `DecisionLog`, `HudNapkin`,
   `SpecDemonology`) + the multi-spec seam (`SpecRegistry`/`ResolveActiveSpec`, the
-  resource-array projection) + the **Destruction** rotation gate. **209 tests**
-  (141 pipeline/Demonology + 57 Destruction + 11 viewers_spec). The harness is
+  resource-array projection) + the **Destruction** rotation gate + **State's domain-view
+  fold**. **266 tests** (141 pipeline/Demonology + 80 Destruction + 11 viewers_spec +
+  34 state_domainview_spec). The harness is
   **`CDMProbe/tests/mock_ns.lua`**: a chainable `CreateFrame`/FontString/animation
   stub, a **settable `GetTime` fake clock**, global fakes
   (`wipe`/`InCombatLockdown`/`issecretvalue`/`C_Timer`/`Enum`/`GetSpecialization`/…),

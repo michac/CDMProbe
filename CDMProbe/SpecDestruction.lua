@@ -205,19 +205,23 @@ spec.Spec = {
     kind = "button", cadence = "filler", abbr = "Inc", label = "Incinerate",
     lost = "the floor press has no icon, and Inc -> Infernal Bolt cannot light",
   },
-  -- Conflagrate + Shadowburn — the project's FIRST charged tracked abilities (2 charges
-  -- each, ~12-13s recharge).  Demonology has none, which is why the `charge` half of the
-  -- full-database read is still @verify-ingame.  ns.ReadCharges is combat-gated (it returns
-  -- nil in combat, like every C_Spell cooldown read), so in a pull these read as binary
-  -- "off cooldown", never "how many banked" — the brain therefore UNDER-presses them rather
-  -- than dumping a second charge.  `charges` here is documentation of the real ability, not
-  -- a claim that we can count them.
+  -- CONFLAGRATE is the project's first — and so far only — charged tracked ability
+  -- (2 charges, ~13s recharge).  Demonology has none.  ns.ReadCharges is combat-gated
+  -- (C_Spell.GetSpellCharges reads secret in restricted combat), so the EXACT count is an
+  -- OOC luxury; in a pull the brain reads State's CHARGE NAPKIN instead (seeded exact OOC,
+  -- -1 per landed cast, +1 per ChargeGained alert, clamped, biased to undercount).
+  -- `charges` here documents the real ability; the count comes from State.
   [S.CONFLAGRATE] = {
     kind = "button", cadence = "reactive", charges = 2, abbr = "Conf",
     label = "Conflagrate",
   },
+  -- ⚠ SHADOWBURN HAS NO CHARGES.  This entry carried `charges = 2` and these docs called it
+  -- the second charged ability; both were wrong.  DB2 @ 12.0.7 is unambiguous —
+  -- SpellCategories.ChargeCategory is 0 for Shadowburn 17877 (and Chaos Bolt), against
+  -- Conflagrate 17962's 672 — which also matches the live alert capture: Conflagrate raised
+  -- ChargeGained, Shadowburn never did.  So it has no charge channel to miss.
   [S.SHADOWBURN] = {
-    kind = "button", spends = "shards", cadence = "reactive", charges = 2, abbr = "SB",
+    kind = "button", spends = "shards", cadence = "reactive", abbr = "SB",
     label = "Shadowburn",
   },
   -- Soul Fire: a hard-cast builder on a ~45s cooldown that also refreshes Immolate.
