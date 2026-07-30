@@ -185,3 +185,213 @@ describe("HudVirtual.Sync / Reflect — the live half", function()
     assert.is_false(V.buttons[INCINERATE]:IsShown())
   end)
 end)
+
+--------------------------------------------------------------------------------
+-- PHASE 2 — the moveable panel.
+--
+-- The drag/save/restore shape is BucketBinds' console verbatim, so what is worth pinning
+-- here is the two things that are OURS: that a saved position round-trips through
+-- `ns.db.virtualPanel` (and that its ABSENCE falls back to the default anchor rather than
+-- to a nil point), and that the lock state governs BOTH halves of "does this frame exist as
+-- far as the mouse is concerned" — the mouse surface and the visible affordance.
+--------------------------------------------------------------------------------
+describe("HudVirtual — the moveable panel (Phase 2)", function()
+  local ns, V
+
+  before_each(function()
+    ns = H.fresh()
+    H.load("HudLayout.lua")
+    H.load("HudVirtual.lua")
+    V = ns.HudVirtual
+    ns.db = { virtualPanel = {} }      -- Core's DEFAULTS entry, as ADDON_LOADED leaves it
+  end)
+
+  ------------------------------------------------------------------------------
+  describe("saved position", function()
+    it("round-trips a dragged position through ns.db.virtualPanel", function()
+      local root = V.ensureRoot()
+      root:ClearAllPoints()
+      root:SetPoint("TOPLEFT", UIParent, "TOPLEFT", 120, -340)
+      V.SavePosition()
+      assert.are.same({ point = "TOPLEFT", relPoint = "TOPLEFT", x = 120, y = -340 },
+                      ns.db.virtualPanel)
+
+      root:ClearAllPoints()
+      V.RestorePosition()
+      local point, _, relPoint, x, y = root:GetPoint()
+      assert.are.same({ "TOPLEFT", "TOPLEFT", 120, -340 }, { point, relPoint, x, y })
+    end)
+
+    it("saves against UIParent, never the relativeTo frame it read back", function()
+      -- BucketBinds' one subtlety, copied deliberately: a stored frame reference could go
+      -- stale across a reload, so restore always re-anchors to UIParent.
+      local root = V.ensureRoot()
+      root:ClearAllPoints()
+      root:SetPoint("CENTER", UIParent, "CENTER", 5, 5)
+      V.SavePosition()
+      assert.is_nil(ns.db.virtualPanel.relativeTo)
+      root:ClearAllPoints()
+      V.RestorePosition()
+      local _, rel = root:GetPoint()
+      assert.are.equal(UIParent, rel)
+    end)
+
+    it("NO saved position ⇒ the default anchor (below the resource bar)", function()
+      local root = V.ensureRoot()          -- ensureRoot restores as part of creation
+      local point, _, relPoint, x, y = root:GetPoint()
+      assert.are.same({ "CENTER", "CENTER", 0, -52 }, { point, relPoint, x, y })
+    end)
+
+    it("`reset` clears the saved position and snaps back to the default", function()
+      local root = V.ensureRoot()
+      root:ClearAllPoints()
+      root:SetPoint("TOPLEFT", UIParent, "TOPLEFT", 120, -340)
+      V.SavePosition()
+      H.run("panel", "reset")
+      assert.are.same({}, ns.db.virtualPanel)
+      local point, _, relPoint, x, y = root:GetPoint()
+      assert.are.same({ "CENTER", "CENTER", 0, -52 }, { point, relPoint, x, y })
+    end)
+
+    it("tolerates no db at all (the panel still positions itself)", function()
+      ns.db = nil
+      local root = V.ensureRoot()
+      V.SavePosition()                     -- must not throw
+      assert.are.equal("CENTER", (root:GetPoint()))
+    end)
+
+    it("an OnDragStop saves — the drag wiring is actually connected", function()
+      local root = V.ensureRoot()
+      root:ClearAllPoints()
+      root:SetPoint("BOTTOM", UIParent, "BOTTOM", -8, 200)
+      root:Fire("OnDragStop")
+      assert.are.same({ point = "BOTTOM", relPoint = "BOTTOM", x = -8, y = 200 },
+                      ns.db.virtualPanel)
+    end)
+  end)
+
+  ------------------------------------------------------------------------------
+  describe("lock / unlock", function()
+    it("locked is the resting state: no mouse surface, no chrome", function()
+      local root = V.ensureRoot()
+      assert.is_false(root:IsMouseEnabled())
+      for _, t in ipairs(V.chrome) do assert.is_false(t:IsShown()) end
+      assert.is_false(V.caption:IsShown())
+    end)
+
+    it("unlock shows the border + caption and takes the mouse", function()
+      local root = V.ensureRoot()
+      H.run("panel", "unlock")
+      assert.is_true(V.unlocked)
+      assert.is_true(root:IsMouseEnabled())
+      for _, t in ipairs(V.chrome) do assert.is_true(t:IsShown()) end
+      assert.is_true(V.caption:IsShown())
+    end)
+
+    it("lock puts every one of those back", function()
+      local root = V.ensureRoot()
+      H.run("panel", "unlock")
+      H.run("panel", "lock")
+      assert.is_false(V.unlocked)
+      assert.is_false(root:IsMouseEnabled())
+      for _, t in ipairs(V.chrome) do assert.is_false(t:IsShown()) end
+      assert.is_false(V.caption:IsShown())
+    end)
+
+    it("bare `/cdmp panel` toggles", function()
+      V.ensureRoot()
+      H.run("panel", nil)
+      assert.is_true(V.unlocked)
+      H.run("panel", "")
+      assert.is_false(V.unlocked)
+    end)
+
+    it("`lock` is not matched INSIDE `unlock` (the strict token parse)", function()
+      V.ensureRoot()
+      H.run("panel", "unlock")
+      assert.is_true(V.unlocked)          -- a substring `find` would have locked it
+    end)
+
+    it("icons are held LIT while unlocked, so you can see what you are dragging", function()
+      V.Sync({ virtual = { INCINERATE } })
+      H.run("panel", "unlock")
+      assert.are.equal(1.00, V.buttons[INCINERATE]:GetAlpha())
+      V.Reflect({ cues = {} })            -- an uncued tick must NOT dim it back
+      assert.are.equal(1.00, V.buttons[INCINERATE]:GetAlpha())
+      H.run("panel", "lock")
+      assert.is_true(V.buttons[INCINERATE]:GetAlpha() < 1)
+    end)
+
+    it("REFUSES to create the panel mid-combat (the standing frame-discipline rule)", function()
+      H.setCombat(true)
+      H.run("panel", "unlock")
+      assert.is_nil(V.root)
+      assert.is_false(V.unlocked)
+      assert.is_truthy(H.printed[#H.printed]:find("combat"))
+    end)
+
+    it("an EXISTING panel unlocks fine in combat — nothing is created", function()
+      V.ensureRoot()
+      H.setCombat(true)
+      H.run("panel", "unlock")
+      assert.is_true(V.unlocked)
+    end)
+
+    it("HUD off locks it too — an unlock affordance you cannot see is a trap", function()
+      V.ensureRoot()
+      H.run("panel", "unlock")
+      V.Clear()
+      assert.is_false(V.unlocked)
+      assert.is_false(V.root:IsShown())
+    end)
+  end)
+
+  ------------------------------------------------------------------------------
+  describe("extents — the frame must be grabbable", function()
+    local SIZE, GAP, MIN_ICONS = 40, 6, 3
+    local function row(n) return n * SIZE + (n - 1) * GAP end
+
+    it("tracks the icon count once past the floor", function()
+      assert.are.equal(row(4), (V.RootSize(4)))
+      assert.are.equal(row(8), (V.RootSize(8)))
+      local _, h = V.RootSize(4)
+      assert.are.equal(SIZE, h)
+    end)
+
+    it("never falls below the minimum — the ZERO-rows case stays draggable", function()
+      assert.are.equal(row(MIN_ICONS), (V.RootSize(0)))
+      assert.are.equal(row(MIN_ICONS), (V.RootSize(1)))
+      assert.are.equal(row(MIN_ICONS), (V.RootSize(nil)))
+    end)
+
+    it("Sync resizes the root to this pulse's row", function()
+      V.Sync({ virtual = { INCINERATE, SHADOW_BOLT, 1, 2 } })
+      assert.are.equal(row(4), V.root:GetWidth())
+      V.Sync({ virtual = { INCINERATE } })
+      assert.are.equal(row(MIN_ICONS), V.root:GetWidth())
+    end)
+
+    it("a zero-row spec still gets a root, so it can be pre-positioned", function()
+      V.Sync({ virtual = {} })
+      assert.is_not_nil(V.root)
+      assert.are.equal(row(MIN_ICONS), V.root:GetWidth())
+    end)
+
+    it("a lone icon stays CENTRED on the anchor despite the wider frame", function()
+      -- The floor pads the row rather than left-aligning it, so Phase 1's on-screen position
+      -- is unchanged: LEFT edge + pad == the frame's centre minus half an icon.
+      V.Sync({ virtual = { INCINERATE } })
+      local p = V.buttons[INCINERATE]._points[1]
+      assert.are.equal("LEFT", p.point)
+      assert.are.equal("LEFT", p.relPoint)
+      assert.are.equal((row(MIN_ICONS) - SIZE) / 2, p.dx)
+    end)
+
+    it("a full row lays out from the LEFT edge, gap-spaced", function()
+      V.Sync({ virtual = { 1, 2, 3, 4 } })
+      assert.are.equal(0, V.buttons[1]._points[1].dx)
+      assert.are.equal(SIZE + GAP, V.buttons[2]._points[1].dx)
+      assert.are.equal(3 * (SIZE + GAP), V.buttons[4]._points[1].dx)
+    end)
+  end)
+end)

@@ -81,7 +81,10 @@ local function newStub()
     "SetAllPoints", "SetScale",
     "SetJustifyH", "SetJustifyV", "SetBlendMode",
     "SetTexture", "SetMask", "SetDrawLayer", "SetTexCoord",
-    "SetFrameStrata", "EnableMouse", "SetParent", "SetAtlas",
+    "SetFrameStrata", "SetParent", "SetAtlas",
+    -- The moveable-panel surface (HudVirtual Phase 2).  `EnableMouse` is RECORDING (below):
+    -- "does the panel eat clicks right now" is the lock state's user-visible half.
+    "SetMovable", "RegisterForDrag", "StartMoving", "StopMovingOrSizing", "SetClampedToScreen",
     "RegisterEvent", "RegisterUnitEvent", "UnregisterEvent", "UnregisterAllEvents",
     "SetLooping", "Play", "Stop", "Pause", "Finish",
     "SetDuration", "SetSmoothing", "SetOffset", "SetFromAlpha", "SetToAlpha",
@@ -104,6 +107,15 @@ local function newStub()
     return self
   end
   function t:ClearAllPoints() self._points = {}; return self end
+  -- The LAST SetPoint, in the API's return order — `(point, relativeTo, relPoint, x, y)`.
+  -- This is what makes HudVirtual's save/restore round-trip testable off-game.
+  function t:GetPoint()
+    local p = self._points and self._points[#self._points]
+    if not p then return nil end
+    return p.point, p.rel, p.relPoint, p.dx, p.dy
+  end
+  function t:EnableMouse(v) self._mouse = v and true or false; return self end
+  function t:IsMouseEnabled() return self._mouse and true or false end
   -- RECORDING, not a chain no-op: HudVirtual's resting-dim vs cued-lit distinction IS an
   -- alpha, so a spec has to be able to read back what it was set to (GetAlpha below).
   function t:SetAlpha(a)   self._alpha = a; return self end
@@ -210,6 +222,17 @@ function H.fresh()
   H.printed = {}
   ns.Print   = function(msg) H.printed[#H.printed + 1] = tostring(msg) end
   ns.Printf  = function(fmt, ...) ns.Print(string.format(fmt, ...)) end
+
+  -- Core.lua's command registry, recorded so a spec can DRIVE a slash verb (`/cdmp panel
+  -- unlock`) through the same handler the game dispatches — the module registers at load,
+  -- so the harness has to own the registry the way it owns the chat surface.
+  H.commands = {}
+  ns.RegisterCommand = function(name, help, fn) H.commands[name] = { help = help, fn = fn } end
+  H.run = function(name, arg)
+    local c = H.commands[name]
+    if not c then error("mock_ns: no command '" .. tostring(name) .. "'") end
+    return c.fn(arg)
+  end
 
   -- Real, shipping implementations (data + lookups + Secret-Values-aware helpers).
   H.load("Util.lua")

@@ -70,6 +70,11 @@ Design context + status live in the parent workspace at
 - `single` / `multi` / `aoe` — the target-mode toggle (`Mode.lua`): idempotent
   macro-friendly setters + a bare toggle. Forwarded by State as its `mode` field;
   the Coach reads it but does not branch yet (scaffolding for a 2nd spec / AoE rule).
+- `panel` — move OUR OWN icon row (`HudVirtual.lua`): `unlock` | `lock` | `reset`, bare
+  toggles. Unlocked = mouse on + a terminal-green edge/caption + icons held lit so you can
+  see what you drag; locked = only the icon, and the frame eats no clicks. The position
+  saves to `CDMProbeDB.virtualPanel` on drop. Refuses to CREATE the panel in combat (frame
+  discipline) — an already-created one unlocks fine.
 - `rendertest` — Phase-3 draw test: render a hand-authored DrawList fixture (`Renderer.lua`).
 - `reset` — turn the HUD off.
 
@@ -199,6 +204,15 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
     HudLayout.lua                 Scan the live CDM icon viewers -> Layout
                                   (cooldownID -> spellID + frame registry).
     HudGeometry.lua               shared frame/anchor geometry helpers.
+    HudVirtual.lua                OUR OWN icons for the rotation buttons the CDM tracks
+                                  NOWHERE (Destruction's Incinerate, Demo's Shadow Bolt).
+                                  State synthesises the domain-view row behind a NEGATIVE
+                                  handle (`-spellID`); this pools one button frame per row
+                                  and returns (layout, registry) fragments the driver merges
+                                  — Binder.lua and Renderer.lua are UNCHANGED, which is the
+                                  seam's success criterion. Owns the MOVEABLE panel:
+                                  `/cdmp panel`, the drag, and the saved position in
+                                  `ns.db.virtualPanel` (BucketBinds Console.lua's shape).
     HudDriver.lua                 the LIVE driver: the ~10 Hz ticker that runs the
                                   pipeline + the `/cdmp hud` command (alias `hud2`).
     DecisionLog.lua               the decision log: one greppable `S{} G{} B{}` line
@@ -247,6 +261,11 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
       spec/binder_spec.lua        spellID cue -> display cooldownID/icon resolution
       spec/renderer_spec.lua      DrawList -> texture/token treatment
       spec/hudlayout_spec.lua     the CDM viewer walk -> Layout
+      spec/hudvirtual_spec.lua    the virtual-icon fragments (shape agrees with
+                                  HudLayout.Build by construction; the negative handle
+                                  cannot collide) + the MOVEABLE panel: the saved-position
+                                  round-trip, the default fallback, `reset`, lock/unlock
+                                  over mouse+chrome+alpha, and the extents floor
       spec/decisionlog_spec.lua   the decision-log Record/Render split
       spec/hudnapkin_spec.lua     anticipation countdown + honesty rules
       spec/specdelta_spec.lua     SpecDemonology signal-bucket deltas
@@ -275,8 +294,8 @@ put `~/.luarocks/bin` on PATH.
   (`Coach`, `Binder`, `Renderer`, `HudLayout`, `DecisionLog`, `HudNapkin`,
   `SpecDemonology`) + the multi-spec seam (`SpecRegistry`/`ResolveActiveSpec`, the
   resource-array projection) + the **Destruction** rotation gate + **State's domain-view
-  fold**. **266 tests** (141 pipeline/Demonology + 80 Destruction + 11 viewers_spec +
-  34 state_domainview_spec). The harness is
+  fold**. **353 tests** (141 pipeline/Demonology + 89 Destruction + 11 viewers_spec +
+  73 state_domainview_spec + 39 hudvirtual_spec). The harness is
   **`CDMProbe/tests/mock_ns.lua`**: a chainable `CreateFrame`/FontString/animation
   stub, a **settable `GetTime` fake clock**, global fakes
   (`wipe`/`InCombatLockdown`/`issecretvalue`/`C_Timer`/`Enum`/`GetSpecialization`/…),

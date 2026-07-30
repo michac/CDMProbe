@@ -30,6 +30,11 @@ local DEFAULTS = {
   -- knowledge/addon-dev/api-events-and-discovery.md §2.8** — it is deliberately not a
   -- permanent instrument.
   alerttape = {},
+  -- The moveable virtual-icon panel's saved point (HudVirtual.lua, `/cdmp panel`):
+  -- `{ point, relPoint, x, y }`.  The EMPTY table means "no saved position" — RestorePosition
+  -- detects that via the absent `point` and falls back to the default anchor, exactly as
+  -- BucketBinds' console does.  It gets a default entry because it is table-valued.
+  virtualPanel = {},
 }
 
 -- Chat helpers ----------------------------------------------------------------

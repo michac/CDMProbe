@@ -434,6 +434,85 @@ describe("State virtual rows (the untracked floor press)", function()
       assert.are.same({}, candidates({ [INCINERATE] = { spellID = INCINERATE } }))
     end)
 
+    ----------------------------------------------------------------------------
+    -- THE DISPLAY-IDENTITY FENCE (the v0.32.32 Diabolist duplicate).
+    --
+    -- Blizzard's cid 66181 is SHADOW BOLT 686 with its DISPLAY overridden to Incinerate
+    -- 29722, and its `isKnown` is hero-tree dependent (false on Hellcaller, true on
+    -- Diabolist).  The old fence asked `abilities[29722] == nil` — which stays true while
+    -- Blizzard is visibly drawing the ability — so we synthesised a SECOND Incinerate icon.
+    -- The fence therefore has to be asked of the DISPLAYED identities, not the base keys.
+    ----------------------------------------------------------------------------
+    describe("already DISPLAYED by Blizzard (under another base) ⇒ no row", function()
+      local SHADOW_BOLT = 686
+
+      before_each(function() known(INCINERATE); zeroCD(INCINERATE) end)
+
+      it("a row keyed 686 whose overrideTooltipSpellID is 29722 suppresses ours", function()
+        assert.are.same({}, candidates({
+          [SHADOW_BOLT] = { spellID = SHADOW_BOLT, liveSpellID = SHADOW_BOLT,
+                            overrideTooltipSpellID = INCINERATE },
+        }))
+      end)
+
+      it("...and via overrideSpellID alone (the other static field)", function()
+        assert.are.same({}, candidates({
+          [SHADOW_BOLT] = { spellID = SHADOW_BOLT, overrideSpellID = INCINERATE },
+        }))
+      end)
+
+      it("THE FLICKER REGRESSION: still no row while the Demonic Art is ARMED", function()
+        -- With the Art up, that row's `liveSpellID` becomes Infernal Bolt 433891 — so a
+        -- liveSpellID-ONLY union would let our duplicate icon flicker back MID-COMBAT,
+        -- exactly when the ability is most active.  The STATIC override fields carry 29722
+        -- throughout, which is why unioning all three is load-bearing rather than tidy.
+        local INFERNAL_BOLT = 433891
+        assert.are.same({}, candidates({
+          [SHADOW_BOLT] = { spellID = SHADOW_BOLT, liveSpellID = INFERNAL_BOLT,
+                            overrideSpellID = INCINERATE,
+                            overrideTooltipSpellID = INCINERATE },
+        }))
+      end)
+
+      it("...and a row displaying it under its OWN base (liveSpellID) suppresses ours too", function()
+        assert.are.same({}, candidates({
+          [SHADOW_BOLT] = { spellID = SHADOW_BOLT, liveSpellID = INCINERATE },
+        }))
+      end)
+
+      it("HELLCALLER: the same row DROPPED as unlearned ⇒ we DO draw ours", function()
+        -- 686 is unlearned on Hellcaller, so it never enters `abilities` at all — nothing is
+        -- on screen, and the 31 %→0 % win from Phase 1 has to survive intact.
+        assert.are.same({ INCINERATE }, candidates({}, { [SHADOW_BOLT] = "unlearned" }))
+      end)
+
+      it("a row displaying something ELSE does not suppress us", function()
+        -- The fence must be a lookup, not a blanket "any override present" test.
+        assert.are.same({ INCINERATE }, candidates({
+          [SHADOW_BOLT] = { spellID = SHADOW_BOLT, overrideTooltipSpellID = 433891 },
+        }))
+      end)
+
+      it("St.DisplayedIdentities unions base + live + BOTH static override fields", function()
+        local on = St.DisplayedIdentities({
+          [SHADOW_BOLT] = { spellID = SHADOW_BOLT, liveSpellID = 433891,
+                            overrideSpellID = 1, overrideTooltipSpellID = INCINERATE },
+        })
+        assert.is_true(on[SHADOW_BOLT])
+        assert.is_true(on[433891])
+        assert.is_true(on[1])
+        assert.is_true(on[INCINERATE])
+      end)
+
+      it("a SECRET display id is never keyed (the standing secret-value rule)", function()
+        H.markSecret(INCINERATE)
+        local on = St.DisplayedIdentities({
+          [SHADOW_BOLT] = { spellID = SHADOW_BOLT, overrideTooltipSpellID = INCINERATE },
+        })
+        assert.is_nil(on[INCINERATE])
+      end)
+    end)
+
     it("DROPPED AS UNLEARNED ⇒ no row, even when the spellbook disagrees", function()
       -- A conflict between the CDM struct and the spellbook resolves to NOT DRAWING.
       known(INCINERATE); zeroCD(INCINERATE)
@@ -560,6 +639,21 @@ describe("State virtual rows (the untracked floor press)", function()
       local pulse = St.Build(false)
       assert.is_nil(pulse.cooldowns[-INCINERATE])
       assert.is_nil(pulse.cooldowns[INCINERATE])
+    end)
+
+    it("DIABOLIST: a row based on 686 but DISPLAYING 29722 stops us drawing ours", function()
+      -- The end-to-end proof that the three display fields actually reach the fence: Build
+      -- fills them from the info struct, domainView promotes the same table into `abilities`,
+      -- and the walk reads them there.  This is the v0.32.32 duplicate icon, in full.
+      local SHADOW_BOLT = 686
+      _G.C_CooldownViewer.GetCooldownViewerCooldownInfo = function()
+        return { spellID = SHADOW_BOLT, isKnown = true, overrideSpellID = INCINERATE,
+                 overrideTooltipSpellID = INCINERATE }
+      end
+      local pulse = St.Build(false)
+      assert.are.same({}, pulse.virtual)
+      assert.is_nil(pulse.abilities[INCINERATE])          -- ours was never synthesised
+      assert.equals(INCINERATE, pulse.abilities[SHADOW_BOLT].liveSpellID)  -- Blizzard draws it
     end)
 
     it("stops synthesising the moment Blizzard starts tracking it", function()

@@ -1140,6 +1140,27 @@ local function spellKnown(spellID)
   return known
 end
 
+-- Every identity the CDM is ALREADY displaying — not merely the base spellIDs `abilities`
+-- is keyed by.  A row's base can be a DIFFERENT SPELL from the one it draws (cid 66181 is
+-- Shadow Bolt 686 displaying Incinerate 29722), so "is this ability on screen?" cannot be
+-- answered from the keys alone.
+--
+-- ⚠ UNIONING THE TWO STATIC OVERRIDE FIELDS IS LOAD-BEARING, not belt-and-braces.  While
+-- the Demonic Art is armed that row's `liveSpellID` becomes Infernal Bolt 433891 — so a
+-- `liveSpellID`-only check would let our duplicate icon flicker back in MID-COMBAT, exactly
+-- when the ability is most active.  `overrideSpellID` / `overrideTooltipSpellID` carry the
+-- displayed id (29722) throughout.
+local function displayedIdentities(abilities)
+  local on = {}
+  for base, row in pairs(abilities) do
+    on[base] = true
+    if readable(row.liveSpellID) then on[row.liveSpellID] = true end
+    if readable(row.overrideSpellID) then on[row.overrideSpellID] = true end
+    if readable(row.overrideTooltipSpellID) then on[row.overrideTooltipSpellID] = true end
+  end
+  return on
+end
+
 -- PURE: (spec table, abilities, dropped, known(), baseCooldown()) -> sorted base spellIDs.
 -- Sorted so frame assignment is stable across ticks and the tests are order-independent.
 --
@@ -1152,7 +1173,12 @@ end
 --                         of its own" — the transforms (Ruination / Infernal Bolt) and the
 --                         cast-id aliases.  An override or an alias must never become a
 --                         second icon beside the ability it is an alias OF.
---   not already present   Blizzard draws it -> we do not.  If the CDM ever starts tracking
+--   not already DISPLAYED Blizzard draws it -> we do not.  Asked of the DISPLAY identities
+--                         (`displayedIdentities`), not of `abilities`' keys: cid 66181 is
+--                         Shadow Bolt 686 with its display overridden to Incinerate 29722,
+--                         so a base-identity test stays true while Blizzard is visibly
+--                         drawing the ability — and we synthesised a SECOND icon (the
+--                         v0.32.32 Diabolist duplicate).  If the CDM ever starts tracking
 --                         the ability, the virtual row silently stops being synthesised.
 --   not dropped-unlearned the CDM said this row is unlearned.  Even if the spellbook
 --                         disagrees, a conflict resolves to NOT DRAWING (under-show).
@@ -1162,12 +1188,13 @@ end
 local function virtualCandidates(specTable, abilities, dropped, known, baseCooldown)
   local out = {}
   if type(specTable) ~= "table" then return out end
+  local onScreen = displayedIdentities(abilities)
   for spellID, info in pairs(specTable) do
     if type(spellID) == "number" and type(info) == "table"
         and info.kind == "button"
         and info.cadence ~= "utility"
         and info.expect ~= false
-        and abilities[spellID] == nil
+        and not onScreen[spellID]
         and (not dropped or dropped[spellID] ~= "unlearned")
         and baseCooldown(spellID) == 0
         and known(spellID) == true then
@@ -1218,6 +1245,7 @@ end
 
 St.VirtualCandidates = virtualCandidates   -- test seam (the fence proof)
 St.VirtualRow        = virtualRow          -- test seam (the row shape)
+St.DisplayedIdentities = displayedIdentities  -- test seam (the display-identity fence)
 St.SpellKnown        = spellKnown
 
 --------------------------------------------------------------------------------
