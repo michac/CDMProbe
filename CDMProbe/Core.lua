@@ -9,33 +9,23 @@ ns.name = ADDON
 ns.version = (C_AddOns and C_AddOns.GetAddOnMetadata and C_AddOns.GetAddOnMetadata(ADDON, "Version")) or "?"
 
 -- Saved-variable defaults -----------------------------------------------------
--- `logMode` / `shardShown` / `shardFrame` were dropped in v0.12.0 with the
--- commands that owned them (see Probe.lua's header).  Stale keys in an existing
--- CDMProbeDB are harmless — nothing reads them — so there is no migration.
+-- The probe (`reports` / `probe` stores) was retired 2026-07-29; the decision log
+-- is the addon's only recorder now.  Stale `reports`/`probe`/`logMode`/… keys in an
+-- existing CDMProbeDB are harmless — nothing reads them — so there is no migration.
 local DEFAULTS = {
   -- `ns.db.hud` is the pipeline HUD's enable BOOL (W4 cutover reclaimed the key from
   -- the old engine's settings TABLE).  No default entry: absent == off; HudDriver's
   -- OnLogin migrates any stale old-engine table / prior `hud2` bool into it, and
   -- SetHud writes it thereafter.
-  reports = {},          -- persisted `/cdmp probe` output, read off disk
-  -- M4.5 T3 — the SAME probe observations as a STRUCTURED table, keyed by combat
-  -- state exactly like `reports`.  `reports` stays the human read; this is the
-  -- machine input for `wowkb.cdmp`, which must not text-parse a report this
-  -- codebase re-words freely.  Both are rendered from one in-memory observation
-  -- set per section (Probe.lua), so they cannot drift.
-  probe = {},
   -- Pipeline decision log — a ring of the last 3 sessions, each a list of one-line
   -- `S{…} G{…} B{…}` pipeline traces appended on every DECISION CHANGE (DecisionLog.lua).
   -- The greppable instrument for "why does /cdmp hud show nothing here?"; extracted to a
-  -- flat .log by `wowkb.cdmp decisionlog`.  Structured, flushed on /reload like pulls.
+  -- flat .log by `wowkb.cdmp decisionlog`.  Structured, flushed on /reload.
   -- (A prior `hud2log` store is folded in one-shot on login — see HudDriver.OnLogin.)
   decisionlog = {},
 }
 
 -- Chat helpers ----------------------------------------------------------------
--- Print also tees a color-stripped copy into an optional capture buffer, so a
--- command can persist its whole (untruncated) output to SavedVariables for
--- off-disk reading — chat scrollback/paste eats the most important lines.
 local PREFIX = "|cff8788eeCDMProbe|r "
 -- Secret-safe: a Secret Value must never be indexed/formatted (that taints).
 local function secret(v)
@@ -45,29 +35,12 @@ local function secret(v)
   end
   return false
 end
-local function strip(s)
-  if secret(s) then return "<secret>" end
-  return (tostring(s):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""))
-end
 function ns.Print(msg)
   local disp = secret(msg) and "<secret>" or tostring(msg)
   DEFAULT_CHAT_FRAME:AddMessage(PREFIX .. disp)
-  if ns._cap then ns._cap[#ns._cap + 1] = strip(msg) end
 end
 function ns.Printf(fmt, ...) ns.Print(string.format(fmt, ...)) end
 function ns.Heading(t) ns.Print("|cffffd100" .. tostring(t) .. "|r") end
-
--- Capture: buffer every Print, then store the joined text under reports[key].
--- Keyed by combat state so out-of-combat and in-combat runs don't clobber.
-function ns.BeginCapture() ns._cap = {} end
-function ns.EndCapture(key)
-  if not ns._cap then return end
-  ns.db.reports = ns.db.reports or {}
-  ns.db.reports[key] = table.concat(ns._cap, "\n")
-  ns.db.reports[key .. "_combat"] = InCombatLockdown() and true or false
-  ns._cap = nil
-  ns.Printf("saved report '%s' — |cffffffff/reload|r then read SavedVariables/CDMProbe.lua", key)
-end
 
 -- Command registry ------------------------------------------------------------
 ns.commands = {}       -- name -> { fn = function(argString), help = string }
@@ -82,7 +55,7 @@ local function printHelp()
   for _, name in ipairs(ns.commandOrder) do
     ns.Printf("  |cff88ff88%s|r — %s", name, ns.commands[name].help)
   end
-  ns.Print("suggested run: |cffffffffprobe|r (out of combat) -> pull a dummy -> |cffffffffprobe|r again in combat -> |cffffffff/reload|r, then the reports are on disk.")
+  ns.Print("the HUD is the point: |cffffffff/cdmp hud|r to toggle it, |cffffffff/cdmp hud status|r for the pipeline readout.")
 end
 
 local function dispatch(msg)

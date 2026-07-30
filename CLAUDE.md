@@ -39,44 +39,17 @@ Design context + status live in the parent workspace at
 
 ## Commands (`/cdmp <cmd>`, alias `/cdmprobe`)
 
-- `probe` — **THE probe (v0.12.0).** One command, one report, **written to disk**.
-  Replaced `dump` / `secret` / `casts` / `log` / `layout` / `shards`, which each
-  answered one question and each had to be toggled *before* the interesting thing
-  happened — the wrong shape, since procs/transforms/secret reads can't be
-  scheduled. Everything passive now records **from load** (cast-phase readability
-  counters, spell-override pairs, glow + data-loaded counts) at counter cost, and
-  `probe` renders the lot: environment + viewer/item anatomy, the secret map,
-  **A** cooldown readability per tracked spell (the M3d gate), **B** overrides and
-  live base-vs-live divergence, **C** per-phase cast readability, **D** the
-  imp-count side-channel probe, plus the HUD's own state/score/napkin block.
-  `probe clear` resets the passive counters **and the stored snapshots** — run it
-  at the start of a session so coverage reads as *this* session's.
-  **The loop:** `/cdmp probe` out of combat → pull → `/cdmp probe` in combat →
-  **`/reload`** → reports are at
-  `…/_retail_/WTF/Account/<ACCT>/SavedVariables/CDMProbe.lua` under
-  `CDMProbeDB.reports["probe_ooc"]` / `["probe_combat"]`.
-  ⚠ The `/reload` is **not optional** — SavedVariables only flush on
-  reload/logout, so skipping it leaves last session's text on disk, which looks
-  exactly like a probe that silently did nothing.
-  - **Two outputs, one observation set (v0.25.0, M4.5 T3).** Every probe run also
-    writes the same facts as a **structured table** at `CDMProbeDB.probe.ooc` /
-    `.combat` — the machine input for `wowkb.cdmp`, which must never text-parse a
-    report this codebase re-words freely. Each section computes its observation as
-    a **value** first and renders it twice (chat line + snapshot), so the two can't
-    drift. **Rule: never read the game a second time to fill the table.** A field
-    that would carry a Secret Value is stashed as the string `"<secret>"`; a read
-    that *errors* is flagged `<field>Errored` — different worlds, kept distinct.
-  - **`probe guide`** — a **pull-based** coverage checklist (no frame, no
-    auto-refresh; re-type it to re-check). Ticks each goal — OOC reads captured,
-    SUCCEEDED seen readable, a transform observed, imp aura observed, in-combat
-    probe taken — names what's missing and nudges, and reports "coverage complete"
-    only when all are met. **What it buys is timing:** you learn the capture is
-    incomplete while still at the dummy, not an hour later from `wowkb.cdmp check`.
-    It *detects and nudges*; it cannot *create* state (no proc, no imps on demand).
-  - **The division of labour** (`docs/m4.5-t3-plan.md`): **collect** a new
-    observation → addon change + release; **assert / interpret / re-verify** →
-    local tooling, no release. That is why the expectations live in
-    `projects/cooldown-hud/probe-baseline.json`, not in shipped Lua.
+> **The `probe` command was retired 2026-07-29.** It was a rule-*discovery* instrument
+> (secret-value / cooldown-readability / cast-phase / override probing) from the period
+> when those rules were open questions. They are now settled game-wide invariants
+> (`GetSpellCooldown` secret in combat; cast START/SUCCEEDED readable; `item:IsActive()`
+> readable; the override channel works), and a spec's tracked set comes from wago DB2 via
+> `wowkb.spec_inventory` — so per-spec re-measurement bought nothing, and the on-disk
+> `reports`/`probe`/`probe-baseline.json` machinery + `wowkb.cdmp check|show|diff` went
+> with it. The **decision log** (below) is the addon's only recorder now. Recover the probe
+> from git history if a genuinely new observation is ever needed (add a targeted command
+> then — don't resurrect the whole kitchen sink).
+
 - `hud` — **the real HUD — the W4 pipeline.** Each ~10 Hz tick runs
   `State.Build -> Coach:Compute -> Binder:Bind(guidance, layout) -> Renderer:Draw`
   (see `docs/architecture.md`): State folds the CDM rows into a base-spellID domain
@@ -96,7 +69,8 @@ Design context + status live in the parent workspace at
 - `single` / `multi` / `aoe` — the target-mode toggle (`Mode.lua`): idempotent
   macro-friendly setters + a bare toggle. Forwarded by State as its `mode` field;
   the Coach reads it but does not branch yet (scaffolding for a 2nd spec / AoE rule).
-- `reset` — turn every experiment off.
+- `rendertest` — Phase-3 draw test: render a hand-authored DrawList fixture (`Renderer.lua`).
+- `reset` — turn the HUD off.
 
 *(The `skin` / `resource` solid-colour-block directions were deleted in W4a
 (2026-07-24); the old HUD engine + its `hud log`/`hud opener`/`hud binds`/`hud debug`/
@@ -116,34 +90,50 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
     CDMProbe.toc
     Core.lua                      namespace, saved vars, slash cmds, registry
     Util.lua                      color, spell-name, Secret-Values-aware describe
-    Viewers.lua                   locate viewers, enumerate items,
-                                  ns.DumpViewers() (a `probe` section)
-    Probe.lua                     THE probe: passive recorders + `/cdmp probe`
-                                  (one report, saved to SavedVariables), `reset`
+    Viewers.lua                   locate viewers, enumerate items (ns.GetViewer /
+                                  ns.GetItemFrames — read by HudLayout/State)
     Mode.lua                      the single/AoE target-mode toggle (`ns.Mode.aoe`
                                   + `single`/`multi`/`aoe`); State forwards it, the
                                   Coach reads it (extracted from HudCore at the cutover)
-    SpecDemonology.lua            per-spec data: the SIGNAL BUCKET per spellID
-                                  (group / kind / spends / generates / cadence /
-                                  burstAlign / goGate / primary / judgeable).
-                                  The seam a 2nd spec plugs into; other modules
-                                  hold no spell constants of their own.
+    SpecRegistry.lua              the multi-spec seam: ns.Specs registry +
+                                  ns.RegisterSpec / ns.SetActiveSpec, and
+                                  ns.ResolveActiveSpec — reads GetSpecialization/
+                                  GetSpecializationInfo on login + PLAYER_SPECIALIZATION_
+                                  CHANGED, activates the registered spec or goes passive
+                                  (ns.ActiveSpec=nil). Re-binds the legacy ns.Spec* globals
+                                  off the active spec so existing call sites are untouched.
+    SpecDemonology.lua            per-spec DATA for Demonology (266): the SIGNAL BUCKET
+                                  per spellID (group / kind / spends / generates / cadence /
+                                  burstAlign / goGate / primary / judgeable / abbr).
+                                  SELF-REGISTERS a spec object via ns.RegisterSpec(266,…);
+                                  activation is ns.ResolveActiveSpec's job (no static
+                                  SetActiveSpec). The seam a 2nd spec plugs into; other
+                                  modules hold no spell constants of their own.
     -- The W4 pipeline (State -> Coach -> Binder -> Renderer), driven each tick by
     -- HudDriver.  See docs/architecture.md.
     State.lua                     ingestion + State.Build: folds the CDM rows into
                                   the base-spellID domain view (abilities/buffs/
                                   resources); Secret-Value-guarded, napkin + edge
                                   fused for honest readiness. The pipeline's INPUT.
-    Coach.lua                     Coach.Compute(state) -> Guidance: the SINGLE-TOP-
-                                  PRESS ranked winner. RankWinner is a FLAT priority
-                                  list (apl-prototype/pseudocode.md) — no phase
-                                  machine; emits winner + ROTATION_FALLBACK runner-up
-                                  + dumb per-ability SOON. Greened against
-                                  coach_apl_spec (the Tier-1 branch oracle).
+    Coach.lua                     the generic Coach SHELL: Classify / Emit / ResourceBars
+                                  / Sequence + a delegating Compute + EmptyGuidance. Reads
+                                  ns.ActiveSpec live each tick; returns EmptyGuidance when
+                                  passive. Holds no spec logic — Context/RankWinner/Escalate
+                                  live on the active spec object (CoachDemonology.lua).
+    CoachDemonology.lua           the Demonology BRAIN: attaches Context / RankWinner /
+                                  Escalate + tunables to spec 266's object. RankWinner is a
+                                  FLAT priority list (apl-prototype/pseudocode.md) — no phase
+                                  machine; emits winner + ROTATION_FALLBACK runner-up + dumb
+                                  per-ability SOON. Greened against coach_apl_spec (the
+                                  Tier-1 branch oracle).
     Binder.lua                    Binder:Bind(guidance, layout) -> DrawList: resolves
                                   each spellID cue to a display cooldownID/icon.
     Renderer.lua                  Renderer:Draw(drawList): OUR OWN textures anchored
                                   to Blizzard's icons; semantic tokens -> pixels.
+    HudProcGlow.lua               post-hooks each CDM item's RefreshOverlayGlow and dims
+                                  item.SpellActivationAlert (SetAlpha 0.5) while the HUD is
+                                  on, so Blizzard's proc glow doesn't drown our chrome;
+                                  restored to full on toggle-off. Gated on ns.HudOn().
     HudLayout.lua                 Scan the live CDM icon viewers -> Layout
                                   (cooldownID -> spellID + frame registry).
     HudGeometry.lua               shared frame/anchor geometry helpers.
@@ -162,8 +152,10 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
     tests/                        busted unit tests (M4.5 T2) — NOT in the .toc,
                                   so never loaded in-game / harmless in the zip
       mock_ns.lua                 the harness: CreateFrame stub + fake clock +
-                                  global fakes + real Util/SpecDemonology + a
-                                  fixture-settable ShardCost/BaseCooldown/napkin surface
+                                  global fakes + real Util + SpecRegistry +
+                                  SpecDemonology + CoachDemonology (spec 266 activated
+                                  through the resolver), + a fixture-settable
+                                  ShardCost/BaseCooldown/napkin surface
       spec/coach_apl_spec.lua     the Tier-1 ROTATION gate: minimal hand-built State
                                   pulses assert winner + fallback + SOON per BRANCH of
                                   the flat list + shard boundaries, authored from
@@ -175,6 +167,9 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
       spec/decisionlog_spec.lua   the decision-log Record/Render split
       spec/hudnapkin_spec.lua     anticipation countdown + honesty rules
       spec/specdelta_spec.lua     SpecDemonology signal-bucket deltas
+      spec/spec_registry_spec.lua RegisterSpec/SetActiveSpec + legacy-global rebind
+      spec/spec_detect_spec.lua   ResolveActiveSpec: known / unsupported / swap / no-spec
+      spec/resource_multipower_spec.lua  synthetic 2-power spec -> resourceBars[] + N meters
 ```
 
 ## Local checks (luacheck + busted) — M4.5
@@ -195,13 +190,16 @@ put `~/.luarocks/bin` on PATH.
   catch gets fixed; a legit API name goes in the std.
 - **`busted CDMProbe/tests/spec`** — unit tests for the pure-logic pipeline modules
   (`Coach`, `Binder`, `Renderer`, `HudLayout`, `DecisionLog`, `HudNapkin`,
-  `SpecDemonology`). The harness is
+  `SpecDemonology`) + the multi-spec seam (`SpecRegistry`/`ResolveActiveSpec`, the
+  resource-array projection). **141 tests.** The harness is
   **`CDMProbe/tests/mock_ns.lua`**: a chainable `CreateFrame`/FontString/animation
   stub, a **settable `GetTime` fake clock**, global fakes
-  (`wipe`/`InCombatLockdown`/`issecretvalue`/`C_Timer`/`Enum`/…), the **real**
-  `Util.lua` + `SpecDemonology.lua` loaded through the `local ADDON, ns = ...`
-  vararg shim, and a fixture-settable `ShardCost`/`BaseCooldown`/napkin surface.
-  Specs load the module under test into that same `ns`. Run from this repo root:
+  (`wipe`/`InCombatLockdown`/`issecretvalue`/`C_Timer`/`Enum`/`GetSpecialization`/…),
+  the **real** `Util.lua` + `SpecRegistry.lua` + `SpecDemonology.lua` +
+  `CoachDemonology.lua` loaded through the `local ADDON, ns = ...` vararg shim (spec
+  266 activated via the resolver), and a fixture-settable `ShardCost`/`BaseCooldown`/
+  napkin surface. Specs load the module under test into that same `ns`. Run from this
+  repo root:
 
   ```bash
   export PATH="$HOME/.luarocks/bin:$PATH"
@@ -209,21 +207,18 @@ put `~/.luarocks/bin` on PATH.
   busted CDMProbe/tests/spec
   ```
 
-The **third rung is `wowkb.cdmp`** (M4.5 T3) — the one that reaches what neither
-luacheck nor busted can: the *live* Secret-Value / override / cast-readability
-paths. It runs **in the parent workspace, not here**, against a real capture:
+**`wowkb.cdmp decisionlog`** (runs in the parent workspace) extracts the live pipeline
+**decision log** off SavedVariables to a grep-friendly `.log` — the greppable trace of
+what State saw → what the Coach decided → what the Binder drew, one line per decision
+change. Use it to answer "why does `/cdmp hud` show nothing here?":
 
 ```bash
 cd ~/code/fun/wow/tools
-uv run python -m wowkb.cdmp check     # assert the capture vs probe-baseline.json
-uv run python -m wowkb.cdmp show      # pretty-print it
-uv run python -m wowkb.cdmp diff      # ooc vs combat — the M3d seam
+uv run python -m wowkb.cdmp decisionlog   # → raw/cdmp-decision.log  (hud2log is an alias)
 ```
 
-`check` exits non-zero on any high-severity failure. Because the assertions live
-in `projects/cooldown-hud/probe-baseline.json` (local JSON) rather than in shipped
-Lua, **retuning or adding one needs no release** — only *collecting a new
-observation* does.
+*(The old `wowkb.cdmp check|show|diff` probe-assertion suite + `probe-baseline.json` were
+retired with the probe on 2026-07-29 — see the Commands note above.)*
 
 **The release flow runs luacheck automatically** (`wowkb.addon release cdmp`), as a
 SOFT gate above luaparser: it fires only for an addon that ships a `.luacheckrc`
@@ -286,21 +281,15 @@ clean). Updating the in-game addon:
 
 Deploy a build (`ghaddons update michac/CDMProbe` → `/reload`), then:
 
-1. **`/cdmp probe` out of combat.** The four viewers are found, items list with
-   real spellIDs + names. **Section A is the one to read first** — if cooldown
-   duration/startTime print real numbers here, M3d (out-of-combat seeding) is
-   viable and the "no edge seen yet" cold start is removable.
-2. `/cdmp hud` → the pipeline draws its cue overlay; Essential + Utility icons keep
+1. `/cdmp hud` → the pipeline draws its cue overlay; Essential + Utility icons keep
    their **native art, swipe and countdown**. `/cdmp hud status` reads ON with a
-   non-zero ingestion consumer count and a clean last tick; `/cdmp hud layout` lists
-   the tracked icons with resolved spellIDs + keybinds. Toggle off → Blizzard's UI is
-   pixel-clean (every dot cleared).
-3. **Pull a target dummy** and play a real rotation for a minute — the passive
-   recorders are collecting the whole time, so just play. Proc a Demonic Core,
-   let a Grimoire go on cooldown, cast a few cast-time spells.
-4. **`/cdmp probe` again, in combat.** Diff section A against the OOC run (that
-   is the M3d answer), and check section C for any phase reading `ALL SECRET`.
-5. **`/reload`**, then the two reports are on disk under `CDMProbeDB.reports`.
-6. `/cdmp reset` → everything clears cleanly.
-
-Report findings back to the parent workspace to shape the real HUD.
+   non-zero ingestion consumer count, a clean last tick, and the active spec line;
+   `/cdmp hud layout` lists the tracked icons with resolved spellIDs + keybinds.
+   Toggle off → Blizzard's UI is pixel-clean (every dot cleared).
+2. **Pull a target dummy** and play a real rotation for a minute — proc a Demonic
+   Core, fire the burst, cast a few cast-time spells. Watch the cues track the
+   rotation.
+3. **`/reload`**, then extract the trace: `uv run python -m wowkb.cdmp decisionlog`
+   and grep `raw/cdmp-decision.log` for any `w:-` (Coach found no winner) or `×`
+   (Binder dropped a cue) — the two pipeline-failure smoking guns.
+4. `/cdmp reset` → the HUD clears cleanly.

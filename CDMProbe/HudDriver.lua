@@ -207,12 +207,10 @@ ns.RegisterCommand("hud",
   hudCommand)
 ns.RegisterCommand("hud2", "alias of /cdmp hud (transitional — the pipeline reclaimed /cdmp hud at the W4 cutover).", hudCommand)
 
--- Fold into /cdmp reset ("turn every experiment off"), wrapping the base Probe reset
--- directly (the old HudCore link in the chain is gone).
-local prevReset = ns.commands.reset and ns.commands.reset.fn
-ns.RegisterCommand("reset", "turn every experiment off (HUD + probe/log off)", function(rest)
+-- /cdmp reset — turn the HUD off.  (The old engine + the probe that also hung off this
+-- command are gone; the HUD is the only "experiment" left to reset.)
+ns.RegisterCommand("reset", "turn the HUD off", function()
   if D.on then ns.SetHud(false) end
-  if prevReset then prevReset(rest) end
 end)
 
 -- Restore on login (wrap the existing chain).
