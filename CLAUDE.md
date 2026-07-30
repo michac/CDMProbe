@@ -31,7 +31,8 @@ Retired directions, code **deleted** (recover from git history if revived):
   color block" experiments (`/cdmp skin`, `/cdmp resource`; `Skin.lua` + `Resource.lua`) —
   **deleted in W4a (2026-07-24)**.
 
-Target spec for v1 experiments: **Demonology Warlock**.
+Registered specs: **Demonology** (266, play-settled) and **Destruction** (267, shipped
+2026-07-29, not yet flown). Every other spec resolves passive by design.
 
 Design context + status live in the parent workspace at
 `projects/cooldown-hud/docs/` (`spec.md` vision · `notes.md` technical findings ·
@@ -109,6 +110,17 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   activation is ns.ResolveActiveSpec's job (no static
                                   SetActiveSpec). The seam a 2nd spec plugs into; other
                                   modules hold no spell constants of their own.
+    SpecDestruction.lua           per-spec DATA for Destruction (267) — the 2nd registered
+                                  spec, and the proof the seam works (added with NO pipeline
+                                  edit). Same signal bucket, minus the nine DORMANT Tier-3
+                                  tables Demo carries (SpecGroups/SpecOpener/SpecBurst/…
+                                  have no live consumer in v1, so this file omits them).
+                                  Same SoulShards power rendered `discrete`, so Destruction
+                                  touches NEITHER Renderer generalization point.
+                                  SpecPowerDelta projects SPENDERS ONLY: Destruction
+                                  generates in FRAGMENTS into a bar State reads in whole
+                                  shards, so faking integer `generates` would make the
+                                  in-flight projection lie by up to a shard per filler cast.
     -- The W4 pipeline (State -> Coach -> Binder -> Renderer), driven each tick by
     -- HudDriver.  See docs/architecture.md.
     State.lua                     ingestion + State.Build: folds the CDM rows into
@@ -126,6 +138,19 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   machine; emits winner + ROTATION_FALLBACK runner-up + dumb
                                   per-ability SOON. Greened against coach_apl_spec (the
                                   Tier-1 branch oracle).
+    CoachDestruction.lua          the Destruction BRAIN: Context / RankWinner / Escalate on
+                                  spec 267's object, implementing specs/destruction/
+                                  rotation.md L1-L13. Structurally unlike Demo: NO burst
+                                  setup block (nothing is held for Summon Infernal, so no
+                                  tct / stage / go-gate and no window suppression in
+                                  Escalate), CHARGE-AWARE readiness (Conflagrate +
+                                  Shadowburn are the project's first charged tracked
+                                  abilities — banked-charge read works OOC, degrades to
+                                  binary in combat), and a three-way up/missing/unknown DoT
+                                  read so an UNREADABLE Immolate never becomes "refresh it
+                                  now". `ART_FROM_RITUAL` is the one unsettled read,
+                                  defaulted OFF — see the file header. Greened against
+                                  coach_destruction_apl_spec.
     Binder.lua                    Binder:Bind(guidance, layout) -> DrawList: resolves
                                   each spellID cue to a display cooldownID/icon.
     Renderer.lua                  Renderer:Draw(drawList): OUR OWN textures anchored
@@ -153,13 +178,20 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   so never loaded in-game / harmless in the zip
       mock_ns.lua                 the harness: CreateFrame stub + fake clock +
                                   global fakes + real Util + SpecRegistry +
-                                  SpecDemonology + CoachDemonology (spec 266 activated
-                                  through the resolver), + a fixture-settable
-                                  ShardCost/BaseCooldown/napkin surface
-      spec/coach_apl_spec.lua     the Tier-1 ROTATION gate: minimal hand-built State
-                                  pulses assert winner + fallback + SOON per BRANCH of
-                                  the flat list + shard boundaries, authored from
-                                  apl-prototype/pseudocode.md (the independent oracle)
+                                  SpecDemonology + CoachDemonology + SpecDestruction +
+                                  CoachDestruction (spec 266 activated through the
+                                  resolver; H.setSpecIndex(3) + ResolveActiveSpec drives
+                                  267), + a fixture-settable ShardCost/BaseCooldown/napkin
+                                  surface
+      spec/coach_apl_spec.lua     the Tier-1 ROTATION gate for DEMONOLOGY: minimal
+                                  hand-built State pulses assert winner + fallback + SOON
+                                  per BRANCH of the flat list + shard boundaries, authored
+                                  from apl-prototype/pseudocode.md (the independent oracle)
+      spec/coach_destruction_apl_spec.lua  the same gate for DESTRUCTION (267), authored
+                                  from specs/destruction/rotation.md L1-L13 — plus the
+                                  spec-specific channels: banked charges, the three-way DoT
+                                  presence read, the untracked-Incinerate degradation, and
+                                  the ART_FROM_RITUAL switch on both settings
       spec/coach_classify_spec.lua Classify in isolation (probably-up, transforms)
       spec/binder_spec.lua        spellID cue -> display cooldownID/icon resolution
       spec/renderer_spec.lua      DrawList -> texture/token treatment
@@ -191,12 +223,14 @@ put `~/.luarocks/bin` on PATH.
 - **`busted CDMProbe/tests/spec`** — unit tests for the pure-logic pipeline modules
   (`Coach`, `Binder`, `Renderer`, `HudLayout`, `DecisionLog`, `HudNapkin`,
   `SpecDemonology`) + the multi-spec seam (`SpecRegistry`/`ResolveActiveSpec`, the
-  resource-array projection). **141 tests.** The harness is
+  resource-array projection) + the **Destruction** rotation gate. **198 tests**
+  (141 pipeline/Demonology + 57 Destruction). The harness is
   **`CDMProbe/tests/mock_ns.lua`**: a chainable `CreateFrame`/FontString/animation
   stub, a **settable `GetTime` fake clock**, global fakes
   (`wipe`/`InCombatLockdown`/`issecretvalue`/`C_Timer`/`Enum`/`GetSpecialization`/…),
   the **real** `Util.lua` + `SpecRegistry.lua` + `SpecDemonology.lua` +
-  `CoachDemonology.lua` loaded through the `local ADDON, ns = ...` vararg shim (spec
+  `CoachDemonology.lua` + `SpecDestruction.lua` + `CoachDestruction.lua`
+  loaded through the `local ADDON, ns = ...` vararg shim (spec
   266 activated via the resolver), and a fixture-settable `ShardCost`/`BaseCooldown`/
   napkin surface. Specs load the module under test into that same `ns`. Run from this
   repo root:

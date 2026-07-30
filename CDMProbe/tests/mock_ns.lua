@@ -52,6 +52,9 @@ H.frames = {}          -- every CreateFrame result, in order (napkin grabs its e
 -- lands on the shipping spec exactly as the old static activation did.  Tests flip
 -- H.specIndex (nil = no spec chosen) to exercise the passive / swap paths.
 H.specIndex = 1
+-- Index 3 (Destruction, 267) IS registered now — coach_destruction_apl_spec drives it by
+-- calling H.setSpecIndex(3) then ns.ResolveActiveSpec() after H.fresh().  Index 2
+-- (Affliction) stays the unregistered/passive fixture spec_detect_spec relies on.
 H.specByIndex = {
   [1] = { 266, "Demonology" },
   [2] = { 265, "Affliction" },   -- registered? NO — the unsupported/passive fixture
@@ -187,6 +190,8 @@ function H.fresh()
   H.load("SpecRegistry.lua")    -- registry + SetActiveSpec + ResolveActiveSpec
   H.load("SpecDemonology.lua")  -- self-registers spec 266 (activation is now the resolver's job)
   H.load("CoachDemonology.lua") -- attaches the Demo brain (Context/RankWinner/Escalate) to spec 266
+  H.load("SpecDestruction.lua") -- self-registers spec 267
+  H.load("CoachDestruction.lua")-- attaches the Destruction brain to spec 267
 
   -- Static activation is gone (Phase 5) — activate via the REAL resolver so every spec
   -- ships with ns.ActiveSpec = Demo exactly as before, transparently to the 137 tests.

@@ -4,9 +4,10 @@
 -- SetActiveSpec(266).  The resolver replaces that with a read of the player's real spec
 -- (GetSpecialization -> GetSpecializationInfo -> specID), activating the matching
 -- REGISTERED spec or going PASSIVE (ActiveSpec = nil, every SpecField cleared) when none is
--- registered.  Only Demonology (266) is registered, so every other spec resolves passive —
--- intended.  The mock's GetSpecialization/GetSpecializationInfo fakes (index -> specID) let
--- us drive each path; H.specByIndex maps 1=266 Demo, 2=265 Aff (unregistered), 3=267 Destro.
+-- registered.  Demonology (266) and Destruction (267) are registered; every other spec
+-- resolves passive — intended.  The mock's GetSpecialization/GetSpecializationInfo fakes
+-- (index -> specID) let us drive each path; H.specByIndex maps 1=266 Demo,
+-- 2=265 Aff (deliberately UNregistered — the passive fixture these tests use), 3=267 Destro.
 local dir = (debug.getinfo(1, "S").source:match("^@(.*[/\\])")) or "./"
 local H = dofile(dir .. "../mock_ns.lua")
 
