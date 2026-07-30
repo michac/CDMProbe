@@ -118,10 +118,18 @@ local function ensureSession()
     version = ns.version,
     events  = {},   -- "cid|event|combat" -> { cid, event, combat, n, first, last }
     fields  = {},   -- "cid|combat|class" -> { cid, combat, class, n, first, last, sample }
+    elig    = {},   -- cid -> { cid, spellID, name, viewer, types } (the baseline, below)
   }
   tape[#tape + 1] = sess
   while #tape > SESSIONS do table.remove(tape, 1) end
   T.session = sess
+  -- The eligibility baseline is captured INTO the session, automatically.  It is not
+  -- optional context — without it, "PandemicTime never appeared" is unreadable, because
+  -- we cannot tell "it fired and we missed it" from "this spell was never eligible".
+  -- Taken lazily here (rather than only from the command) so EVERY session carries its
+  -- own baseline even when the tape was already on across a /reload.  pcall'd: a baseline
+  -- failure must not stop the tape recording.
+  pcall(T.CaptureEligibility)
   return sess
 end
 
@@ -181,51 +189,79 @@ end
 --------------------------------------------------------------------------------
 -- `/cdmp alerts` — the command surface.
 --------------------------------------------------------------------------------
--- ELIGIBILITY (Q3) is a plain out-of-combat read and needs no tape at all:
--- C_CooldownViewer.GetValidAlertTypes(cooldownID) is a public API returning the alert
--- types valid for that cooldown.  Run this FIRST — it is the baseline the tape gets
--- compared against, and if a spell is not PandemicTime-eligible then its absence from the
--- tape is expected rather than a finding.
-local function probeEligibility()
-  ns.Heading("CDM alert eligibility — C_CooldownViewer.GetValidAlertTypes(cooldownID)")
+-- ELIGIBILITY (Q3): which alert types each tracked cooldown can even raise, via the public
+-- C_CooldownViewer.GetValidAlertTypes(cooldownID).  A plain out-of-combat read.
+--
+-- ⚠ THIS WRITES TO SAVEDVARIABLES, not just chat.  An earlier cut printed it to chat only,
+-- which was useless: WoW's default chat frame has no copy/paste, so the one output that has
+-- to reach the analysis machine was the one output that could not leave the client.  The
+-- durable record is the capture; the chat print is a convenience eyeball.  Same reason the
+-- decision log has always gone to disk.
+--
+-- It is also captured AUTOMATICALLY when a session opens, so it cannot be forgotten.
+function T.CaptureEligibility()
+  local sess = T.session
+  if not sess then return nil, "no session" end
   if not (C_CooldownViewer and C_CooldownViewer.GetValidAlertTypes) then
-    return ns.Print("  |cffff4040C_CooldownViewer.GetValidAlertTypes absent|r")
+    sess.eligError = "C_CooldownViewer.GetValidAlertTypes absent"
+    return nil, sess.eligError
   end
-  if not ns.VIEWERS then return ns.Print("  no viewers") end
-  local seen, shown = {}, 0
+  if not ns.VIEWERS then
+    sess.eligError = "no viewers"
+    return nil, sess.eligError
+  end
+  local n = 0
   for _, v in ipairs(ns.VIEWERS) do
     local viewer = ns.GetViewer(v.frame)
     if viewer then
       for _, item in ipairs(ns.GetItemFrames(viewer)) do
         local cid = ns.ItemCooldownID(item)
-        if cid and not seen[cid] then
-          seen[cid] = true
+        if cid and not sess.elig[cid] then
           local base = ns.ItemBaseSpellID(item)
-          local name = (base and ns.SpellName(base)) or "?"
           local ok, types = pcall(C_CooldownViewer.GetValidAlertTypes, cid)
-          local list = "|cffff4040<unreadable>|r"
+          local list
           if ok and type(types) == "table" then
             local parts = {}
             for _, t in ipairs(types) do
-              if not ns.IsSecret(t) then parts[#parts + 1] = eventName(t) end
+              -- Never format a secret; an unreadable member is named as such, not dropped.
+              parts[#parts + 1] = ns.IsSecret(t) and "SECRET" or eventName(t)
             end
-            list = #parts > 0 and table.concat(parts, ", ") or "(none)"
+            list = #parts > 0 and table.concat(parts, ",") or "(none)"
+          else
+            list = "<unreadable>"
           end
-          ns.Printf("  [%s] cid=%s spell=%s  |cffffffff%s|r",
-            v.label, tostring(cid), tostring(base), list)
-          ns.Printf("        %s", name)
-          shown = shown + 1
+          sess.elig[cid] = {
+            cid = cid, spellID = base, viewer = v.label, types = list,
+            name = (base and ns.SpellName(base)) or "?",
+          }
+          n = n + 1
         end
       end
     end
   end
-  ns.Printf("  %d tracked cooldown(s).", shown)
+  sess.eligError = nil
+  return n
+end
+
+local function probeEligibility()
+  ensureSession()
+  local n, err = T.CaptureEligibility()
+  ns.Heading("CDM alert eligibility — C_CooldownViewer.GetValidAlertTypes(cooldownID)")
+  if not n then return ns.Printf("  |cffff4040%s|r", tostring(err)) end
+  local sess = T.session
+  for _, r in pairs(sess.elig) do
+    ns.Printf("  [%s] cid=%s %s |cffffffff%s|r", r.viewer, tostring(r.cid), r.name, r.types)
+  end
+  ns.Printf("  %d tracked cooldown(s) — |cff88ff88saved to the capture|r; "
+    .. "|cffffd100/reload|r then: wowkb.cdmp alerttape", n)
 end
 
 local function dumpTape()
   local sess = T.session
   if not sess then return ns.Print("  tape empty this session (nothing recorded yet)") end
   ns.Heading("Alert tape — this session")
+  ns.Printf("  ELG %d cooldown(s)%s", countOf(sess.elig),
+    sess.eligError and (" |cffff4040" .. sess.eligError .. "|r") or "")
   for _, r in pairs(sess.events) do
     ns.Printf("  EV  cid=%d %-14s %-6s n=%d", r.cid, r.event, r.combat, r.n)
   end
@@ -243,8 +279,13 @@ ns.RegisterCommand("alerts",
     arg = (arg or ""):lower():match("^%s*(%S*)")
     if arg == "on" then
       ns.db.alerttape_on = true
+      ensureSession()          -- opens the session AND captures the eligibility baseline
       ns.Print("alert tape |cff88ff88ON|r — the HUD must also be on (/cdmp hud) for the "
         .. "item hooks to install. Pull, then |cffffd100/reload|r to flush.")
+      local sess = T.session
+      ns.Printf("  eligibility baseline: %s",
+        sess.eligError and ("|cffff4040" .. sess.eligError .. "|r")
+          or ("|cff88ff88" .. countOf(sess.elig) .. " cooldown(s) captured|r"))
     elseif arg == "off" then
       ns.db.alerttape_on = false
       ns.Print("alert tape |cffff4040OFF|r")
