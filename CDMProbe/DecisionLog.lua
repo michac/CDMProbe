@@ -194,6 +194,18 @@ function DL.Render(pulse, guidance, drawList)
     if not terminated then csStr = shortOf(lastStart.spellID, lastStart.base) end
   end
 
+  -- DR — what State's domain-view filter REMOVED this pulse and why (field-fix A):
+  -- `SF:unlearned`, `Inc:no-icon`.  The filter's whole job is deleting rows, so it must
+  -- never delete one QUIETLY — a wrong signal that drops a real button has to be visible in
+  -- the trace, not merely absent from it.  Stable across ticks, so the change-only dedup
+  -- keeps it to one line, not one per pulse.
+  local drList = {}
+  for base, why in pairs(pulse.dropped or {}) do
+    drList[#drList + 1] = (abbrOf(base) or tostring(base)) .. ":" .. tostring(why)
+  end
+  table.sort(drList)
+  local drStr = (#drList > 0) and table.concat(drList, ",") or "-"
+
   -- G — Coach output by emphasis.  Cues keyed by BASE spellID (the re-layer).  ROTATION/
   -- LATE = winner (w:/w!), else w:- (the nil-winner smoking gun); ROTATION_FALLBACK = fb;
   -- SOON = a sorted list.
@@ -246,8 +258,8 @@ function DL.Render(pulse, guidance, drawList)
   table.sort(bList)
   local bStr = (#bList > 0) and table.concat(bList, " ") or "-"
 
-  return string.format("S{CD:%s | PR:%s | PW:%s | CS:%s} G{%s} B{%s}",
-    cdStr, prStr, pwStr, csStr, gStr, bStr)
+  return string.format("S{CD:%s | PR:%s | PW:%s | CS:%s | DR:%s} G{%s} B{%s}",
+    cdStr, prStr, pwStr, csStr, drStr, gStr, bStr)
 end
 
 --------------------------------------------------------------------------------

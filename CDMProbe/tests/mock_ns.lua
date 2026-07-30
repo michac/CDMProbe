@@ -148,7 +148,14 @@ _G.UnitPowerMax     = function() return 0 end
 _G.CreateColor      = function(r, g, b, a)
   return { r = r, g = g, b = b, a = a, GetRGB = function() return r, g, b end }
 end
-_G.Enum   = { PowerType = { SoulShards = 7, Mana = 0, Energy = 3 } }
+-- The alert-event enum values are Blizzard's, verbatim (Blizzard_APIDocumentationGenerated/
+-- CooldownViewerConstantsDocumentation.lua:43-55) — State branches on them by name, but the
+-- numbers are what a live TriggerAlertEvent carries, so the harness must not invent its own.
+_G.Enum   = { PowerType = { SoulShards = 7, Mana = 0, Energy = 3 },
+              CooldownViewerAlertEventType = {
+                Available = 1, PandemicTime = 2, OnCooldown = 3,
+                ChargeGained = 4, OnAuraApplied = 5, OnAuraRemoved = 6,
+              } }
 _G.C_Timer = { After = function() end,
                NewTimer = function() return { Cancel = function() end } end }
 _G.C_Spell = { GetSpellName = function(id) return "Spell:" .. tostring(id) end }
@@ -184,6 +191,14 @@ function H.fresh()
   H.specIndex = 1               -- default to Demonology so the resolver activates 266
   local ns = {}
   H.ns = ns
+
+  -- The chat surface Core.lua owns in-game.  Provided by the HARNESS rather than guarded at
+  -- the call site: `ns.X and ns.X(...)` on our OWN symbol is the idiom that turned a deleted
+  -- ns.ItemCooldownID into a silent total outage, so modules call ns.Print/Printf directly.
+  -- Captured so a spec can assert on what was announced.
+  H.printed = {}
+  ns.Print   = function(msg) H.printed[#H.printed + 1] = tostring(msg) end
+  ns.Printf  = function(fmt, ...) ns.Print(string.format(fmt, ...)) end
 
   -- Real, shipping implementations (data + lookups + Secret-Values-aware helpers).
   H.load("Util.lua")

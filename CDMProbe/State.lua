@@ -177,6 +177,77 @@ local cdBaseline = {}    -- cooldownID -> { ready, duration, startTime, at }
 -- not guessed.  readCd's combat path consults this as ground truth.
 local readyEdge = {}     -- cooldownID -> { ready = bool, at }
 
+-- OBSERVED AURA-LIFECYCLE truth (field-fix C), keyed by cooldownID — the second thing the
+-- alert choke point tells us that the corresponding STATE read refuses.  A tracked target
+-- DoT's pandemic fields (`pandemicStartTime`/`EndTime`) read SECRET in combat and
+-- `IsInPandemicTime` THROWS (measured 2026-07-30, knowledge/addon-dev/
+-- api-events-and-discovery.md §2.8) — but the `PandemicTime` ALERT fires normally.  So the
+-- refresh window is an EDGE LATCH over three observed transitions, never a poll:
+--   PandemicTime  -> "pandemic"  the aura entered its refresh window
+--   OnAuraApplied -> "fresh"     a NEW application landed (not a stack — §2.8)
+--   OnAuraRemoved -> "absent"    it fell off
+-- Structural, not rotational: State records the transition for whichever cooldownID raised
+-- it and names no spell.  Build resolves the cid to its base spellID (`dotEdges`), so the
+-- Coach — which decides in base spellIDs — never sees a cooldownID.  Named for the DoT case
+-- because `PandemicTime` can only ever fire for a target DoT; `OnAura*` also fires for
+-- self-buff entries, whose latch simply has no consumer.
+St.dotEdge = {}          -- cooldownID -> { state = "pandemic"|"fresh"|"absent", at }
+
+--------------------------------------------------------------------------------
+-- The CHARGE NAPKIN (field-fix C2) — an estimate over an EXACT seed, never a poll
+--------------------------------------------------------------------------------
+-- `ns.ReadCharges` is combat-gated by design (C_Spell.GetSpellCharges reads secret in
+-- restricted combat), so a charged ability's count vanishes exactly when it matters.  The
+-- alert channel closes the gap: `ChargeGained` fires IN COMBAT on any upward move of
+-- Blizzard's cached count (observed x10 across ~80s on Conflagrate, i.e. natural recharge
+-- AND cooldown-reset procs both land here — §2.8).  So:
+--     seed  exact from the OOC read      (the measurement)
+--     -1    on UNIT_SPELLCAST_SUCCEEDED  (we pressed it)
+--     +1    on the ChargeGained alert    (observed, not guessed)
+--     clamp [0, max]; an exact OOC re-read always overwrites the estimate.
+-- THE HONESTY RULE, mirroring HudNapkin: an OVERCOUNT claims a charge you do not have (it
+-- cues a press that will fail); an UNDERCOUNT only under-presses.  So every unresolvable
+-- case biases DOWN, and the estimate is surfaced with `source = "napkin"` so the brain can
+-- tell an estimate from a measurement.
+local chargeEst = {}     -- cooldownID -> { cur, max }
+local chargeCid = {}     -- base spellID -> the cooldownID of its CHARGED row (spend needs it)
+
+local function chargeSeed(cooldownID, cur, max)
+  if not (cooldownID and type(cur) == "number") then return end
+  chargeEst[cooldownID] = { cur = cur, max = (type(max) == "number") and max or nil }
+end
+
+local function chargeRead(cooldownID)
+  local e = cooldownID and chargeEst[cooldownID]
+  if not e then return nil end
+  return e.cur, e.max
+end
+
+-- A cast landed: spend one.  Floors at 0 — never negative, and never "we must have had
+-- more than we counted".
+local function chargeSpend(base)
+  local cid = base and chargeCid[base]
+  local e = cid and chargeEst[cid]
+  if not e then return end
+  e.cur = math.max(0, e.cur - 1)
+end
+
+-- An observed ChargeGained edge: credit one, clamped to max when we know it.  An unknown
+-- max cannot clamp, so it is left uncapped rather than clamped against a guessed cap —
+-- the edge itself is an observation, so crediting it is not speculation.
+local function chargeGain(cooldownID)
+  local e = cooldownID and chargeEst[cooldownID]
+  if not e then return end
+  local n = e.cur + 1
+  if e.max then n = math.min(e.max, n) end
+  e.cur = n
+end
+
+-- Test seam (the C2 spec drives the whole loop off synthetic pulses).
+St.Charges = { Seed = chargeSeed, Read = chargeRead, Spend = chargeSpend, Gain = chargeGain,
+               Bind = function(base, cid) if base and cid then chargeCid[base] = cid end end,
+               Reset = function() wipe(chargeEst); wipe(chargeCid) end }
+
 -- FOLD cache (W4 domain-view re-layer), keyed by cooldownID.  base-spellID -> cooldownID
 -- is N:1 (a summon is one Essential row + one TrackedBar/TrackedBuff row), and Build's
 -- domain view must group the N CDM rows of one ability under its base spellID.  In combat
@@ -281,13 +352,26 @@ local function readCd(live, base, cooldownID)
   return { state = "unknown", readable = false, source = "none" }
 end
 
--- charge{cur, max, readable}.  A banked charge means PRESSABLE whatever the recharge
--- timer says — the Coach's call to make; State just reports the pair honestly.
-local function readCharge(live, hasCharges)
+-- charge{cur, max, readable, source}.  A banked charge means PRESSABLE whatever the
+-- recharge timer says — the Coach's call to make; State just reports the pair honestly.
+--
+-- `source` is the same TRUST annotation the cd model carries: "live" = an exact read (OOC),
+-- "napkin" = the C2 edge-latched estimate (in combat, where the read is secret).  `readable`
+-- keeps mirroring `source == "live"`, so a consumer that only trusts measurements is
+-- unaffected by C2 and one that wants the estimate opts in by reading `cur`.
+local function readCharge(live, hasCharges, cooldownID)
   if not hasCharges then return { readable = true, cur = nil, max = 0 } end
   local cur, max = ns.ReadCharges(live)
-  if cur == nil then return { readable = false } end
-  return { readable = true, cur = ns.Stash(cur), max = ns.Stash(max) }
+  if cur ~= nil then
+    -- The exact read ALWAYS wins, and re-seeds the napkin (the combat-exit correction).
+    chargeSeed(cooldownID, cur, max)
+    return { readable = true, cur = ns.Stash(cur), max = ns.Stash(max), source = "live" }
+  end
+  local ecur, emax = chargeRead(cooldownID)
+  if ecur ~= nil then
+    return { readable = false, cur = ecur, max = emax, source = "napkin" }
+  end
+  return { readable = false }
 end
 
 -- aura{active, readable}.  Spec-agnostic: we ask the client whether the PLAYER has
@@ -511,10 +595,15 @@ end
 -- edge store and reads none of the old engine's state — a clean Stage-1 separation.
 -- Six alert types exist (Available=1, PandemicTime=2, OnCooldown=3, ChargeGained=4,
 -- OnAuraApplied=5, OnAuraRemoved=6 — Blizzard_APIDocumentationGenerated/
--- CooldownViewerConstantsDocumentation.lua:43-55).  The PIPELINE deliberately consumes only
--- the two settled ones; the other four are recorded by the temporary AlertTape instrument
--- (AlertTape.lua) so we can learn whether they fire in combat before depending on any of
--- them.  Keep that split: an unverified channel must not silently start driving readiness.
+-- CooldownViewerConstantsDocumentation.lua:43-55).
+--
+-- ⚠ ALL SIX ARE NOW CONSUMED (field-fixes C/C2, 2026-07-30).  The other four used to be
+-- recorded only by the temporary AlertTape instrument, because "an unverified channel must
+-- not silently start driving readiness".  That verification HAPPENED: a live capture
+-- confirmed five of the six firing in combat and pinned what each one means
+-- (knowledge/addon-dev/api-events-and-discovery.md §2.8, CONFIRMED IN-CLIENT), so they are
+-- promoted here on measurement, not on hope.  The rule stands for anything ELSE: measure
+-- first, then consume.
 local function onAlert(item, event)
   local A = Enum and Enum.CooldownViewerAlertEventType
   if not A then return end
@@ -535,14 +624,39 @@ local function onAlert(item, event)
   -- `/cdmp alerts on`.  pcall'd: a discovery instrument must never break the pipeline.
   if ns.AlertTape then pcall(ns.AlertTape.Record, item, event, cid) end
 
-  -- THE PIPELINE — only the two edges whose in-combat behaviour is settled.
+  -- THE PIPELINE.
   if St.consumers <= 0 then return end   -- gated like the old HUD's ns.Hud.on
-  if event ~= A.Available and event ~= A.OnCooldown then return end
   local now = GetTime()
-  local ready = (event == A.Available)
-  readyEdge[cid] = { ready = ready, at = now }
-  pushEvent({ kind = "ready_edge", cooldownID = cid, ready = ready, at = now })
+
+  -- READINESS (Phase 7b) — the two settled cooldown edges.
+  if event == A.Available or event == A.OnCooldown then
+    local ready = (event == A.Available)
+    readyEdge[cid] = { ready = ready, at = now }
+    pushEvent({ kind = "ready_edge", cooldownID = cid, ready = ready, at = now })
+    return
+  end
+
+  -- AURA LIFECYCLE (field-fix C) — the pandemic latch and its two clears.  Last edge wins
+  -- per cooldownID; Build resolves the cid to a base spellID for the Coach.
+  local st
+  if event == A.PandemicTime then st = "pandemic"
+  elseif event == A.OnAuraApplied then st = "fresh"
+  elseif event == A.OnAuraRemoved then st = "absent" end
+  if st then
+    St.dotEdge[cid] = { state = st, at = now }
+    pushEvent({ kind = "dot_edge", cooldownID = cid, state = st, at = now })
+    return
+  end
+
+  -- CHARGES (field-fix C2) — the only in-combat charge information there is.
+  if event == A.ChargeGained then
+    chargeGain(cid)
+    pushEvent({ kind = "charge_gained", cooldownID = cid, at = now })
+  end
 end
+
+St.OnAlert = onAlert     -- test seam: hooksecurefunc is a no-op off-game, so the specs
+                         -- drive the latch through the same function the hook calls.
 
 -- One hook per item INSTANCE (the methods are Mixin()-copied, so a hook on the
 -- shared mixin table would miss every already-created frame).  hooksecurefunc can
@@ -692,6 +806,10 @@ eframe:SetScript("OnEvent", function(_, event, a1, a2, a3)
       pushCast("succeeded", a3)
       local base = St.BaseOfCast(a3)
       if type(base) == "number" then spendStartShards[base] = nil end
+      -- The charge napkin's DEBIT half (C2): we pressed it, so one banked charge is gone.
+      -- Keyed off the base id because that is what the cast resolves to; the charged row's
+      -- cooldownID is bound during Build.  Floors at 0 — the undercount direction.
+      chargeSpend(base)
       pushEvent({ kind = "cast_succeeded", spellID = a3,
                   base = ns.Stash(St.BaseOfCast(a3)), at = GetTime() })
     end
@@ -815,6 +933,118 @@ St.InflightIncoming = inflightIncoming   -- test seam (multi-power proof)
 St.ProjectIncoming  = projectIncoming    -- test seam (multi-power proof)
 
 --------------------------------------------------------------------------------
+-- The DOMAIN VIEW fold (W4 re-layer, filtered by field-fix A) — PURE
+--------------------------------------------------------------------------------
+-- `abilities[base]` is documented as "the PRESSABLE representative row" of an ability.
+-- Until 2026-07-30 it was nothing of the sort: State anchors on the CDM DATABASE with
+-- `allowUnlearned = true` (see the header), so the fold happily promoted rows for spells
+-- the character has not talented and rows the Layout can never draw.  Both read `ready`
+-- forever — a hard cooldown that never runs — so they WIN the priority list and sit above
+-- every real press.  One live session logged **216 dropped Soul Fire cues** from exactly
+-- this: an untalented Soul Fire outranking the whole rotation, every GCD.
+--
+-- TWO SIGNALS, and the order matters:
+--   * `displayable` (PRIMARY) — an item frame exists for this cooldownID in the live
+--     viewers.  NO INFERENCE: a frame is there or it is not, and if it is not, the Binder
+--     has nothing to anchor to, so the cue would be dropped anyway.  This is the only
+--     signal that catches INCINERATE — known, talented, pressed constantly, and simply
+--     absent from the live tracked set.
+--   * `isKnown` (SECONDARY) — the CDM's own "the character has this spell" flag, captured
+--     since Phase 1 with zero consumers until now.  Catches the untalented rows
+--     (Soul Fire / Havoc / Channel Demonfire) that DO have no frame either, but this is
+--     the direct statement of the fact rather than a consequence of it.
+--
+-- WHY HERE AND NOT IN THE COACH.  `abilities` is the documented pressable view, and an
+-- ability with no icon is not pressable.  Filtering at the source fixes BOTH registered
+-- specs with no Coach edit and no spec edit — which is also why the existing branch
+-- oracles stay untouched and green.
+--
+-- ⚠ FAILURE DIRECTION, deliberately chosen.  The whole point is REMOVING rows, so a wrong
+-- signal removes a real button — the same class of harm as the nil-guard outage.  Three
+-- fences:
+--   1. `isKnown` is trusted only when it says FALSE.  nil (no info struct, a combat-secret
+--      read) is "we don't know", never "unlearned" — absence of a read is not evidence.
+--   2. The displayable filter is SKIPPED WHOLESALE when the frame map is empty (viewers not
+--      created yet, CDM unavailable).  An empty map must never mean "nothing is drawable".
+--   3. Every drop is REPORTED (`dropped[base] = why`), so the decision log shows it and a
+--      wrong filter is visible on the next capture rather than silent.
+--
+-- `dropped` only ever names an ability that WOULD have had a pressable row — a tracked-only
+-- entry (Demonic Core, a buff bar) has no pressable member by construction, which is the
+-- pre-existing exclusion and not a drop.
+--
+-- PURE: rows in, {abilities, dropped, dotEdges} out.  No client reads, no file locals —
+-- which is what lets state_domainview_spec arbitrate it off-game.
+local function baseOfRow(entry, fold)
+  return (type(entry.spellID) == "number" and entry.spellID)
+      or (fold and fold[entry.cooldownID])
+      or nil
+end
+
+local function dropReason(entry, filterDisplayable)
+  if entry.isKnown == false then return "unlearned" end
+  if filterDisplayable and entry.displayable == false then return "no-icon" end
+  return nil
+end
+
+-- The pressable representative of a row set: Essential outranks Utility; anything else
+-- (TrackedBuff / TrackedBar) is an input, never a press.
+local function pressableRep(rows)
+  for _, e in ipairs(rows) do if e.category == "Essential" then return e end end
+  for _, e in ipairs(rows) do if e.category == "Utility" then return e end end
+  return nil
+end
+
+local function domainView(cooldowns, fold, filterDisplayable, edges)
+  local abilities, dropped, dotEdges = {}, {}, {}
+
+  -- Group the raw rows by base spellID (base-spellID -> cooldownID is N:1 — a summon is one
+  -- Essential row plus one TrackedBar row; Immolate is one Essential CAST row plus one
+  -- BuffBar AURA row, and those two carry DIFFERENT base spellIDs, which is why the Coach
+  -- resolves its DoT across a candidate list rather than assuming one id).
+  local rowsByBase = {}
+  for _, entry in pairs(cooldowns) do
+    local base = baseOfRow(entry, fold)
+    if base then
+      local rows = rowsByBase[base]
+      if not rows then rows = {}; rowsByBase[base] = rows end
+      rows[#rows + 1] = entry
+      -- The aura-lifecycle latch, re-keyed cid -> base so the Coach never sees a cooldownID.
+      -- Newest wins when several of an ability's rows latched (both Immolate rows fire
+      -- PandemicTime — §2.8 — and either must resolve to the one answer).
+      local e = edges and edges[entry.cooldownID]
+      if e then
+        local prev = dotEdges[base]
+        if not prev or (type(e.at) == "number" and type(prev.at) == "number" and e.at >= prev.at) then
+          dotEdges[base] = e
+        end
+      end
+    end
+  end
+
+  for base, rows in pairs(rowsByBase) do
+    local kept, why = {}, nil
+    for _, e in ipairs(rows) do
+      local r = dropReason(e, filterDisplayable)
+      if r then why = why or r else kept[#kept + 1] = e end
+    end
+    local rep = pressableRep(kept)
+    if rep then
+      rep.display = { cooldownID = rep.cooldownID, category = rep.category }
+      rep.dot = dotEdges[base]        -- the row-level surface the brain reads
+      abilities[base] = rep
+    elseif why and pressableRep(rows) then
+      -- It WOULD have been a press; the filter is the only reason it is not.  Say so.
+      dropped[base] = why
+    end
+  end
+
+  return abilities, dropped, dotEdges
+end
+
+St.DomainView = domainView               -- test seam (the field-fix A/C proof)
+
+--------------------------------------------------------------------------------
 -- Build — the pulse
 --------------------------------------------------------------------------------
 -- Constructs the reduced picture for THIS instant.  `drain` (capture path) moves
@@ -837,10 +1067,23 @@ function St.Build(drain)
     local hasAura = info and info.hasAura and true or false
     local selfAura = info and info.selfAura and true or false
     local hasCharges = info and info.charges and true or false
+    -- ⚠ THREE-VALUED, and it MUST be built with an if.  The obvious one-liner
+    -- `info and (info.isKnown and true or false) or nil` is a Lua and/or trap: a FALSE
+    -- middle term falls through to the `or nil`, so `isKnown` could only ever read `true`
+    -- or `nil` — never `false`.  It shipped that way since W4 Phase 1 and went unnoticed
+    -- because the field had no consumer until field-fix A gave it one.  The three values are
+    -- load-bearing now: false = "the client says unlearned" (a drop), nil = "no info struct
+    -- / unreadable" (NOT a drop).
+    local isKnown
+    if info ~= nil then isKnown = info.isKnown and true or false end
 
     -- Build the inverse identity index as we go (B3).
     if base then St.baseOfCast[base] = base end
     if readable(live) then St.baseOfCast[live] = base or live end
+    -- Bind the charge napkin's base -> cooldownID edge (C2): the ChargeGained alert and the
+    -- OOC seed arrive keyed by cooldownID, a cast arrives keyed by spellID.  Only a CHARGED
+    -- row is bound, so there is nothing to disambiguate.
+    if hasCharges and base then chargeCid[base] = cooldownID end
 
     local linked = {}
     if info and type(info.linkedSpellIDs) == "table" then
@@ -867,11 +1110,15 @@ function St.Build(drain)
       selfAura   = selfAura,
       hasAura    = hasAura,
       charges    = hasCharges,
-      isKnown    = info and (info.isKnown and true or false) or nil,
+      isKnown    = isKnown,
+      -- CAN THE BINDER EVER DRAW THIS ROW?  A cooldownID with no item frame in any live
+      -- viewer has no anchor, so a cue on it is dropped by construction (field-fix A).
+      -- Structural and inference-free: the frame is there or it is not.
+      displayable = items[cooldownID] ~= nil,
       flags      = info and ns.Stash(info.flags) or nil,
       -- live facts (secrecy first-class)
       cd     = stampCd(cooldownID, readCd(live, base, cooldownID), now),
-      charge = readCharge(live, hasCharges),
+      charge = readCharge(live, hasCharges, cooldownID),
       aura   = readAura(hasAura, selfAura, activeByID, auraIds, auraSecret),
       glow   = readGlow(live),   -- the combat-readable proc-highlight signal
       -- buff-item frame state (isActive/shown) — measured for the aura entries, the
@@ -921,44 +1168,20 @@ function St.Build(drain)
   --                     rows (Demonic Core, Wild Imp — no pressable twin) do NOT enter.
   --   buffs[spellID]  = procs/auras PRESENT (a summon's TrackedBar isActive lands here as
   --                     the window-active signal), unioned with the flat active-aura scan.
+  --   dropped[base]   = an ability the FILTER removed and why (field-fix A) — never silent.
   -- (The named power bars ride `power` — keyed by Enum.PowerType name — which every
   --  consumer reads directly; the old `resources.shards` alias was retired in Phase 4.)
+  -- Tracked-only rows (Demonic Core, Wild Imp — no pressable twin) still do NOT enter
+  -- `abilities`; the fold gives that exclusion for free.
   local function baseOf(entry)
-    return (type(entry.spellID) == "number" and entry.spellID) or foldBase[entry.cooldownID]
+    return baseOfRow(entry, foldBase)
   end
 
-  local abilities = {}
-  do
-    -- Group the raw rows by base spellID, then pick each ability's pressable member.
-    local rowsByBase = {}
-    for _, entry in pairs(cooldowns) do
-      local base = baseOf(entry)
-      if base then
-        local rows = rowsByBase[base]
-        if not rows then rows = {}; rowsByBase[base] = rows end
-        rows[#rows + 1] = entry
-      end
-    end
-    for base, rows in pairs(rowsByBase) do
-      local rep
-      for _, e in ipairs(rows) do
-        if e.category == "Essential" then rep = e; break end
-      end
-      if not rep then
-        for _, e in ipairs(rows) do
-          if e.category == "Utility" then rep = e; break end
-        end
-      end
-      -- No pressable (Essential/Utility) member => a tracked-only ability (Core, Wild
-      -- Imp): not in `abilities` (its presence rides `buffs`).  The fold gives the
-      -- tracked-row EXCLUSION for free, which is all the fix needs (the TrackedBar
-      -- DURATION -> abilities[base].uptime is a documented follow-up, not this task).
-      if rep then
-        rep.display = { cooldownID = rep.cooldownID, category = rep.category }
-        abilities[base] = rep
-      end
-    end
-  end
+  -- ⚠ The displayable filter is applied only when we HAVE a frame map.  An empty map means
+  -- the viewers are not up (login, CDM disabled, a relayout mid-pulse), not that nothing on
+  -- the board can be drawn — filtering on it would empty `abilities` outright, which is the
+  -- exact shape of the v0.32.25 total outage.
+  local abilities, dropped = domainView(cooldowns, foldBase, next(items) ~= nil, St.dotEdge)
 
   -- buffs — presence, secrecy-guarded (an entry's aura/buff reads TRUE only when it was
   -- readable, so absence never becomes a false positive).  Keyed by the entry's base for
@@ -988,6 +1211,10 @@ function St.Build(drain)
     -- DOMAIN view (the re-layer) — the pipeline's input; the Coach decides on THIS.
     abilities = abilities,
     buffs     = buffs,
+    -- What the domain-view filter REMOVED, and why (field-fix A).  base spellID -> reason
+    -- ("unlearned" | "no-icon").  Rendered by the decision log so a filter that drops a
+    -- real button shows up in the trace instead of being silently absent.
+    dropped   = dropped,
     power  = power,
     -- Every active player buff, spec-agnostically — the Coach's authoritative proc
     -- source, and the diagnostic that reveals a proc's TRUE aura id when a CDM entry's
