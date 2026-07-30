@@ -50,6 +50,34 @@ local function readable(id)
   return type(id) == "number" and not ns.IsSecret(id)
 end
 
+-- The BINDING KEY.  cooldownID is the stable per-tracked-spell identity across relayouts
+-- and reorders, and it is what the ENTIRE pipeline keys on: State keys `cooldowns` by it,
+-- the Coach's cue keys resolve to it, and HudLayout.Build drops any entry whose cooldownID
+-- is not a number.  Secret-guarded like every identity read (B2) — `type(secret)=="number"`
+-- is TRUE, so an unguarded read would return a Secret Value that then taints every table
+-- it keys.  nil means "we don't know", never a poisoned number.
+--
+-- ⚠ RESTORED 2026-07-30 after a TOTAL HUD OUTAGE.  This function used to live in
+-- HudCore.lua, which was DELETED at the W4 cutover (d824557) — but HudLayout.Scan and
+-- ns.ItemBaseSpellID both still called it through an `ns.ItemCooldownID and …` nil guard.
+-- With the definition gone the guard silently evaluated to nil for EVERY icon, so
+-- HudLayout.Build dropped every entry, the Layout came back empty, the Binder dropped
+-- every cue, and the HUD drew nothing at all on any spec while still reporting itself ON.
+-- `/cdmp hud layout` said "no icons".  Two things hid it: the nil guards turned a missing
+-- function into a silent no-op instead of an error, and hudlayout_spec STUBS
+-- ns.ItemCooldownID, so busted stayed green while the shipped code could never work.  Both
+-- are fixed — the call sites now call it directly, and viewers_spec asserts the REAL
+-- function exists.  Do not re-add a nil guard here; a missing definition must fail loudly.
+function ns.ItemCooldownID(item)
+  if type(item) ~= "table" then return nil end
+  if readable(item.cooldownID) then return item.cooldownID end
+  if ns.HasMethod(item, "GetCooldownID") then
+    local ok, id = pcall(item.GetCooldownID, item)
+    if ok and readable(id) then return id end
+  end
+  return nil
+end
+
 -- Returns (spellID, sourceLabel).  Tries several strategies since the exact
 -- item->spell accessor is not fully documented for 12.0.
 function ns.ItemSpellID(item)
@@ -95,8 +123,10 @@ function ns.ItemBaseSpellID(item)
     if ok and readable(id) then return id end
   end
   -- Fallback: the C_CooldownViewer info table carries the un-overridden spellID.
-  local cdID = ns.ItemCooldownID and ns.ItemCooldownID(item) or item.cooldownID
-  if not readable(cdID) then cdID = nil end
+  -- Direct call, no nil guard — see the outage note on ns.ItemCooldownID above.  (It is
+  -- already secret-guarded and already tries item.cooldownID, so the old
+  -- `… or item.cooldownID` fallback only risked re-admitting a value the guard refused.)
+  local cdID = ns.ItemCooldownID(item)
   if cdID and C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo then
     local ok, info = pcall(C_CooldownViewer.GetCooldownViewerCooldownInfo, cdID)
     if ok and type(info) == "table" and readable(info.spellID) then

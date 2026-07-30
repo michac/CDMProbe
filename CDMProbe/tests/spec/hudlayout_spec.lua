@@ -6,6 +6,16 @@
 --                     unreadable cid dropped, first cid wins.
 --   * Scan (impure) — the icon-viewer walk, driven through stubbed ns accessors, so
 --                     the two-viewer sweep + id resolution are exercised off-game.
+--
+-- ⚠ THE STUBS BELOW HID A TOTAL HUD OUTAGE — read before trusting a green run here.
+-- Scan's tests stub `ns.ItemCooldownID` / `ns.ItemBaseSpellID`.  That is legitimate for
+-- arbitrating Scan's own logic, but it means this file stays GREEN even when the addon
+-- does not ship those functions at all — which is exactly what happened when
+-- ns.ItemCooldownID was deleted along with HudCore at the W4 cutover (the Layout came back
+-- empty, the Binder dropped every cue, and nothing drew on any spec).  A stub proves the
+-- caller works GIVEN the collaborator; it can never prove the collaborator EXISTS.
+-- **`viewers_spec.lua` is the file that proves that** — it loads the real Viewers.lua and
+-- runs Scan with no id stubs at all.  Keep both.
 local dir = (debug.getinfo(1, "S").source:match("^@(.*[/\\])")) or "./"
 local H = dofile(dir .. "../mock_ns.lua")
 

@@ -77,9 +77,16 @@ function L.Scan()
     if viewer then
       local items = ns.GetItemFrames and ns.GetItemFrames(viewer) or {}
       for _, item in ipairs(items) do
+        -- DIRECT calls, deliberately NOT `ns.X and ns.X(item)`.  Those nil guards caused a
+        -- total HUD outage (see the note on ns.ItemCooldownID in Viewers.lua): when the
+        -- definition was deleted with HudCore at the W4 cutover, the guard turned a missing
+        -- function into `cooldownID = nil` for every icon, Build dropped every entry, and
+        -- the HUD silently drew nothing while still reporting ON.  Both resolvers live in
+        -- Viewers.lua, which the .toc loads well before this file, so a nil here is a
+        -- genuine bug and must throw rather than quietly empty the Layout.
         entries[#entries + 1] = {
-          cooldownID = ns.ItemCooldownID and ns.ItemCooldownID(item) or nil,
-          spellID    = ns.ItemBaseSpellID and ns.ItemBaseSpellID(item) or nil,
+          cooldownID = ns.ItemCooldownID(item),
+          spellID    = ns.ItemBaseSpellID(item),
           frame      = item,
         }
       end
