@@ -198,6 +198,75 @@ describe("State domain view — the pressable filter (field-fix A)", function()
   end)
 
   ------------------------------------------------------------------------------
+  -- `charge.charged` — the MEASURED "does this have a charge pool", which is what the
+  -- brain keys on.  It used to be gated on the CDM struct's `charges` flag, making the
+  -- whole napkin depend on one flag being right, with no symptom if it was not: a
+  -- never-seeded napkin is indistinguishable from an ability with no charges.
+  ------------------------------------------------------------------------------
+  describe("St.Build charge reads", function()
+    local CID_CONF = 910
+    local function withCharges(cur, max)
+      _G.Enum.CooldownViewerCategory = { Essential = 0 }
+      _G.C_CooldownViewer = {
+        GetCooldownViewerCategorySet = function(v) return v == 0 and { CID_CONF } or {} end,
+        -- ⚠ `charges = false` ON PURPOSE: Conflagrate genuinely has 2 charges, so this is
+        -- the struct flag being wrong/absent — the case the old gate turned into silence.
+        GetCooldownViewerCooldownInfo = function() return { spellID = CONFLAGRATE,
+                                                            isKnown = true, charges = false } end,
+      }
+      _G.C_Spell.GetSpellCharges = function()
+        return { currentCharges = cur, maxCharges = max }
+      end
+      ns.VIEWERS = { { frame = "EssentialCooldownViewer" } }
+      ns.GetViewer     = function() return { n = 1 } end
+      ns.GetItemFrames = function() return { { cooldownID = CID_CONF } } end
+      ns.OnLogin()
+    end
+
+    after_each(function()
+      _G.C_CooldownViewer = nil
+      _G.Enum.CooldownViewerCategory = nil
+      _G.C_Spell.GetSpellCharges = nil
+    end)
+
+    it("reports a real charge pool even when the struct flag says otherwise", function()
+      withCharges(1, 2)
+      local ch = St.Build(false).abilities[CONFLAGRATE].charge
+      assert.is_true(ch.charged)
+      assert.equals(1, ch.cur)
+      assert.equals(2, ch.max)
+      assert.equals("live", ch.source)
+    end)
+
+    it("a max of 1 is NOT a charge pool", function()
+      withCharges(1, 1)
+      local ch = St.Build(false).abilities[CONFLAGRATE].charge
+      assert.is_nil(ch.charged)
+      assert.equals(0, ch.max)
+    end)
+
+    it("seeds the napkin off the exact read, and binds it for the spend", function()
+      withCharges(2, 2)
+      St.Build(false)
+      assert.equals(2, (St.Charges.Read(CID_CONF)))
+      St.Charges.Spend(CONFLAGRATE)          -- the binding must have happened in Build
+      assert.equals(1, (St.Charges.Read(CID_CONF)))
+    end)
+
+    it("falls back to the napkin estimate once the live read goes dark", function()
+      withCharges(2, 2)
+      St.Build(false)                        -- seed OOC
+      _G.C_Spell.GetSpellCharges = nil       -- combat: the read refuses
+      St.Charges.Spend(CONFLAGRATE)
+      local ch = St.Build(false).abilities[CONFLAGRATE].charge
+      assert.is_true(ch.charged)
+      assert.equals(1, ch.cur)
+      assert.equals("napkin", ch.source)
+      assert.is_false(ch.readable)           -- an estimate is never laundered as a read
+    end)
+  end)
+
+  ------------------------------------------------------------------------------
   -- The point of the whole phase: the ROTATION falls through instead of vanishing.
   ------------------------------------------------------------------------------
   describe("the Coach falls through to the next line", function()

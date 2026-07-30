@@ -265,9 +265,28 @@ function spec:Context(state, env)
     local cur = num(ch.cur)
     return (cur ~= nil and cur >= 1) or false
   end
+  -- ⚠ FOR A CHARGED ABILITY THE COUNT IS AUTHORITATIVE — the cooldown state is NOT, and
+  -- trusting it is what made the HUD recommend Conflagrate at ZERO charges in the first live
+  -- pass.  The mechanism, measured: the CDM raises `Available` every time a CHARGE is
+  -- restored, but for a charged ability it never raises `OnCooldown` at all (capture: cid
+  -- 18860 Available x7, OnCooldown x0, while eligible for both).  So State's ready-edge
+  -- latches true on the first charge and is never cleared, and `cd` reads `ready` forever —
+  -- 190 of 194 log lines said `Conf=R`.  The napkin cannot rescue it either: Conflagrate's
+  -- `RecoveryTime` is 0 in DB2 (the recharge lives on ChargeCategory 672), so the
+  -- base-cooldown countdown is 0 and the just-cast guard never fires.
+  --
+  -- Hence: if we have a count for a charge pool, it DECIDES. Only when there is no count at
+  -- all do we fall back to the cooldown read.  This also keeps the napkin's honesty rule
+  -- doing its job — an undercount holds a charge we have (safe), and can no longer be
+  -- overridden by a stale `ready`.
   local function usable(base)
     local rec = base and factsByBase[base]
     if not rec then return false end
+    local ch = abilities[base] and abilities[base].charge
+    if ch and ch.charged then
+      local cur = num(ch.cur)
+      if cur ~= nil then return cur >= 1 end
+    end
     return rec.probablyUp or chargeBanked(base)
   end
   ctx.soulFireUsable    = usable(S.SOUL_FIRE)

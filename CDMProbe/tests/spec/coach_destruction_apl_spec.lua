@@ -312,13 +312,46 @@ describe("Destruction rotation list (from specs/destruction/rotation.md)", funct
                                     shards = 3 }).cid)
     end)
 
+    ------------------------------------------------------------------------
+    -- ⚠ FROM THE FIRST LIVE PASS: the HUD recommended Conflagrate at ZERO charges.
+    -- For a charged ability the CDM raises `Available` on every charge RESTORED and
+    -- never raises `OnCooldown` (capture: cid 18860 Available x7 / OnCooldown x0), so
+    -- State's ready-edge latches true forever and `cd` reads ready — 190 of 194 log
+    -- lines said `Conf=R`.  A count, when we have one, must therefore OUTRANK it.
+    ------------------------------------------------------------------------
+    it("is NOT usable at zero charges even while the cooldown reads READY", function()
+      assert.equals(ID.CB, winner({ conflagrate = cdReady(),
+                                    confCharge = { readable = true, cur = 0, max = 2,
+                                                   charged = true, source = "live" },
+                                    shards = 3 }).cid)
+    end)
+
+    it("is not usable at zero charges on a NAPKIN count either", function()
+      assert.equals(ID.CB, winner({ conflagrate = cdReady(),
+                                    confCharge = { readable = false, cur = 0, max = 2,
+                                                   charged = true, source = "napkin" },
+                                    shards = 3 }).cid)
+    end)
+
+    it("a count of 1 IS a press even while the cooldown reads far from ready", function()
+      assert.equals(ID.CONF, winner({ conflagrate = cdFar(),
+                                      confCharge = { readable = true, cur = 1, max = 2,
+                                                     charged = true, source = "live" },
+                                      shards = 3 }).cid)
+    end)
+
+    it("with NO count at all it still falls back to the cooldown read", function()
+      -- The un-seeded case must not become "never pressable".
+      assert.equals(ID.CONF, winner({ conflagrate = cdReady(), shards = 3 }).cid)
+    end)
+
     it("an IN-COMBAT napkin estimate counts as banked (field-fix C2)", function()
       -- The exact read is secret in combat, so before C2 a banked charge was invisible for
       -- the whole pull.  The estimate is trusted because it is fenced to UNDERCOUNT: it can
       -- only ever hold a charge we really have, never claim one we do not.
       assert.equals(ID.CONF, winner({ conflagrate = cdFar(),
                                       confCharge = { readable = false, cur = 1, max = 2,
-                                                     source = "napkin" },
+                                                     charged = true, source = "napkin" },
                                       shards = 3 }).cid)
     end)
 

@@ -194,6 +194,25 @@ function DL.Render(pulse, guidance, drawList)
     if not terminated then csStr = shortOf(lastStart.spellID, lastStart.base) end
   end
 
+  -- CH — the charge count for every ability that HAS a charge pool, `Conf=1/2` (an exact
+  -- read) or `Conf~1/2` (the napkin estimate).  Added after the first live pass, where the
+  -- HUD recommended Conflagrate at zero charges and the log could not show it: every line
+  -- said `Conf=R`, because for a charged ability the CDM raises `Available` per charge and
+  -- never raises `OnCooldown`.  A decision input the trace cannot see is a defect waiting to
+  -- be un-diagnosable.
+  local chList = {}
+  for _, base in ipairs(bases) do
+    local ch = abilities[base].charge
+    if ch and ch.charged then
+      local code = abbrOf(base) or tostring(base)
+      local cur, mx = num(ch.cur), num(ch.max)
+      chList[#chList + 1] = code .. (ch.source == "napkin" and "~" or "=")
+        .. (cur and tostring(cur) or "?") .. "/" .. (mx and tostring(mx) or "?")
+    end
+  end
+  table.sort(chList)
+  local chStr = (#chList > 0) and table.concat(chList, ",") or "-"
+
   -- DR — what State's domain-view filter REMOVED this pulse and why (field-fix A):
   -- `SF:unlearned`, `Inc:no-icon`.  The filter's whole job is deleting rows, so it must
   -- never delete one QUIETLY — a wrong signal that drops a real button has to be visible in
@@ -258,8 +277,8 @@ function DL.Render(pulse, guidance, drawList)
   table.sort(bList)
   local bStr = (#bList > 0) and table.concat(bList, " ") or "-"
 
-  return string.format("S{CD:%s | PR:%s | PW:%s | CS:%s | DR:%s} G{%s} B{%s}",
-    cdStr, prStr, pwStr, csStr, drStr, gStr, bStr)
+  return string.format("S{CD:%s | CH:%s | PR:%s | PW:%s | CS:%s | DR:%s} G{%s} B{%s}",
+    cdStr, chStr, prStr, pwStr, csStr, drStr, gStr, bStr)
 end
 
 --------------------------------------------------------------------------------

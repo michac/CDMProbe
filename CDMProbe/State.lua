@@ -359,18 +359,29 @@ end
 -- "napkin" = the C2 edge-latched estimate (in combat, where the read is secret).  `readable`
 -- keeps mirroring `source == "live"`, so a consumer that only trusts measurements is
 -- unaffected by C2 and one that wants the estimate opts in by reading `cur`.
+-- ⚠ THE READ IS NOT GATED ON `hasCharges` (fixed after the 2026-07-30 live pass).  It was,
+-- and that made the whole napkin dependent on one CDM struct flag being right — a single
+-- point of silent failure with no symptom, since a never-seeded napkin looks exactly like an
+-- ability with no charges.  `ns.ReadCharges` already short-circuits on InCombatLockdown, so
+-- the extra attempt costs nothing in combat and one guarded call per row out of it.
+-- `charged` is the honest, MEASURED answer to "does this thing have a charge pool" — a live
+-- max > 1 — and it is what the brain keys on, rather than the flag.
 local function readCharge(live, hasCharges, cooldownID)
-  if not hasCharges then return { readable = true, cur = nil, max = 0 } end
   local cur, max = ns.ReadCharges(live)
   if cur ~= nil then
-    -- The exact read ALWAYS wins, and re-seeds the napkin (the combat-exit correction).
-    chargeSeed(cooldownID, cur, max)
-    return { readable = true, cur = ns.Stash(cur), max = ns.Stash(max), source = "live" }
+    if type(max) == "number" and max > 1 then
+      -- The exact read ALWAYS wins, and re-seeds the napkin (the combat-exit correction).
+      chargeSeed(cooldownID, cur, max)
+      return { readable = true, cur = ns.Stash(cur), max = ns.Stash(max),
+               source = "live", charged = true }
+    end
+    return { readable = true, cur = nil, max = 0 }   -- read fine; no charge pool to report
   end
   local ecur, emax = chargeRead(cooldownID)
   if ecur ~= nil then
-    return { readable = false, cur = ecur, max = emax, source = "napkin" }
+    return { readable = false, cur = ecur, max = emax, source = "napkin", charged = true }
   end
+  if not hasCharges then return { readable = true, cur = nil, max = 0 } end
   return { readable = false }
 end
 
@@ -1091,10 +1102,8 @@ function St.Build(drain)
     -- Build the inverse identity index as we go (B3).
     if base then St.baseOfCast[base] = base end
     if readable(live) then St.baseOfCast[live] = base or live end
-    -- Bind the charge napkin's base -> cooldownID edge (C2): the ChargeGained alert and the
-    -- OOC seed arrive keyed by cooldownID, a cast arrives keyed by spellID.  Only a CHARGED
-    -- row is bound, so there is nothing to disambiguate.
-    if hasCharges and base then chargeCid[base] = cooldownID end
+    -- (the charge napkin's base -> cooldownID binding is done below, off the MEASURED
+    --  `charge.charged` rather than the struct flag — see readCharge)
 
     local linked = {}
     if info and type(info.linkedSpellIDs) == "table" then
@@ -1102,6 +1111,12 @@ function St.Build(drain)
         if readable(id) then linked[#linked + 1] = id end
       end
     end
+
+    -- Charges, and the napkin's base -> cooldownID edge.  The alert and the OOC seed arrive
+    -- keyed by cooldownID; a cast arrives keyed by spellID.  Bound off the MEASURED `charged`
+    -- (a live max > 1), so a wrong struct flag cannot silently disable the napkin.
+    local charge = readCharge(live, hasCharges, cooldownID)
+    if charge.charged and base then chargeCid[base] = cooldownID end
 
     -- The entry's associated aura ids (no nils/holes — ipairs-safe), for the scan match.
     local auraIds = {}
@@ -1129,7 +1144,7 @@ function St.Build(drain)
       flags      = info and ns.Stash(info.flags) or nil,
       -- live facts (secrecy first-class)
       cd     = stampCd(cooldownID, readCd(live, base, cooldownID), now),
-      charge = readCharge(live, hasCharges, cooldownID),
+      charge = charge,
       aura   = readAura(hasAura, selfAura, activeByID, auraIds, auraSecret),
       glow   = readGlow(live),   -- the combat-readable proc-highlight signal
       -- buff-item frame state (isActive/shown) — measured for the aura entries, the
