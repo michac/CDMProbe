@@ -61,7 +61,7 @@ local DIM, LIT = 0.40, 1.00
 -- this module's default rather than a shared contract constant.
 local ANCHOR = { point = "CENTER", relPoint = "CENTER", dx = 0, dy = -52 }
 
--- Terminal/CRT chrome: a thin cool-grey edge, matching the rendertest rig's placeholder
+-- Terminal/CRT chrome: a thin cool-grey edge, matching the `/cdmp rt` rig's placeholder
 -- border.  Deliberately NOT a Blizzard icon border — the row should be apparent as the HUD's.
 local EDGE = { 0.40, 0.40, 0.46, 1 }
 

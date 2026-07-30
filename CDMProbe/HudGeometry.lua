@@ -2,7 +2,7 @@
 --
 -- WHY THIS EXISTS (docs/archive/w4-phase4-binder-plan.md, resolution #4).  Two producers
 -- must emit the SAME DrawList geometry: the Binder (live, Guidance -> DrawList) and
--- the Renderer's hand-authored `/cdmp rendertest` fixtures (the reference the
+-- the Renderer's hand-authored `/cdmp rt` fixtures (the reference the
 -- Renderer was dialled in against).  If each carried its own dot-corner / glow rule /
 -- panel + bar positions they would drift, and the Phase-4 close-the-loop test
 -- (golden Guidance -> Binder -> the exact fixture) would compare two hand-copied

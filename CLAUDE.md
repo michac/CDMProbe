@@ -26,7 +26,7 @@ Retired directions, code **deleted** (recover from git history if revived):
 - **The old HUD engine** — HudCore/HudState/HudScore/HudBoard/HudChrome + the
   opener/burst/pane/queue/float widgets and the HudLog pull recorder — **deleted at
   the W4 cutover (2026-07-28)** once the pipeline (`/cdmp hud`) replaced it. `/cdmp hud`
-  is now the pipeline; `/cdmp hud2` is a transitional alias.
+  is now the pipeline.
 - Green-phosphor icon-tint era (`/cdmp crt`, `HudTint.lua`) + the "no-icons, solid
   color block" experiments (`/cdmp skin`, `/cdmp resource`; `Skin.lua` + `Resource.lua`) —
   **deleted in W4a (2026-07-24)**.
@@ -59,12 +59,11 @@ Design context + status live in the parent workspace at
   Layout, and the Renderer draws OUR OWN textures anchored to Blizzard's icons —
   which stay **native and untouched**. Toggling off clears every dot, leaving
   Blizzard's UI pixel-clean. Auto-enables on login if it was on. (Reclaimed `/cdmp hud`
-  at the W4 cutover; **`/cdmp hud2` is a transitional alias** for the same handler.)
+  at the W4 cutover.)
   - `hud on` / `hud off` — set it explicitly (bare `hud` toggles).
   - `hud status` — the pipeline readout: ON/OFF, State ingestion consumer count, and
     the last tick's cue count / any tick error. The decision trace is in
-    `CDMProbeDB.decisionlog` (extract with `wowkb.cdmp decisionlog`; `hud2log` is a
-    back-compat alias).
+    `CDMProbeDB.decisionlog` (extract with `wowkb.cdmp decisionlog`).
   - `hud layout` — dump the live Layout (icon viewers -> cooldownID -> spellID +
     the State-resolved keybind) — the row to read when a cue's key is missing.
 - `single` / `multi` / `aoe` — the target-mode toggle (`Mode.lua`): idempotent
@@ -75,7 +74,11 @@ Design context + status live in the parent workspace at
   see what you drag; locked = only the icon, and the frame eats no clicks. The position
   saves to `CDMProbeDB.virtualPanel` on drop. Refuses to CREATE the panel in combat (frame
   discipline) — an already-created one unlocks fine.
-- `rendertest` — Phase-3 draw test: render a hand-authored DrawList fixture (`Renderer.lua`).
+- `rt` — render test: draw a hand-authored DrawList fixture (`Renderer.lua`). `states`
+  (default) is the reference card — every cue state in a row, captioned, over real spell
+  art; `list` names the rest, `rotate` hops one cue across 5 panels, `off` clears.
+  ⚠ It exercises `R:Draw` ONLY — the proc-glow squares are applied post-Draw by the test
+  rig, and `HudVirtual`'s own panel is not in it at all.
 - `reset` — turn the HUD off.
 
 *(The `skin` / `resource` solid-colour-block directions were deleted in W4a
@@ -214,7 +217,7 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   `/cdmp panel`, the drag, and the saved position in
                                   `ns.db.virtualPanel` (BucketBinds Console.lua's shape).
     HudDriver.lua                 the LIVE driver: the ~10 Hz ticker that runs the
-                                  pipeline + the `/cdmp hud` command (alias `hud2`).
+                                  pipeline + the `/cdmp hud` command.
     DecisionLog.lua               the decision log: one greppable `S{} G{} B{}` line
                                   per decision change -> CDMProbeDB.decisionlog.
                                   Short-codes come from per-spec `abbr`/`spec.log`.
@@ -319,7 +322,7 @@ change. Use it to answer "why does `/cdmp hud` show nothing here?":
 
 ```bash
 cd ~/code/fun/wow/tools
-uv run python -m wowkb.cdmp decisionlog   # → raw/cdmp-decision.log  (hud2log is an alias)
+uv run python -m wowkb.cdmp decisionlog   # → raw/cdmp-decision.log
 ```
 
 *(The old `wowkb.cdmp check|show|diff` probe-assertion suite + `probe-baseline.json` were

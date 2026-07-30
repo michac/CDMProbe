@@ -479,7 +479,7 @@ end
 -- Draw path above.  It builds real placeholder icon frames, registers them under
 -- fake handles, and renders a HAND-AUTHORED DrawList fixture through a Renderer.
 -- No game decisions — just placeholder frames + fixtures + Renderer, the exact
--- shape Phase 4's Binder will one day produce.  Wired to `/cdmp rendertest`
+-- shape Phase 4's Binder will one day produce.  Wired to `/cdmp rt`
 -- (registered in Core.lua).  This is Phase 3's pixel confirmation: dial the visual
 -- language in against representative golden states before the producer exists.
 --------------------------------------------------------------------------------
@@ -733,18 +733,18 @@ local function startRotate()
   ns._renderTestTicker = C_Timer.NewTicker(ROTATE_INTERVAL, step)
 end
 
--- `/cdmp rendertest [<name>|inventory|rotate|off|list]` — render a fixture; bare =
+-- `/cdmp rt [<name>|inventory|rotate|off|list]` — render a fixture; bare =
 -- the first one (the inventory reference card).
 function ns.RenderTest(arg)
   arg = (arg or ""):gsub("^%s+", ""):gsub("%s+$", ""):lower()
   if arg == "list" then
-    ns.Heading("rendertest views")
+    ns.Heading("rt — render-test views")
     ns.Print("  |cff88ff88states|r — every cue state + the native proc glow, gold & recolored (default)")
     for _, name in ipairs(FIXTURE_ORDER) do
       if name ~= "states" then ns.Printf("  |cff88ff88%s|r", name) end
     end
     ns.Print("  |cff88ff88rotate|r — one cue hopping across 5 panels (live)")
-    ns.Print("usage: |cffffffff/cdmp rendertest <name>|r | rotate | off")
+    ns.Print("usage: |cffffffff/cdmp rt <name>|r | rotate | off")
     return
   end
   stopRotate()                               -- any view change cancels a live rotate
@@ -754,25 +754,25 @@ function ns.RenderTest(arg)
       ns._renderTestRig.renderer:Draw({})    -- clear every dot / panel / pip
       ns._renderTestRig.container:Hide()
     end
-    ns.Print("rendertest: off")
+    ns.Print("rt: off")
     return
   end
   if arg == "rotate" then
     startRotate()
-    ns.Printf("rendertest: |cffffffffrotate|r (5 panels, %.1fs) — |cffffffff/cdmp rendertest off|r to stop",
+    ns.Printf("rt: |cffffffffrotate|r (5 panels, %.1fs) — |cffffffff/cdmp rt off|r to stop",
       ROTATE_INTERVAL)
     return
   end
   if arg == "" then arg = FIXTURE_ORDER[1] end
   local fx = FIXTURES[arg]
   if not fx then
-    ns.Printf("unknown view '%s' — try |cffffffff/cdmp rendertest list|r", arg)
+    ns.Printf("unknown view '%s' — try |cffffffff/cdmp rt list|r", arg)
     return
   end
   local rig = buildRig(fx.icons, fx.captions)
   rig.container:Show()
   rig.renderer:Draw(fx.drawList)
   applyProcGlow(rig, fx.procGlow)            -- native glow on top (impure; post-Draw)
-  ns.Printf("rendertest: |cffffffff%s|r (%d icon%s) — |cffffffff/cdmp rendertest off|r to clear",
+  ns.Printf("rt: |cffffffff%s|r (%d icon%s) — |cffffffff/cdmp rt off|r to clear",
     arg, fx.icons, fx.icons == 1 and "" or "s")
 end

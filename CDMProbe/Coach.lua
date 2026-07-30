@@ -33,9 +33,9 @@
 -- branch-coverage spec (busted coach_apl_spec) arbitrate it — the independent oracle
 -- authored from apl-prototype/pseudocode.md (the golden corpus retired W4 Phase 8, its
 -- rotation-gate role replaced by that per-branch spec).  Wired live behind
--- `/cdmp hud2` (the Phase-5c driver: State -> Coach -> Binder -> Renderer), running
--- PARALLEL to the old default `/cdmp hud` (HudBoard/HudScore), which stays until the
--- Phase-5e cutover.
+-- `/cdmp hud` — the pipeline driver (State -> Coach -> Binder -> Renderer).  It ran
+-- parallel to the old HudBoard/HudScore engine during W4 Phase 5c; that engine was deleted
+-- at the cutover and this is the sole path now.
 --
 -- SPEC-AGNOSTIC (Phase 2): the Coach is now a GENERIC SHELL — Classify / Emit /
 -- ResourceBars / Sequence + the Compute orchestration — that any spec drives.  The

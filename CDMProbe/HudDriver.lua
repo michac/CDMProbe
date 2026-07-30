@@ -7,7 +7,8 @@
 --       (pulse)         (Guidance)          (DrawList)                         (pixels)
 --
 -- This IS the HUD now: the W4 cutover retired the old HudChrome/HudBoard/HudScore engine
--- and reclaimed `/cdmp hud` for the pipeline (`hud2` stays as a transitional alias).
+-- and reclaimed `/cdmp hud` for the pipeline.  The transitional `hud2` alias and its two
+-- one-shot login migrations were dropped in v0.32.34; nothing is called `hud2` any more.
 -- `/cdmp hud` toggles it; `/cdmp hud off` clears it, leaving Blizzard's UI pixel-clean.
 --
 -- THE TRIGGER (reuse the poll cadence).  A dedicated ~10 Hz ticker rebuilds the pulse
@@ -125,7 +126,7 @@ local function safeTick()
   if ok then
     D.lastError = nil
   else
-    D.lastError = tostring(err)   -- surfaced by `/cdmp hud2 status`, never spammed
+    D.lastError = tostring(err)   -- surfaced by `/cdmp hud status`, never spammed
   end
 end
 
@@ -164,7 +165,7 @@ local function dumpLayout()
   -- The keybind the cue will actually use comes from STATE (stitched by cooldownID), so
   -- show that, not a re-lookup — this is the row to read when a key is missing.
   local cds = (ns.State and ns.State.Build) and (ns.State.Build(false).cooldowns or {}) or {}
-  ns.Heading("HUD2 live Layout (icon viewers -> cooldownID -> spellID + State keybind)")
+  ns.Heading("HUD live Layout (icon viewers -> cooldownID -> spellID + State keybind)")
   local ids = {}
   for cid in pairs(layout) do ids[#ids + 1] = cid end
   table.sort(ids)
@@ -206,8 +207,8 @@ end
 --------------------------------------------------------------------------------
 -- Command
 --------------------------------------------------------------------------------
--- THE `/cdmp hud` command (reclaimed at the W4 cutover; `hud2` kept as a transitional
--- alias for muscle memory / macros).  Both names dispatch the same handler.
+-- THE `/cdmp hud` command (reclaimed at the W4 cutover; the transitional alias that carried
+-- muscle memory across it was dropped in v0.32.34).
 local function hudCommand(rest)
   rest = (rest or ""):lower()
   if rest:find("layout") then return dumpLayout() end
@@ -219,7 +220,6 @@ end
 ns.RegisterCommand("hud",
   "the HUD — the W4 pipeline (State -> Coach -> Binder -> Renderer). 'hud on|off' set it; 'hud layout' dumps the live Layout; 'hud status' the readout.",
   hudCommand)
-ns.RegisterCommand("hud2", "alias of /cdmp hud (transitional — the pipeline reclaimed /cdmp hud at the W4 cutover).", hudCommand)
 
 -- /cdmp reset — turn the HUD off.  (The old engine + the probe that also hung off this
 -- command are gone; the HUD is the only "experiment" left to reset.)
@@ -231,24 +231,12 @@ end)
 local prevOnLogin = ns.OnLogin
 function ns.OnLogin()
   if prevOnLogin then prevOnLogin() end
-  -- Reclaim ns.db.hud as the pipeline's enable BOOL (W4 cutover).  The retired old
-  -- engine stored ns.db.hud as a SETTINGS TABLE, and this pipeline stored its enable
-  -- state in ns.db.hud2.  Drop the stale old table first, then fold a prior hud2 bool in.
-  if ns.db then
-    if type(ns.db.hud) == "table" then ns.db.hud = nil end
-    if ns.db.hud2 ~= nil then
-      ns.db.hud = ns.db.hud2 and true or false
-      ns.db.hud2 = nil
-    end
-    -- Decision-log rename (Phase 4): fold a prior `hud2log` store into `decisionlog`.
-    -- One-shot + idempotent — only moves when there is old data and no new data yet.
-    -- (Distinct from the `hud2` bool above: this is the LOG ring, `Hud2Log` -> `DecisionLog`.)
-    if type(ns.db.hud2log) == "table" and #ns.db.hud2log > 0
-        and (type(ns.db.decisionlog) ~= "table" or #ns.db.decisionlog == 0) then
-      ns.db.decisionlog = ns.db.hud2log
-    end
-    ns.db.hud2log = nil
-  end
+  -- `ns.db.hud` is the pipeline's enable BOOL (reclaimed at the W4 cutover from the retired
+  -- old engine, which stored a SETTINGS TABLE under the same key).  The table-shaped value is
+  -- still dropped on sight — it is a type confusion, not a version we can read.
+  -- (The two one-shot migrations of the W4-era keys that lived here were removed in
+  --  v0.32.34, verified folded: neither key remains in SavedVariables.)
+  if ns.db and type(ns.db.hud) == "table" then ns.db.hud = nil end
   if ns.db and ns.db.hud then
     C_Timer.After(1.0, function() ns.SetHud(true) end)
   end

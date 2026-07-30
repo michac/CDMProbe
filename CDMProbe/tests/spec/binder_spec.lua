@@ -8,7 +8,7 @@
 --   * close-the-loop (4d) — the payoff: feed each golden's guidance.json + a Layout
 --                         and keybind map DERIVED FROM the same golden's state.json
 --                         through Binder:Bind, and assert the DrawList EQUALS the
---                         Renderer's `/cdmp rendertest` fixture for that scenario.
+--                         Renderer's `/cdmp rt` fixture for that scenario.
 --                         Coach golden -> Binder -> the exact DrawList the Renderer
 --                         was dialled in against.  The fixture uses "fake1..N" icon
 --                         handles; the Binder uses cooldownIDs, so cues are matched

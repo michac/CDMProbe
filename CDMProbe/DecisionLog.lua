@@ -14,7 +14,8 @@
 -- CDMProbeDB (flushed on /reload), and `wowkb.cdmp decisionlog` extracts it to a flat .log.
 --
 -- (The name is a fossil-free rename of the old `Hud2Log` — the `2` was left over from the
--- retired `/cdmp hud2` HUD alias and never meant anything here.  Multi-spec Phase 4.)
+-- W4-era second HUD, retired at the cutover, and never meant anything here.
+-- Multi-spec Phase 4.)
 --
 -- THE SPLIT is the whole design:
 --   * Render(pulse, guidance, drawList) -> string is PURE — no frames, no db, no clock.

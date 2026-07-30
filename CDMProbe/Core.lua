@@ -15,13 +15,11 @@ ns.version = (C_AddOns and C_AddOns.GetAddOnMetadata and C_AddOns.GetAddOnMetada
 local DEFAULTS = {
   -- `ns.db.hud` is the pipeline HUD's enable BOOL (W4 cutover reclaimed the key from
   -- the old engine's settings TABLE).  No default entry: absent == off; HudDriver's
-  -- OnLogin migrates any stale old-engine table / prior `hud2` bool into it, and
-  -- SetHud writes it thereafter.
+  -- OnLogin drops a stale old-engine TABLE value, and SetHud writes it thereafter.
   -- Pipeline decision log — a ring of the last 3 sessions, each a list of one-line
   -- `S{…} G{…} B{…}` pipeline traces appended on every DECISION CHANGE (DecisionLog.lua).
   -- The greppable instrument for "why does /cdmp hud show nothing here?"; extracted to a
   -- flat .log by `wowkb.cdmp decisionlog`.  Structured, flushed on /reload.
-  -- (A prior `hud2log` store is folded in one-shot on login — see HudDriver.OnLogin.)
   decisionlog = {},
   -- TEMPORARY (AlertTape.lua) — a discovery tape for the CDM alert channel, answering
   -- whether PandemicTime / ChargeGained / OnAura* fire in combat and whether the pandemic
@@ -93,8 +91,8 @@ SlashCmdList["CDMPROBE"] = dispatch
 -- placeholder-frame rig + the hand-authored DrawList fixtures.  The thin wrapper
 -- guards the load order: Renderer.lua loads after Core, so resolve ns.RenderTest
 -- at DISPATCH time, not registration time.
-ns.RegisterCommand("rendertest",
-  "Phase-3 draw test: render a DrawList fixture (inventory | rotate | list | off)",
+ns.RegisterCommand("rt",
+  "render test: draw a DrawList fixture (states | list | rotate | off)",
   function(rest)
     if ns.RenderTest then ns.RenderTest(rest)
     else ns.Print("Renderer not loaded") end

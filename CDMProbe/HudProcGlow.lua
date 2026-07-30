@@ -7,7 +7,7 @@
 -- decision: don't redraw or replace it — just turn its ALPHA down.  Setting alpha on
 -- the ALERT FRAME multiplies the whole glow WITHOUT fighting the proc animation (which
 -- drives the child TEXTURES' alpha, not the frame's) — the exact lever proven in the
--- rendertest preview (Renderer.lua applyProcGlow / clearProcGlow).
+-- `/cdmp rt` preview (Renderer.lua applyProcGlow / clearProcGlow).
 --
 -- HOW.  Post-hook each CDM item's RefreshOverlayGlow (CooldownViewer.lua:1124 ->
 -- ShowAlert at :1130) — the method that shows/hides the native glow.  Re-applying the

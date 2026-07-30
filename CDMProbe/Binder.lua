@@ -24,7 +24,7 @@
 -- COLOUR-FREE BY CONTRACT: the Binder never resolves a token to RGBA (guidance-
 -- contract.json).  It also holds NO geometry constants of its own — the dot corner,
 -- panel + bar positions live in ns.HudGeometry, which the Renderer's
--- `/cdmp rendertest` fixtures read too, so the two producers agree by construction.
+-- `/cdmp rt` fixtures read too, so the two producers agree by construction.
 --
 -- PURE FACTORY, like Coach/Renderer: Binder.New(cfg) / __index, deterministic
 -- in -> out.  Everything volatile arrives in the two Bind args (the Guidance and the
