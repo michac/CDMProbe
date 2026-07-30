@@ -234,8 +234,15 @@ spec.Spec = {
   },
   -- 348 is the CAST id, kept mapped as a harmless alias for a build that surfaces it
   -- (the tracked/cue id is S.IMMOLATE above) — the same treatment Demo gives 136726.
+  -- ⚠ `expect = false` BECAUSE IT IS AN ALIAS, not a second ability.  The field means
+  -- "never expect this bound to a CDM icon of its own", which was already true here (the
+  -- CDM tracks Immolate as the DoT aura 157736) and merely under-stated.  It became
+  -- load-bearing with State's virtual-row walk: Immolate has no base cooldown, so without
+  -- this an absent 348 would pass every fence and get drawn as a SECOND Immolate icon
+  -- beside the real one.
   [S.IMMOLATE_CAST] = {
-    kind = "button", cadence = "gated", abbr = "Imm", label = "Immolate (cast-id alias)",
+    kind = "button", cadence = "gated", expect = false, abbr = "Imm",
+    label = "Immolate (cast-id alias)",
   },
   -- (Hellcaller) Wither replaces Immolate.  A STACKING DoT whose 8-stack Blackened Soul
   -- threshold is as unreadable as Backdraft's count — so the brain can maintain it and

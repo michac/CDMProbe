@@ -86,6 +86,16 @@ local function tick()
   -- Live Layout + registry from the same icon-viewer walk (Phase 5a).  Register every
   -- handle -> frame so the Renderer can anchor a cue dot inside its icon corner.
   local layout, registry = ns.HudLayout.Scan()
+  -- VIRTUAL ENTRIES — our own icons for the rotation buttons the CDM tracks nowhere
+  -- (State synthesised the rows; HudVirtual pools the frames).  They merge in as just
+  -- another Layout entry + registry frame under a NEGATIVE handle, so the Binder and the
+  -- Renderer below are unchanged and cannot tell them apart — that is the seam's whole
+  -- success criterion (docs/virtual-cdm-plan.md).  Merged BEFORE the keybind stitch, which
+  -- skips them harmlessly: `pulse.cooldowns` has no negative keys, and HudVirtual.Sync has
+  -- already resolved their keybind off the base spellID.
+  local vLayout, vRegistry = ns.HudVirtual.Sync(pulse)
+  for cid, entry in pairs(vLayout) do layout[cid] = entry end
+  for cid, frame in pairs(vRegistry) do registry[cid] = frame end
   -- STITCH State's keybind onto the layout by cooldownID (P5d fix).  State already
   -- resolved a keybind per cooldown off the CDM database id — the single, correct
   -- resolver — so the cue hint uses THAT rather than the Binder re-deriving it from a
@@ -98,6 +108,9 @@ local function tick()
   for handle, frame in pairs(registry) do D.renderer:Register(handle, frame) end
   local drawList = D.binder:Bind(guidance, layout)
   D.renderer:Draw(drawList)
+  -- Our own icons read the SAME DrawList the Renderer just drew: a cue on their negative
+  -- handle raises them out of their resting dim.  After Draw, so the two never disagree.
+  ns.HudVirtual.Reflect(drawList)
   D.lastCues = drawList.cues and #drawList.cues or 0
   -- Re-hook newly-pooled CDM frames + re-apply the native-proc-glow dim (idempotent,
   -- cheap — a per-instance flag skips already-hooked frames).
@@ -136,6 +149,7 @@ function ns.SetHud(on)
   else
     if D.ticker then D.ticker:Cancel(); D.ticker = nil end
     if D.renderer then pcall(D.renderer.Draw, D.renderer, {}) end  -- clear every dot/panel/pip
+    pcall(ns.HudVirtual.Clear)                                     -- ...and our own icons
     if ns.HudProcGlow then pcall(ns.HudProcGlow.Restore) end       -- native proc glow back to full alpha
     ns.State.Release()
     ns.Print("HUD |cffff8080OFF|r — pipeline overlay cleared.")

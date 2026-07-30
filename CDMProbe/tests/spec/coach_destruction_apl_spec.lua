@@ -114,7 +114,15 @@ local function build(f)
   if f.art == "ruination" then cbExtra = { override = ID.RUINATION, live = ID.RUINATION, glow = true } end
   if f.art == "infernal"  then incExtra = { override = ID.INFERNAL_BOLT, live = ID.INFERNAL_BOLT, glow = true } end
   abilities[ID.CB]  = ability(ID.CB, CID.CB, cdUnknown(), cbExtra)
-  if not f.noIncinerate then
+  if f.virtualIncinerate then
+    -- The row State SYNTHESISES when the CDM tracks Incinerate nowhere: a negative display
+    -- handle, `ready` from the spell's 0-cooldown nature rather than an observation
+    -- (`source = "static"`), and `virtual = true`.  Shaped exactly as State.VirtualRow emits
+    -- it, so this asserts what the Coach really receives.
+    abilities[ID.INC] = ability(ID.INC, -ID.INC, nil, incExtra)
+    abilities[ID.INC].cd = { state = "ready", remaining = 0, readable = true, source = "static" }
+    abilities[ID.INC].virtual = true
+  elseif not f.noIncinerate then
     abilities[ID.INC] = ability(ID.INC, CID.INC, cdUnknown(), incExtra)
   end
   abilities[ID.ROF] = ability(ID.ROF, CID.ROF, cdUnknown())
@@ -570,6 +578,37 @@ describe("Destruction rotation list (from specs/destruction/rotation.md)", funct
 
     it("an untracked Incinerate still lets Chaos Bolt answer once affordable", function()
       assert.equals(ID.CB, winner({ shards = 2, noIncinerate = true }).cid)
+    end)
+
+    --------------------------------------------------------------------------
+    -- THE BEFORE/AFTER PAIR for the virtual CDM panel (docs/virtual-cdm-plan.md).
+    -- The test above is the BEFORE: with no CDM row the list honestly returns nothing, and
+    -- the live pass measured what that costs — 59 of 191 decision changes with no winner
+    -- (31 %), every one at 0–2 shards.  These are the AFTER: State synthesises the row, and
+    -- the floor is back.  Both stay; the pair IS the evidence.
+    --------------------------------------------------------------------------
+    it("a VIRTUAL Incinerate restores the floor at 1 shard", function()
+      local w = winner({ shards = 1, virtualIncinerate = true })
+      assert.equals(ID.INC, w.cid)
+      assert.equals("ROTATION", w.cue.emphasis)
+    end)
+
+    it("the Coach cannot tell a virtual row from a real one", function()
+      -- The seam's whole claim: a synthesised row is JUST ANOTHER ability.  Same winner,
+      -- same emphasis, same note as the tracked case at the same shard count.
+      local real    = winner({ shards = 0 })
+      local virtual = winner({ shards = 0, virtualIncinerate = true })
+      assert.equals(real.cid, virtual.cid)
+      assert.equals(real.cue.emphasis, virtual.cue.emphasis)
+      assert.equals(real.cue.note, virtual.cue.note)
+    end)
+
+    it("an armed Infernal Bolt lights ON the virtual frame — the L12 payoff", function()
+      -- The transform rides the Incinerate frame.  With no frame the whole priority line was
+      -- dead; with a virtual one it can finally cue.
+      local w = winner({ art = "infernal", shards = 1, virtualIncinerate = true })
+      assert.equals(ID.INC, w.cid)
+      assert.equals("Infernal Bolt — shard refill", w.cue.note)
     end)
   end)
 

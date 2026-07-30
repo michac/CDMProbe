@@ -80,7 +80,7 @@ local function newStub()
   for _, m in ipairs({
     "SetAllPoints", "SetScale",
     "SetJustifyH", "SetJustifyV", "SetBlendMode",
-    "SetAlpha", "SetTexture", "SetMask", "SetDrawLayer",
+    "SetTexture", "SetMask", "SetDrawLayer", "SetTexCoord",
     "SetFrameStrata", "EnableMouse", "SetParent", "SetAtlas",
     "RegisterEvent", "RegisterUnitEvent", "UnregisterEvent", "UnregisterAllEvents",
     "SetLooping", "Play", "Stop", "Pause", "Finish",
@@ -104,6 +104,9 @@ local function newStub()
     return self
   end
   function t:ClearAllPoints() self._points = {}; return self end
+  -- RECORDING, not a chain no-op: HudVirtual's resting-dim vs cued-lit distinction IS an
+  -- alpha, so a spec has to be able to read back what it was set to (GetAlpha below).
+  function t:SetAlpha(a)   self._alpha = a; return self end
   function t:Show()        self._shown = true;  return self end
   function t:Hide()        self._shown = false; return self end
   function t:SetShown(v)   self._shown = v and true or false; return self end
@@ -158,7 +161,15 @@ _G.Enum   = { PowerType = { SoulShards = 7, Mana = 0, Energy = 3 },
               } }
 _G.C_Timer = { After = function() end,
                NewTimer = function() return { Cancel = function() end } end }
-_G.C_Spell = { GetSpellName = function(id) return "Spell:" .. tostring(id) end }
+_G.C_Spell = { GetSpellName = function(id) return "Spell:" .. tostring(id) end,
+               GetSpellTexture = function(id) return "Interface\\Icons\\Spell_" .. tostring(id) end }
+-- Spellbook knownness — the surviving correctness fence of field-fix A, and the one State's
+-- virtual-row walk reads (an untracked ability has no CDM struct to carry `isKnown`).
+-- Defaults to NOT known for every id: a spec opts a spellID in with `fx.known[id] = true`, so
+-- no existing test silently grows a virtual row.  Returns a real boolean, as the API does.
+_G.C_SpellBook = { IsSpellKnown = function(id)
+  return (H.fx and H.fx.known and H.fx.known[id]) == true
+end }
 _G.CreateFrame = function(_, name, _, _)
   local f = newStub()
   H.frames[#H.frames + 1] = f
@@ -217,6 +228,9 @@ function H.fresh()
     mode = nil, shards = nil, projected = false, aoe = false,
     cost = {}, baseCD = {}, remain = {}, remainSource = {},
     present = {}, override = {},
+    -- `known` drives the fake C_SpellBook.IsSpellKnown above (State's virtual-row fence).
+    -- Empty by default, so virtual rows only appear where a spec explicitly asks for them.
+    known = {},
   }
   H.fx = fx
 

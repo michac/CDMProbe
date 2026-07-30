@@ -330,6 +330,254 @@ describe("State domain view — the pressable filter (field-fix A)", function()
 end)
 
 --------------------------------------------------------------------------------
+-- VIRTUAL ROWS — the other direction: putting back a row State cannot observe.
+--
+-- ⚠ THIS IS THE RISKIEST TEST FILE IN THE ADDON, because this feature and field-fix A pull
+-- in OPPOSITE directions over the same table.  A is "remove rows we cannot trust"; this is
+-- "add a row we never saw".  So EVERY fence below is mutation-checked: drop it in State.lua
+-- and one of these must go red.  A fence that passes both ways is exactly the failure mode
+-- that shipped the phantom-ability bug in the first place.
+--
+-- The walk is DETECTION, not declaration: `ns.Spec` already IS the spec's ability library,
+-- so there is no per-ability flag to forget.  That makes the "exactly one" tests at the
+-- bottom load-bearing — they are what stops a future spec-table edit from quietly growing a
+-- second icon.
+--------------------------------------------------------------------------------
+describe("State virtual rows (the untracked floor press)", function()
+  local ns, St, fx, realSpellBook
+
+  before_each(function()
+    ns, fx = H.fresh()
+    H.setSpecIndex(3)            -- Destruction: Incinerate is its untracked floor press
+    ns.ResolveActiveSpec()
+    H.load("State.lua")
+    St = ns.State
+    realSpellBook = _G.C_SpellBook
+  end)
+  -- The refused-read tests below REPLACE the spellbook API; restore it, or every later test
+  -- silently sees no candidates at all and passes for the wrong reason.
+  after_each(function() _G.C_SpellBook = realSpellBook end)
+
+  -- The permissive world: Incinerate known, no base cooldown, nothing tracked.
+  local function known(...)
+    for _, id in ipairs({ ... }) do fx.known[id] = true end
+  end
+  local function zeroCD(...)
+    for _, id in ipairs({ ... }) do fx.baseCD[id] = 0 end
+  end
+  local function candidates(abilities, dropped)
+    return St.VirtualCandidates(ns.Spec, abilities or {}, dropped,
+                                St.SpellKnown, ns.BaseCooldown)
+  end
+
+  ------------------------------------------------------------------------------
+  describe("the positive case", function()
+    before_each(function() known(INCINERATE); zeroCD(INCINERATE) end)
+
+    it("nominates the spec's untracked floor press", function()
+      assert.are.same({ INCINERATE }, candidates())
+    end)
+
+    it("the synthesised row is keyed by base spellID and marked virtual", function()
+      local r = St.VirtualRow(INCINERATE)
+      assert.is_true(r.virtual)
+      assert.are.equal(INCINERATE, r.spellID)
+    end)
+
+    it("carries the NEGATIVE display handle — no collision with a real cooldownID", function()
+      assert.are.equal(-INCINERATE, St.VirtualRow(INCINERATE).display.cooldownID)
+      assert.is_true(St.VirtualRow(INCINERATE).display.cooldownID < 0)
+    end)
+
+    it("says READY, and says WHY — `source = static`, never laundered as a read", function()
+      -- A 0-cooldown spell has no cooldown to be unsure about, so `ready` is a statement
+      -- about the spell's NATURE.  Calling it "live" would claim an observation we never
+      -- made, which is the one thing this project refuses to do.
+      local cd = St.VirtualRow(INCINERATE).cd
+      assert.are.equal("ready", cd.state)
+      assert.are.equal("static", cd.source)
+      assert.are.equal(0, cd.remaining)
+    end)
+  end)
+
+  ------------------------------------------------------------------------------
+  -- One test per fence.  Each names the mutation it guards.
+  ------------------------------------------------------------------------------
+  describe("the fences", function()
+    it("NOT KNOWN ⇒ no row (the surviving half of field-fix A)", function()
+      zeroCD(INCINERATE)                       -- known deliberately not set
+      assert.are.same({}, candidates())
+    end)
+
+    it("a REFUSED knownness read ⇒ no row (under-show, never a guess)", function()
+      zeroCD(INCINERATE)
+      _G.C_SpellBook = { IsSpellKnown = function() error("secret") end }
+      assert.are.same({}, candidates())
+      _G.C_SpellBook = nil
+      assert.are.same({}, candidates())        -- API absent entirely: same answer
+    end)
+
+    it("a NON-ZERO base cooldown ⇒ no row", function()
+      -- The load-bearing fence: with a real cooldown there is no alert channel, no OOC
+      -- baseline and no napkin, so `ready` would be an invention.
+      known(INCINERATE); fx.baseCD[INCINERATE] = 45
+      assert.are.same({}, candidates())
+    end)
+
+    it("an UNREADABLE base cooldown ⇒ no row (nil is not zero)", function()
+      known(INCINERATE)                        -- baseCD left nil
+      assert.are.same({}, candidates())
+    end)
+
+    it("ALREADY PRESENT in abilities ⇒ no row (additive only, never a duplicate)", function()
+      known(INCINERATE); zeroCD(INCINERATE)
+      assert.are.same({}, candidates({ [INCINERATE] = { spellID = INCINERATE } }))
+    end)
+
+    it("DROPPED AS UNLEARNED ⇒ no row, even when the spellbook disagrees", function()
+      -- A conflict between the CDM struct and the spellbook resolves to NOT DRAWING.
+      known(INCINERATE); zeroCD(INCINERATE)
+      assert.are.same({}, candidates({}, { [INCINERATE] = "unlearned" }))
+    end)
+
+    it("dropped as NO-ICON is NOT a bar — that is exactly what we are here to fix", function()
+      known(INCINERATE); zeroCD(INCINERATE)
+      assert.are.same({ INCINERATE }, candidates({}, { [INCINERATE] = "no-icon" }))
+    end)
+
+    it("NOT SPEC-DECLARED ⇒ no row, however known and cooldownless", function()
+      local NOT_OURS = 999999
+      known(NOT_OURS); zeroCD(NOT_OURS)
+      assert.are.same({}, candidates())
+    end)
+
+    it("a UTILITY ⇒ no row (defensives are never cued, and never ours to draw)", function()
+      local UNENDING_RESOLVE = 104773
+      known(UNENDING_RESOLVE); zeroCD(UNENDING_RESOLVE)
+      assert.are.same({}, candidates())
+    end)
+
+    it("an AURA row ⇒ no row (an input to a decision, never a press)", function()
+      local BACKDRAFT = 117828
+      known(BACKDRAFT); zeroCD(BACKDRAFT)
+      assert.are.same({}, candidates())
+    end)
+
+    it("EXPECT=FALSE ⇒ no row — a transform is not a second ability", function()
+      local INFERNAL_BOLT = 433891   -- an override on the Incinerate frame, never its own icon
+      known(INFERNAL_BOLT); zeroCD(INFERNAL_BOLT)
+      assert.are.same({}, candidates())
+    end)
+
+    it("EXPECT=FALSE ⇒ no row — nor is a cast-id ALIAS", function()
+      -- 348 is Immolate's cast id; the CDM tracks the DoT aura 157736.  Immolate has no base
+      -- cooldown, so without `expect = false` on the alias this would be drawn as a SECOND
+      -- Immolate icon beside the real one.
+      known(IMMOLATE_CAST); zeroCD(IMMOLATE_CAST)
+      assert.are.same({}, candidates({ [IMMOLATE_AURA] = { spellID = IMMOLATE_AURA } }))
+    end)
+  end)
+
+  ------------------------------------------------------------------------------
+  -- THE GUARD.  Detection means no per-ability flag to forget — and no per-ability flag
+  -- stopping a spec-table edit from admitting something new.  These pin the whole result.
+  ------------------------------------------------------------------------------
+  describe("exactly one virtual row per spec", function()
+    it("Destruction yields EXACTLY Incinerate", function()
+      -- A realistic world: every 0-cooldown button of the spec, with the ones the live CDM
+      -- actually tracks present in `abilities`.  Incinerate and the cast-id alias are the
+      -- two absentees; only Incinerate may be drawn.
+      local CHAOS_BOLT_, RAIN_OF_FIRE = 116858, 5740
+      known(INCINERATE, IMMOLATE_CAST, CHAOS_BOLT_, RAIN_OF_FIRE, IMMOLATE_AURA)
+      zeroCD(INCINERATE, IMMOLATE_CAST, CHAOS_BOLT_, RAIN_OF_FIRE, IMMOLATE_AURA)
+      assert.are.same({ INCINERATE }, candidates({
+        [CHAOS_BOLT_]   = { spellID = CHAOS_BOLT_ },
+        [RAIN_OF_FIRE]  = { spellID = RAIN_OF_FIRE },
+        [IMMOLATE_AURA] = { spellID = IMMOLATE_AURA },
+      }))
+    end)
+
+    it("Demonology yields EXACTLY Shadow Bolt (the seam is per-spec DATA, not code)", function()
+      H.setSpecIndex(1)
+      ns.ResolveActiveSpec()
+      local SHADOW_BOLT, HAND_OF_GULDAN, DEMONBOLT, IMPLOSION = 686, 105174, 264178, 196277
+      local IMP_LORD_ALIAS = 136726
+      known(SHADOW_BOLT, HAND_OF_GULDAN, DEMONBOLT, IMPLOSION, IMP_LORD_ALIAS)
+      -- ⚠ The Imp Lord ALIAS is given a zero cooldown DELIBERATELY, though the real ability
+      -- has 120s.  Its real cooldown would exclude it anyway — and that is the problem: it
+      -- would be excluded by ACCIDENT rather than by being an alias.  Zeroing it here means
+      -- only `expect = false` can keep it out, so removing that fence turns this test red
+      -- instead of leaving it silently protected.
+      zeroCD(SHADOW_BOLT, HAND_OF_GULDAN, DEMONBOLT, IMPLOSION, IMP_LORD_ALIAS)
+      assert.are.same({ SHADOW_BOLT }, candidates({
+        [HAND_OF_GULDAN] = { spellID = HAND_OF_GULDAN },
+        [DEMONBOLT]      = { spellID = DEMONBOLT },
+        [IMPLOSION]      = { spellID = IMPLOSION },
+      }))
+    end)
+
+    it("no active spec ⇒ nothing at all (the passive path stays silent)", function()
+      known(INCINERATE); zeroCD(INCINERATE)
+      H.setSpecIndex(2)          -- Affliction: registered nowhere, HUD goes passive
+      ns.ResolveActiveSpec()
+      assert.are.same({}, St.VirtualCandidates(ns.Spec, {}, nil, St.SpellKnown, ns.BaseCooldown))
+    end)
+  end)
+
+  ------------------------------------------------------------------------------
+  -- The live path: a REAL St.Build, so the wiring is under test and not just the walk.
+  ------------------------------------------------------------------------------
+  describe("St.Build end to end", function()
+    before_each(function()
+      known(INCINERATE); zeroCD(INCINERATE)
+      _G.Enum.CooldownViewerCategory = { Essential = 0 }
+      _G.C_CooldownViewer = {
+        GetCooldownViewerCategorySet = function(v) return v == 0 and { 903 } or {} end,
+        GetCooldownViewerCooldownInfo = function() return { spellID = CHAOS_BOLT, isKnown = true } end,
+      }
+      ns.VIEWERS = { { frame = "EssentialCooldownViewer" } }
+      ns.GetViewer     = function() return { n = 1 } end
+      ns.GetItemFrames = function() return { { cooldownID = 903 } } end
+      ns.OnLogin()
+    end)
+    after_each(function()
+      _G.C_CooldownViewer = nil
+      _G.Enum.CooldownViewerCategory = nil
+    end)
+
+    it("the virtual row lands in abilities beside the real ones", function()
+      local pulse = St.Build(false)
+      assert.is_not_nil(pulse.abilities[CHAOS_BOLT])     -- Blizzard's row, untouched
+      assert.is_true(pulse.abilities[INCINERATE].virtual)
+      assert.are.equal(-INCINERATE, pulse.abilities[INCINERATE].display.cooldownID)
+    end)
+
+    it("pulse.virtual lists it, sorted, for HudVirtual to pool frames from", function()
+      assert.are.same({ INCINERATE }, St.Build(false).virtual)
+    end)
+
+    it("the RAW cooldowns view is NOT polluted — it stays the CDM diagnostic view", function()
+      local pulse = St.Build(false)
+      assert.is_nil(pulse.cooldowns[-INCINERATE])
+      assert.is_nil(pulse.cooldowns[INCINERATE])
+    end)
+
+    it("stops synthesising the moment Blizzard starts tracking it", function()
+      _G.C_CooldownViewer.GetCooldownViewerCategorySet = function(v) return v == 0 and { 903, 904 } or {} end
+      _G.C_CooldownViewer.GetCooldownViewerCooldownInfo = function(cid)
+        if cid == 903 then return { spellID = CHAOS_BOLT, isKnown = true } end
+        return { spellID = INCINERATE, isKnown = true }
+      end
+      ns.GetItemFrames = function() return { { cooldownID = 903 }, { cooldownID = 904 } } end
+      local pulse = St.Build(false)
+      assert.are.same({}, pulse.virtual)
+      assert.is_nil(pulse.abilities[INCINERATE].virtual)   -- Blizzard's row, not ours
+      assert.are.equal(904, pulse.abilities[INCINERATE].display.cooldownID)
+    end)
+  end)
+end)
+
+--------------------------------------------------------------------------------
 describe("State aura-lifecycle latch (field-fix C)", function()
   local ns, St, A
   local IMM_AURA_CID, IMM_CAST_CID = 133441, 164597

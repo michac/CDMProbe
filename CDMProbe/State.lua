@@ -777,6 +777,17 @@ local function stampCd(cooldownID, cd, now)
   return cd
 end
 
+-- VIRTUAL-ROW KNOWNNESS, cached (a spellbook read per candidate per 10 Hz tick would be
+-- wasteful) and pcall-guarded where it is read: `C_SpellBook.IsSpellKnown` is
+-- `SecretArguments = "AllowedWhenUntainted"` (SpellBookDocumentation.lua:684), so it CAN
+-- refuse — and a refusal yields no virtual row, the under-show direction.  Knownness is
+-- respec-scoped, so the SPELLS_CHANGED handler below wipes it; that handler is why the
+-- declaration lives up HERE rather than beside the walk that reads it (further down, under
+-- "VIRTUAL ROWS").  It was originally declared next to the walk, and luacheck caught it:
+-- the wipe was resolving to an undefined GLOBAL, so the cache would never have invalidated
+-- and `wipe(nil)` would have thrown inside an event handler.
+local knownCache = {}
+
 local eframe = CreateFrame("Frame")
 eframe:SetScript("OnEvent", function(_, event, a1, a2, a3)
   if event == "COOLDOWN_VIEWER_SPELL_OVERRIDE_UPDATED" then
@@ -846,6 +857,11 @@ eframe:SetScript("OnEvent", function(_, event, a1, a2, a3)
       local base = St.BaseOfCast(a3)
       if type(base) == "number" then spendStartShards[base] = nil end
     end
+  elseif event == "SPELLS_CHANGED" then
+    -- Knownness is respec-scoped, and this is the event that covers every way it can move
+    -- (talent swap, spec change, level, a temporarily-granted ability).  Wiping is the whole
+    -- invalidation: the next Build re-reads the spellbook for each candidate once.
+    wipe(knownCache)
   elseif event == "PLAYER_REGEN_DISABLED" then
     St.combatStartedAt = GetTime()
     pushEvent({ kind = "combat_start", at = GetTime() })
@@ -1067,6 +1083,144 @@ end
 St.DomainView = domainView               -- test seam (the field-fix A/C proof)
 
 --------------------------------------------------------------------------------
+-- VIRTUAL ROWS — the rotation buttons the Cooldown Manager tracks NOWHERE
+--------------------------------------------------------------------------------
+-- THE PROBLEM (docs/virtual-cdm-plan.md).  Blizzard's CDM does not track every ability a
+-- rotation needs.  Destruction's INCINERATE is the sharp case: spellID 29722 is absent from
+-- `CooldownSetSpell` for every set (Tier-1, 12.0.7), so it never enters `enumerate()`, never
+-- reaches `cooldowns`, and therefore never reaches `abilities` — and `RankWinner`'s
+-- `key(base)` gates on `ctx.facts[base]`, so THE COACH CANNOT PICK IT AT ALL.  The first
+-- live Destruction pass measured the cost: 59 of 191 decision changes had NO winner (31 %),
+-- every one at 0–2 shards, i.e. below Chaos Bolt's cost where the floor press was the right
+-- answer and could not be named.  Demonology has the identical hole at Shadow Bolt.
+--
+-- ⚠ THIS IS A DECISION PROBLEM BEFORE IT IS A DRAWING PROBLEM.  Drawing an icon for a cue
+-- that is never emitted would achieve nothing, which is why the row is synthesised HERE, in
+-- the domain view, rather than invented downstream: the Binder is a pure geometry merge and
+-- has no cue to map until State gives the Coach something to pick.
+--
+-- WHY IT IS DETECTED, NOT DECLARED.  `ns.Spec` ALREADY IS the spec's ability library — every
+-- rotation button, with its `kind` / `cadence` / `expect`.  A `virtual = true` flag would
+-- merely restate what that table says, and would have to be maintained per spec forever.  So
+-- the walk asks the table directly, and Phase 3's "generalise to Shadow Bolt" is zero edits.
+--
+-- ⚠ THE RELATIONSHIP TO FIELD-FIX A, which removed rows for two reasons that are NOT the
+-- same kind of claim:
+--   * `unlearned` (isKnown == false) — the character does not have this spell.  A CORRECTNESS
+--     fence; it is what killed the 216-dropped-Soul-Fire-cues bug, and it survives here as
+--     the `known` fence below (read from the spellbook, since an untracked ability has no CDM
+--     struct to carry `isKnown`).
+--   * `no-icon` (no item frame) — the character HAS it and presses it constantly; we simply
+--     could not draw it.  That is a DISPLAY limit that was being enforced at the DECISION
+--     layer, correct only while the product was strictly a CDM overlay.  It is the fence this
+--     walk deliberately reverses: unmappable now means "draw our own icon", not "forget it".
+--
+-- WHY ADMITTING ROWS HERE CANNOT RE-CREATE PHANTOM ABILITIES.  Coach.Classify computes
+-- `probablyUp = ready or (onCd and source == "napkin" and remaining <= 0)`, and every
+-- cooldown-bearing line in RankWinner gates on `usable()`, which needs `probablyUp` or a
+-- banked charge.  An ability admitted with no observation reads `unknown` — neither ready nor
+-- on-cooldown — so `probablyUp` is FALSE and it can never win a line.  That is why the
+-- zero-cooldown fence below is not a prohibition but a DESCRIPTION: a 0-cooldown spell is the
+-- only case where we can honestly rank without an observation, because `ready` is then a
+-- statement about the spell's NATURE rather than a faked reading of its state.
+--
+-- THE HANDLE IS NEGATIVE (`-spellID`).  Real cooldownIDs are positive, so collision with a
+-- Blizzard row is impossible by construction rather than by luck, and the handle is
+-- reversible by eye in a decision log.
+
+-- (`knownCache` is declared ABOVE the event frame — it is wiped from the SPELLS_CHANGED
+--  handler, which is defined earlier in the file than this walk.)
+local function spellKnown(spellID)
+  local c = knownCache[spellID]
+  if c ~= nil then return c end
+  if not (C_SpellBook and C_SpellBook.IsSpellKnown) then return nil end
+  local ok, known = pcall(C_SpellBook.IsSpellKnown, spellID)
+  if not ok or type(known) ~= "boolean" then return nil end
+  knownCache[spellID] = known
+  return known
+end
+
+-- PURE: (spec table, abilities, dropped, known(), baseCooldown()) -> sorted base spellIDs.
+-- Sorted so frame assignment is stable across ticks and the tests are order-independent.
+--
+-- Every fence is required, and each earns its place:
+--   kind == "button"      an aura row is an INPUT to a decision, never a press.
+--   cadence ~= "utility"  defensives / CC / mobility are never cued; drawing our own icon
+--                         for a Healthstone is exactly the scope creep that would turn this
+--                         into a replacement UI.
+--   expect ~= false       the spec table's EXISTING statement of "never bound to a CDM icon
+--                         of its own" — the transforms (Ruination / Infernal Bolt) and the
+--                         cast-id aliases.  An override or an alias must never become a
+--                         second icon beside the ability it is an alias OF.
+--   not already present   Blizzard draws it -> we do not.  If the CDM ever starts tracking
+--                         the ability, the virtual row silently stops being synthesised.
+--   not dropped-unlearned the CDM said this row is unlearned.  Even if the spellbook
+--                         disagrees, a conflict resolves to NOT DRAWING (under-show).
+--   base cooldown == 0    see the header.  `ns.BaseCooldown` returns nil when the read
+--                         refuses, and nil ~= 0, so an unreadable cooldown yields no row.
+--   known                 the surviving half of field-fix A.
+local function virtualCandidates(specTable, abilities, dropped, known, baseCooldown)
+  local out = {}
+  if type(specTable) ~= "table" then return out end
+  for spellID, info in pairs(specTable) do
+    if type(spellID) == "number" and type(info) == "table"
+        and info.kind == "button"
+        and info.cadence ~= "utility"
+        and info.expect ~= false
+        and abilities[spellID] == nil
+        and (not dropped or dropped[spellID] ~= "unlearned")
+        and baseCooldown(spellID) == 0
+        and known(spellID) == true then
+      out[#out + 1] = spellID
+    end
+  end
+  table.sort(out)
+  return out
+end
+
+-- The synthetic domain-view row.  Keyed by base spellID like every other `abilities` row,
+-- and carrying every field Classify reads, so nothing downstream needs to know it is ours.
+--
+-- `cd.source = "static"` is a FOURTH member of the trust annotation (live|napkin|none), and
+-- it exists precisely so this is not laundered as `"live"`: we are stating the spell's
+-- nature, not reporting an observation.  Nothing branches on `source` except Classify
+-- (which tests `== "napkin"`) and the decision log (which renders `state` only), so the
+-- addition is inert by design.
+--
+-- `liveSpellID` still resolves through the override map, so IF the client fires
+-- COOLDOWN_VIEWER_SPELL_OVERRIDE_UPDATED for an untracked base the Diabolist transform
+-- (Incinerate -> Infernal Bolt) rides this frame exactly as it would a real one.  Whether it
+-- fires for a spell with no CDM entry is the one thing only a live pass can settle
+-- (@verify-ingame); absent the event this degrades to a plain Incinerate, which is correct.
+local function virtualRow(spellID)
+  local live = St.override[spellID]
+  if not readable(live) then live = spellID end
+  return {
+    cooldownID  = -spellID,
+    category    = "Virtual",
+    spellID     = spellID,
+    liveSpellID = live,
+    linkedSpellIDs = {},
+    selfAura    = false,
+    hasAura     = false,
+    charges     = false,
+    isKnown     = true,
+    displayable = true,
+    virtual     = true,
+    cd     = { state = "ready", remaining = 0, readable = true, source = "static" },
+    charge = { readable = true, cur = nil, max = 0 },
+    aura   = { readable = true, active = false },
+    glow   = readGlow(live),
+    display = { cooldownID = -spellID, category = "Virtual" },
+    keybind = (ns.HudBinds and ns.HudBinds.Get and ns.HudBinds.Get(spellID)) or nil,
+  }
+end
+
+St.VirtualCandidates = virtualCandidates   -- test seam (the fence proof)
+St.VirtualRow        = virtualRow          -- test seam (the row shape)
+St.SpellKnown        = spellKnown
+
+--------------------------------------------------------------------------------
 -- Build — the pulse
 --------------------------------------------------------------------------------
 -- Constructs the reduced picture for THIS instant.  `drain` (capture path) moves
@@ -1210,6 +1364,16 @@ function St.Build(drain)
   local abilities, dropped, dotEdges = domainView(cooldowns, foldBase, next(items) ~= nil,
                                                   St.dotEdge)
 
+  -- VIRTUAL ROWS — the spec's own rotation buttons the CDM tracks nowhere (see the walk's
+  -- header).  Synthesised AFTER the fold, so `abilities` is the real absence test, and
+  -- folded into the SAME table so every stage above is unchanged: to the Coach a virtual row
+  -- is just another pressable ability, and to the Binder its negative handle is just another
+  -- Layout key.  `pulse.virtual` is the sorted id list HudVirtual pools its frames from.
+  local virtual = virtualCandidates(ns.Spec, abilities, dropped, spellKnown, ns.BaseCooldown)
+  for _, id in ipairs(virtual) do
+    abilities[id] = virtualRow(id)
+  end
+
   -- buffs — presence, secrecy-guarded (an entry's aura/buff reads TRUE only when it was
   -- readable, so absence never becomes a false positive).  Keyed by the entry's base for
   -- the CDM rows, and by the aura's own spellID for the flat scan.
@@ -1238,6 +1402,10 @@ function St.Build(drain)
     -- DOMAIN view (the re-layer) — the pipeline's input; the Coach decides on THIS.
     abilities = abilities,
     buffs     = buffs,
+    -- The base spellIDs whose `abilities` row is SYNTHETIC (sorted).  HudVirtual pools one
+    -- button frame per id and returns Layout/registry fragments the driver merges; each row
+    -- also carries `virtual = true`, so a consumer that never sees this list can still tell.
+    virtual   = virtual,
     -- What the domain-view filter REMOVED, and why (field-fix A).  base spellID -> reason
     -- ("unlearned" | "no-icon").  Rendered by the decision log so a filter that drops a
     -- real button shows up in the trace instead of being silently absent.
@@ -1294,6 +1462,8 @@ function St.Acquire()
   eframe:RegisterUnitEvent("UNIT_SPELLCAST_STOP", "player")
   eframe:RegisterEvent("PLAYER_REGEN_DISABLED")
   eframe:RegisterEvent("PLAYER_REGEN_ENABLED")
+  -- Invalidates the virtual-row knownness cache (talent swap / respec / level).
+  eframe:RegisterEvent("SPELLS_CHANGED")
 end
 
 function St.Release()

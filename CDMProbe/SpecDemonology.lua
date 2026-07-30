@@ -196,8 +196,13 @@ spec.Spec = {
   },
   -- 136726 is the talent ENTRY-id, kept mapped as a harmless alias for a build
   -- that surfaces it; the live tracked/cast id is S.IMP_LORD (1276452) above.
+  -- `expect = false` because it is an ALIAS, not a second ability — the same treatment
+  -- Destruction gives Immolate's cast-id 348.  It was already true and merely unstated; it
+  -- matters now because State's virtual-row walk keys on this field, and an alias that
+  -- passed the fences would be drawn as a SECOND Imp Lord icon.  Today its 120s cooldown
+  -- also excludes it, but that is accidental protection — this is the deliberate kind.
   [136726] = {
-    group = "summon", kind = "button", cadence = "oncd", burstAlign = true,
+    group = "summon", kind = "button", cadence = "oncd", burstAlign = true, expect = false,
     stage = true, discretion = true, baseCD = 120, abbr = "G", label = "Grimoire: Imp Lord (entry-id alias)",
   },
 
