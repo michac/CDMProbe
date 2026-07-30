@@ -509,21 +509,35 @@ end
 -- observed edge in `readyEdge`, which readCd consults as ground truth.  CLEAN-ROOM:
 -- State ports the HOOK PATTERN from the old HUD (S.Install/onAlert) but owns its own
 -- edge store and reads none of the old engine's state — a clean Stage-1 separation.
+-- Six alert types exist (Available=1, PandemicTime=2, OnCooldown=3, ChargeGained=4,
+-- OnAuraApplied=5, OnAuraRemoved=6 — Blizzard_APIDocumentationGenerated/
+-- CooldownViewerConstantsDocumentation.lua:43-55).  The PIPELINE deliberately consumes only
+-- the two settled ones; the other four are recorded by the temporary AlertTape instrument
+-- (AlertTape.lua) so we can learn whether they fire in combat before depending on any of
+-- them.  Keep that split: an unverified channel must not silently start driving readiness.
 local function onAlert(item, event)
-  if St.consumers <= 0 then return end   -- gated like the old HUD's ns.Hud.on
   local A = Enum and Enum.CooldownViewerAlertEventType
   if not A then return end
   -- A Secret Value must never be compared; if the event arg is ever restricted we
   -- drop it rather than taint on the ==.
   if ns.IsSecret(event) then return end
-  if event ~= A.Available and event ~= A.OnCooldown then return end
   -- Resolve the item's cooldownID, guarded (an unreadable id is dropped, not keyed).
+  -- Hoisted ABOVE the event filter so the tape can key its rows by cooldownID too.
   local cid = readable(item.cooldownID) and item.cooldownID or nil
   if not cid and ns.HasMethod(item, "GetCooldownID") then
     local ok, id = pcall(item.GetCooldownID, item)
     if ok and readable(id) then cid = id end
   end
   if not cid then return end
+
+  -- THE TAPE — every alert type, before any filtering, and NOT gated on St.consumers, so
+  -- the two known-good edges act as its control group.  A no-op (one boolean test) unless
+  -- `/cdmp alerts on`.  pcall'd: a discovery instrument must never break the pipeline.
+  if ns.AlertTape then pcall(ns.AlertTape.Record, item, event, cid) end
+
+  -- THE PIPELINE — only the two edges whose in-combat behaviour is settled.
+  if St.consumers <= 0 then return end   -- gated like the old HUD's ns.Hud.on
+  if event ~= A.Available and event ~= A.OnCooldown then return end
   local now = GetTime()
   local ready = (event == A.Available)
   readyEdge[cid] = { ready = ready, at = now }

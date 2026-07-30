@@ -23,6 +23,13 @@ local DEFAULTS = {
   -- flat .log by `wowkb.cdmp decisionlog`.  Structured, flushed on /reload.
   -- (A prior `hud2log` store is folded in one-shot on login — see HudDriver.OnLogin.)
   decisionlog = {},
+  -- TEMPORARY (AlertTape.lua) — a discovery tape for the CDM alert channel, answering
+  -- whether PandemicTime / ChargeGained / OnAura* fire in combat and whether the pandemic
+  -- fields are readable there.  Off unless `/cdmp alerts on` (`alerttape_on`).  **Delete
+  -- this key, AlertTape.lua and its .toc line once those rules are settled in
+  -- knowledge/addon-dev/api-events-and-discovery.md §2.8** — it is deliberately not a
+  -- permanent instrument.
+  alerttape = {},
 }
 
 -- Chat helpers ----------------------------------------------------------------

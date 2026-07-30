@@ -99,6 +99,17 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   the W4 cutover and its nil-guarded call sites turned that
                                   into a silent total HUD outage (fixed v0.32.25). Do not
                                   reintroduce `ns.X and ns.X(...)` guards on our own symbols.
+    AlertTape.lua                 ⚠ TEMPORARY discovery instrument, MEANT TO BE DELETED.
+                                  Records every CooldownViewerItemMixin:TriggerAlertEvent
+                                  (all six alert types) + a three-way readability probe of
+                                  the pandemic fields, to answer whether PandemicTime /
+                                  ChargeGained / OnAura* fire in combat and whether
+                                  pandemicStartTime/EndTime survive Secret Values.
+                                  `/cdmp alerts on|off|probe|dump|clear`, off by default;
+                                  extracted by `wowkb.cdmp alerttape`. Delete this file,
+                                  its .toc line and the `alerttape` saved-var once those
+                                  rules land in knowledge/addon-dev/
+                                  api-events-and-discovery.md §2.8.
     Mode.lua                      the single/AoE target-mode toggle (`ns.Mode.aoe`
                                   + `single`/`multi`/`aoe`); State forwards it, the
                                   Coach reads it (extracted from HudCore at the cutover)

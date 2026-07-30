@@ -9,6 +9,7 @@ Core.lua
 Mode.lua
 Util.lua
 Viewers.lua
+AlertTape.lua
 SpecRegistry.lua
 SpecDemonology.lua
 CoachDemonology.lua
