@@ -271,6 +271,22 @@ describe("CDM struct census", function()
       assert.equals("nil", r.ff.wasSetFromAura.c)      -- absent, not refused
     end)
 
+    it("captures PandemicIcon's PRESENCE as the live pandemic state", function()
+      -- Blizzard sets this frame in ShowPandemicStateFrame and NILS it in Hide, both driven
+      -- every frame from the item's OnUpdate — so presence is a self-clearing mirror of
+      -- IsInPandemicTime, and unlike that method it is not built on secret numbers.  The
+      -- census records the CLASS ("table" vs "nil"), which is the whole signal.
+      world({ [903] = { cats = { "TrackedBuff" }, frame = { PandemicIcon = { shown = true } },
+                        info = { spellID = IMMOLATE_AURA } } })
+      assert.equals("table", rowFor(Cs.Capture(), 903).ff.PandemicIcon.c)
+    end)
+
+    it("...and its ABSENCE, which is the half that matters after a refresh", function()
+      world({ [903] = { cats = { "TrackedBuff" }, frame = {},
+                        info = { spellID = IMMOLATE_AURA } } })
+      assert.equals("nil", rowFor(Cs.Capture(), 903).ff.PandemicIcon.c)
+    end)
+
     it("a method Blizzard never defined is `absent`, not `threw`", function()
       -- A capability gap and a restriction are different findings; conflating them would
       -- report the live client as locked down when it simply has no such method.

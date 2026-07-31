@@ -251,7 +251,23 @@ local STRUCT_FIELDS = {
 local FRAME_METHODS = { "GetSpellID", "GetBaseSpellID", "GetAuraSpellID", "GetLinkedSpell",
                         "IsActive", "IsShown", "GetCooldownID" }
 local FRAME_FIELDS  = { "wasSetFromCharges", "wasSetFromCooldown", "wasSetFromAura",
-                        "auraDataUnit", "hideWhenInactive", "cooldownID" }
+                        "auraDataUnit", "hideWhenInactive", "cooldownID",
+                        -- ⚠ THE PANDEMIC STATE, AS A FRAME REFERENCE RATHER THAN A NUMBER.
+                        -- `CheckPandemicTimeDisplay` runs EVERY FRAME off the item's
+                        -- OnUpdate (CooldownViewer.lua:98) and calls Show/HidePandemicState
+                        -- Frame, which SET and NIL this field (:570-585).  So
+                        -- `PandemicIcon ~= nil` is a live, self-clearing mirror of
+                        -- `IsInPandemicTime` — the thing the one-shot PandemicTime alert
+                        -- cannot give us, because it fires once and throttles itself until
+                        -- the OLD aura's expiry (:552-555, Blizzard's own comment).
+                        -- IsInPandemicTime itself THROWS for us not because it is blocked
+                        -- but because its body compares pandemicStartTime/EndTime (:587),
+                        -- and those read SECRET — untainted code can do that maths, we
+                        -- cannot.  A frame reference carries no such problem.
+                        "PandemicIcon",
+                        -- The two throttle fields, so a capture can show WHY an alert did
+                        -- or did not re-arm rather than leaving it to be inferred.
+                        "pandemicAlertTriggerTime", "nextAvailableTimeToPlayPandemicAlert" }
 
 function Cs.Capture(label)
   local combat = InCombatLockdown() and "CMB" or "OOC"
