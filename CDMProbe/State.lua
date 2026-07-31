@@ -380,10 +380,10 @@ local function readCd(ident, live, base, cooldownID, gcd)
   local isReady, remaining, duration, startTime = ns.ReadCooldown(ident, gcd)
   if isReady ~= nil then
     -- Readable (OOC): the precise truth, AND the baseline stash that outlives combat.
-    -- Remember this cd's base id too — the fold key the domain view falls back to when a
-    -- combat pulse reads the row's spellID secret (base is usually still readable, but this
-    -- guarantees it).  Written on the same OOC-readable rhythm as cdBaseline.
-    if cooldownID and readable(base) then foldBase[cooldownID] = base end
+    -- (⚠ The `foldBase` write used to live HERE, and moved to St.Build's loop in §3.8: it
+    -- is a property of the ROW, not of the cooldown read, and gating the read on family
+    -- would otherwise have taken the fold key of every tab-2 row with it — including
+    -- Immolate's aura row, whose key is exactly the one `dotEdges`/`auraFrames` need.)
     if cooldownID then
       if readable(duration) and readable(startTime) then
         cdBaseline[cooldownID] = { ready = isReady and true or false,
@@ -1649,6 +1649,13 @@ function St.Build(drain)
     -- Build the inverse identity index as we go (B3).
     if base then St.baseOfCast[base] = base end
     if readable(live) then St.baseOfCast[live] = base or live end
+    -- ...and the FOLD KEY (moved out of readCd in §3.8).  base-spellID -> cooldownID is
+    -- N:1, and in combat a row's own `spellID` can read secret, so the domain view falls
+    -- back to this map.  Written whenever the base IS readable, which makes the stored
+    -- value correct by construction — the map exists precisely for the pulses where it is
+    -- not.  It belongs to the ROW, not to the cooldown read: a tab-2 row has no cooldown
+    -- rung to read and still needs a fold key, and Immolate's aura row is exactly that row.
+    if readable(base) then foldBase[cooldownID] = base end
     -- (the charge napkin's base -> cooldownID binding is done below, off the MEASURED
     --  `charge.charged` rather than the struct flag — see readCharge)
 
@@ -1660,6 +1667,23 @@ function St.Build(drain)
     -- (a live max > 1), so a wrong struct flag cannot silently disable the napkin.
     local charge = readCharge(ident, hasCharges, cooldownID)
     if charge.charged and base then chargeCid[base] = cooldownID end
+
+    -- THE COOLDOWN RUNG IS TAB 1's, and only tab 1's (§3.8).  Tab 2's value cascade is
+    -- totem -> aura -> edit mode -> zeros: there is no spell-cooldown source in it at all
+    -- (cooldown-manager.md §3.2), so asking the client for one on a TrackedBuff/TrackedBar
+    -- row spends the full guarded-call budget — up to five pcalls with the charge
+    -- short-circuit — ten times a second, to produce a field nothing can consume.  Roughly
+    -- a third of the ~64 enumerated rows on Demonology are tab 2.
+    --
+    -- The row still carries a `cd`, in the honest shape: we did not learn anything, because
+    -- there was nothing here to learn.  Keeping the shape uniform matters more than saving
+    -- the table — a nil `cd` would have to be guarded at every consumer and at `stampCd`.
+    local cd
+    if categoryName == "Essential" or categoryName == "Utility" then
+      cd = readCd(ident, live, base, cooldownID, gcd)
+    else
+      cd = { state = "unknown", readable = false, source = "none" }
+    end
 
     -- The entry's associated aura ids (no nils/holes — ipairs-safe), for the scan match.
     local auraIds = {}
@@ -1689,7 +1713,7 @@ function St.Build(drain)
       displayable = items[cooldownID] ~= nil,
       flags      = info and ns.Stash(info.flags) or nil,
       -- live facts (secrecy first-class)
-      cd     = stampCd(cooldownID, readCd(ident, live, base, cooldownID, gcd), now),
+      cd     = stampCd(cooldownID, cd, now),
       charge = charge,
       aura   = readAura(hasAura, selfAura, activeByID, auraIds, auraSecret),
       glow   = readGlow(live),   -- the combat-readable proc-highlight signal

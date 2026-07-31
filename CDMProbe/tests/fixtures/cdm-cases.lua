@@ -307,19 +307,29 @@ local A = {
 
   {
     name = "family/a-tab2-row-has-no-cooldown-rung-to-read",
-    status = "pinned-defect",
-    fixes = "phase2 §3.8",
+    status = "green",
+    fixed = "phase2 §3.8",
     spec = 3,
     pins = "Tab 2's value cascade is totem -> aura -> edit mode -> zeros: there is no "
         .. "spell-cooldown rung at all, so asking the client for one produces a field "
-        .. "nothing can consume, at the full guarded-call cost, 10 times a second.",
+        .. "nothing can consume, at the full guarded-call cost, 10 times a second.  The "
+        .. "row still carries a `cd` in the honest shape — we learned nothing, because "
+        .. "there was nothing here to learn — and it still participates in the FOLD, which "
+        .. "is the half that made this bigger than a one-line `if`: `readCd` was the only "
+        .. "writer of the OOC fold-key cache, and Immolate's aura row is exactly the row "
+        .. "whose key `dotEdges` / `auraFrames` re-key through.",
     ref = "cooldown-manager.md §3.2 — \"structurally cannot display a spell cooldown\"",
     rows = {
       { cid = 133441, category = "TrackedBuff", frame = {},
         info = { spellID = IMMOLATE_AURA, isKnown = true } },
     },
     world = { cd = { [GCD] = READY_GCD } },
-    expect = { asked = { cooldown = { [IMMOLATE_AURA] = false } } },
+    script = { { alert = "PandemicTime", cid = 133441 }, { build = true } },
+    expect = {
+      asked    = { cooldown = { [IMMOLATE_AURA] = false } },
+      raw      = { [133441] = { cd = { state = "unknown", source = "none" } } },
+      dotEdges = { [IMMOLATE_AURA] = { state = "pandemic" } },
+    },
   },
 
   {
