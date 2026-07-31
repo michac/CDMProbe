@@ -16,7 +16,8 @@ local DEFAULTS = {
   -- `ns.db.hud` is the pipeline HUD's enable BOOL (W4 cutover reclaimed the key from
   -- the old engine's settings TABLE).  No default entry: absent == off; HudDriver's
   -- OnLogin drops a stale old-engine TABLE value, and SetHud writes it thereafter.
-  -- Pipeline decision log — a ring of the last 3 sessions, each a list of one-line
+  -- Pipeline decision log — a ring of recent sessions (count: DecisionLog.SESSIONS),
+  -- each a list of one-line
   -- `S{…} G{…} B{…}` pipeline traces appended on every DECISION CHANGE (DecisionLog.lua).
   -- The greppable instrument for "why does /cdmp hud show nothing here?"; extracted to a
   -- flat .log by `wowkb.cdmp decisionlog`.  Structured, flushed on /reload.

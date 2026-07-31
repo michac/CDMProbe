@@ -38,14 +38,12 @@ R.__index = R
 --------------------------------------------------------------------------------
 -- The default theme — emphasis TOKEN -> RGBA.
 --------------------------------------------------------------------------------
--- The five tokens must be GLANCEABLE — distinct enough to read apart in the icon
--- corner at a flick of the eye.  The first cut kept ROTATION/LATE/SEQUENCE all in
--- the green family (LATE a brighter green, SEQUENCE the summon fel-green) and they
--- were indistinguishable in-game (2026-07-26 feedback).  So LATE and SEQUENCE are
--- pulled OFF the green: LATE = hot amber ("overdue, catch up"), SEQUENCE = violet
--- ("look at the panel, not a press").  ROTATION/SOON/JUDGE still match HudChrome's
--- CUE palette (HudChrome.lua:165-167); LATE + SEQUENCE now deliberately diverge for
--- separation — the Renderer owns token->pixels, so this is a local dial-in.
+-- Emphasis token -> RGBA.  Tokens must be GLANCEABLE — distinct enough to read apart in
+-- the icon corner at a flick of the eye.  2026-07-26: ROTATION/LATE/SEQUENCE were all
+-- green-family and read identical in-game, so LATE and SEQUENCE came off green.
+-- ⚠ THIS TABLE IS NOT THE LAST WORD ON WHAT A CUE DRAWS.  GLOW_SPEC below may redirect a
+-- token's colour, and it does exactly that for LATE — so LATE renders ROTATION's GREEN, not
+-- the amber below.  Editing the amber here changes nothing on screen; go to GLOW_SPEC.
 local function defaultTheme()
   return {
     ROTATION          = { 0.30, 1.00, 0.48, 1.00 },  -- green:      press now
@@ -60,7 +58,8 @@ local function defaultTheme()
     -- (G .16).  A first cut at {0.42, 0.36, 1.00} was rejected — only 0.28 from SEQUENCE
     -- under the theme's own separation metric, i.e. the pips collision this must avoid.
     ROTATION_FALLBACK = { 0.52, 0.16, 0.98, 1.00 },  -- violet:     the runner-up
-    LATE              = { 1.00, 0.42, 0.10, 1.00 },  -- amber:      overdue, catch up
+    LATE              = { 1.00, 0.42, 0.10, 1.00 },  -- amber:      SUPERSEDED for cues —
+                                                     -- GLOW_SPEC redirects LATE to ROTATION
     SOON              = { 1.00, 0.86, 0.15, 1.00 },  -- yellow:     anticipation
     JUDGE             = { 0.27, 0.88, 1.00, 1.00 },  -- cyan:       your-call (retired)
     SEQUENCE          = { 0.64, 0.42, 1.00, 1.00 },  -- violet:     look at the panel (retired)
@@ -71,10 +70,9 @@ end
 -- pixels lives in the Renderer, per architecture invariant #5).  Supersedes
 -- HudGeometry.G.GLOW_EMPHASIS / the `glow` bool.
 --   * an entry ⇒ this emphasis draws a spinning glow RING (+ a solid circle dot).
---   * `spin`/`pulse` ⇒ whether the ring rotates / breathes.  Both false ⇒ ring shown
---     but STATIC (the runner-up reads as backup by its lack of MOTION, not by colour).
---   * `color` overrides the colour key for BOTH the circle and the ring (fallback ->
---     ROTATION green).
+--   * `spin`/`pulse` ⇒ whether the ring rotates / breathes.  Both false ⇒ a STATIC ring.
+--   * `color` redirects the colour lookup for BOTH circle and ring (LATE -> ROTATION
+--     green).  It OVERRIDES the theme entry for that token — see the theme note above.
 --   * no entry (IDLE / unknown) ⇒ no circle, no ring (keybind-only if it carries one).
 --   * `ringScale` / `spinSecs` => per-emphasis ring SIZE and rotation period (both default
 --     to GLOW_SCALE / SPIN_SECS).  These express DEGREE without spending a hue.
@@ -223,9 +221,8 @@ function R:drawCues(cues)
     if key ~= nil and anchor then
       active[key] = true
       local holder = self:ensureHolder(key, anchor)
-      -- GLOW_SPEC drives BOTH the colour (a fallback borrows ROTATION's key) and the
-      -- ring: an entry ⇒ a spinning glow ring; `spin`/`pulse` gate its motion.  No
-      -- entry (IDLE / unknown token) ⇒ no circle, no ring.
+      -- GLOW_SPEC drives the ring, and `gs.color` (LATE only) redirects the colour.
+      -- No entry (IDLE / unknown token) ⇒ no circle, no ring.
       local gs       = GLOW_SPEC[c.emphasis]                 -- nil ⇒ no ring
       local colorKey = (gs and gs.color) or c.emphasis
       local col      = self.theme[colorKey]
@@ -553,10 +550,10 @@ local FIXTURES = {
   -- would emit as one frame — a palette:
   --   IDLE      keybind hint only, no dot (the "empty board" — tracked, nothing to do)
   --   SOON      anticipation — yellow circle + spinning/pulsing ring
-  --   FALLBACK  ROTATION_FALLBACK — the runner-up: GREEN circle + STATIC ring (reads as
-  --            backup by lack of MOTION, not by a dimmer hue)
+  --   FALLBACK  ROTATION_FALLBACK — the runner-up: VIOLET circle + STATIC ring (backup
+  --            reads by BOTH hue and lack of motion)
   --   ROTATION  press now — green circle + spinning/pulsing ring
-  --   LATE      overdue — amber circle + spinning/pulsing ring
+  --   LATE      overdue — ROTATION green, ESCALATED ring (bigger, ~2.5x faster)
   --   GLOW      a FALLBACK dot + keybind UNDER Blizzard's NATIVE (gold) spell-
   --            activation overlay (applied post-Draw, below) — the exact conflict
   --            the "subdue the proc glow" backlog item is about: the native glow

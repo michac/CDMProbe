@@ -73,9 +73,11 @@ end
 function L.Scan()
   local entries = {}
   for _, name in ipairs(ICON_VIEWERS) do
-    local viewer = ns.GetViewer and ns.GetViewer(name)
+    -- DIRECT, for the reason spelled out below: both live in Viewers.lua alongside
+    -- ns.ItemCooldownID, so a guard here would fail exactly the way that one did.
+    local viewer = ns.GetViewer(name)
     if viewer then
-      local items = ns.GetItemFrames and ns.GetItemFrames(viewer) or {}
+      local items = ns.GetItemFrames(viewer)
       for _, item in ipairs(items) do
         -- DIRECT calls, deliberately NOT `ns.X and ns.X(item)`.  Those nil guards caused a
         -- total HUD outage (see the note on ns.ItemCooldownID in Viewers.lua): when the

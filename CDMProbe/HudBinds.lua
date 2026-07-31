@@ -185,7 +185,7 @@ end
 -- the BASE spell, so resolve off that first and only fall back to the reported
 -- (possibly overridden) ID for items with no base — never the other way round.
 function B.GetForItem(item, reportedSpellID)
-  local key = B.Get(ns.ItemBaseSpellID and ns.ItemBaseSpellID(item) or nil)
+  local key = B.Get(ns.ItemBaseSpellID(item))
   if key then return key end
   return B.Get(reportedSpellID ~= nil and reportedSpellID or ns.ItemSpellID(item))
 end

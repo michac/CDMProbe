@@ -164,7 +164,7 @@ local function dumpLayout()
   local layout, registry = ns.HudLayout.Scan()
   -- The keybind the cue will actually use comes from STATE (stitched by cooldownID), so
   -- show that, not a re-lookup — this is the row to read when a key is missing.
-  local cds = (ns.State and ns.State.Build) and (ns.State.Build(false).cooldowns or {}) or {}
+  local cds = ns.State.Build(false).cooldowns or {}
   ns.Heading("HUD live Layout (icon viewers -> cooldownID -> spellID + State keybind)")
   local ids = {}
   for cid in pairs(layout) do ids[#ids + 1] = cid end

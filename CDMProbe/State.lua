@@ -633,6 +633,10 @@ local function onAlert(item, event)
   -- THE TAPE — every alert type, before any filtering, and NOT gated on St.consumers, so
   -- the two known-good edges act as its control group.  A no-op (one boolean test) unless
   -- `/cdmp alerts on`.  pcall'd: a discovery instrument must never break the pipeline.
+  -- ⚠ One of only TWO legitimate guards on an `ns.` symbol in the addon (the other is
+  -- ns.SpecInfo in Util.lua).  AlertTape is a TEMPORARY instrument scheduled for deletion,
+  -- i.e. a genuinely optional collaborator — the case the no-guards rule carves out.  Every
+  -- other module we ship is called DIRECTLY so a missing definition throws.
   if ns.AlertTape then pcall(ns.AlertTape.Record, item, event, cid) end
 
   -- THE PIPELINE.
@@ -1268,7 +1272,7 @@ local function virtualRow(spellID)
     aura   = { readable = true, active = false },
     glow   = readGlow(live),
     display = { cooldownID = -spellID, category = "Virtual" },
-    keybind = (ns.HudBinds and ns.HudBinds.Get and ns.HudBinds.Get(spellID)) or nil,
+    keybind = ns.HudBinds.Get(spellID),
   }
 end
 
@@ -1362,7 +1366,7 @@ function St.Build(drain)
       -- candidate per-buff combat signal the DB struct doesn't carry.
       buff   = (hasAura or selfAura) and readBuffItem(items[cooldownID]) or nil,
       -- mostly-static, OOC-resolved off the BASE id (finding-3)
-      keybind = (base and ns.HudBinds and ns.HudBinds.Get and ns.HudBinds.Get(base)) or nil,
+      keybind = base and ns.HudBinds.Get(base) or nil,
     }
   end
 
@@ -1506,8 +1510,8 @@ function St.Acquire()
   -- reads source="none" while every keybind is nil (the v0.29.0 gap: the napkin's
   -- SUCCEEDED frame and the bar scan are only started by the HUD).  Both Start()s are
   -- idempotent, so this is harmless if another consumer already started them.
-  if ns.HudNapkin and ns.HudNapkin.Start then pcall(ns.HudNapkin.Start) end
-  if ns.HudBinds and ns.HudBinds.Start then pcall(ns.HudBinds.Start) end
+  ns.HudNapkin.Start()
+  ns.HudBinds.Start()
   eframe:RegisterEvent("COOLDOWN_VIEWER_SPELL_OVERRIDE_UPDATED")
   eframe:RegisterUnitEvent("UNIT_SPELLCAST_START", "player")
   eframe:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")

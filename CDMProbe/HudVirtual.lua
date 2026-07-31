@@ -280,7 +280,7 @@ function V.Sync(pulse)
   end
   local layout, registry = V.Build(ids, V.ensureButton)
   for _, e in pairs(layout) do
-    e.keybind = (ns.HudBinds and ns.HudBinds.Get and ns.HudBinds.Get(e.spellID)) or nil
+    e.keybind = ns.HudBinds.Get(e.spellID)
   end
   -- Hide a button whose ability stopped being virtual — the CDM started tracking it, the
   -- player untalented it, or a respec changed the spec.  Pooled, never destroyed.

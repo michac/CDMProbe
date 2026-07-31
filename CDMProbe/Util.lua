@@ -316,14 +316,13 @@ end
 -- there is no ability that costs ten shards.  Anything else is passed through
 -- untouched rather than divided by a guess.
 --
--- Returns (shardCost, rawCost).  `/cdmp hud debug` prints both, which is how the
--- in-game pass settles the units question for good.
+-- Returns (shardCost, rawCost).
 --
--- ⚠ The fragment heuristic below is STILL UNPROVEN against a real shard cost
--- (§7.2 item 12).  Until v0.10.0 it only ever saw MANA figures, where it
--- "worked" — 5000 -> 500 — and manufactured the defect's signature numbers.  Now
--- that the type filter means it only sees shards, the raw column in
--- `/cdmp hud debug` is what confirms or falsifies it.
+-- ⚠ The fragment heuristic below is STILL UNPROVEN against a real shard cost.  Until
+-- v0.10.0 it only ever saw MANA figures, where it "worked" — 5000 -> 500 — and manufactured
+-- the defect's signature numbers.  Now that the type filter means it only sees shards, the
+-- decision log's `PW:` field is the read that confirms or falsifies it.  @verify-ingame
+-- (`/cdmp hud debug`, which used to print both columns, was retired at the W4 cutover.)
 function ns.ShardCost(spellID)
   -- No Enum -> no way to ask about the right resource, and an UNFILTERED read is
   -- exactly the defect.  Report "unreadable" instead, which the scorer already
@@ -371,6 +370,10 @@ function ns.DisplayIdentity(base, overrideSpellID, overrideTooltipSpellID)
   local shown = overrideSpellID
   if type(shown) ~= "number" or ns.IsSecret(shown) then shown = overrideTooltipSpellID end
   if type(shown) ~= "number" or ns.IsSecret(shown) or shown == base then return base end
+  -- ⚠ NOT a banned nil guard.  ns.SpecInfo is a REBOUND global — SpecRegistry copies it off
+  -- the active spec and leaves it nil on an unregistered spec (the passive path), so this is
+  -- a STATE test, not a "did someone delete the definition" test.  Passive ⇒ no opinion about
+  -- any id ⇒ the raw base is the honest identity.
   if type(ns.SpecInfo) ~= "function" then return base end
   local info, declared = ns.SpecInfo(shown)
   if not declared or type(info) ~= "table" then return base end

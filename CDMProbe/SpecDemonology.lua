@@ -241,13 +241,21 @@ spec.Spec = {
   -- CONFIRMED the live ones on 2026-07-21: **Ruination = 434635**, **Infernal
   -- Bolt = 434506**.  The other two stay mapped — they cost nothing and cover a
   -- build that surfaces the alternate ID.
-  [433891] = { group = "core", kind = "button", spends = "art", generates = 3,
+  -- `art` is the SEMANTIC discriminator the brain branches on; `generates` is the mechanical
+  -- shard yield SpecPowerDelta feeds State's in-flight projection.  ⚠ They were ONE field
+  -- until 2026-07-30: CoachDemonology asked `generates == 3` to mean "this Art is Infernal
+  -- Bolt".  That silently couples a rotation decision to a TUNING number — retune Infernal
+  -- Bolt off 3, or give Ruination a yield, and the brain recommends the wrong Art at the top
+  -- of the burst window with nothing naming the cause.  SpecDestruction split exactly this
+  -- overload out of `abbr`; this is the same fix on its sibling.  Branch on `art`, never on a
+  -- number that exists for arithmetic.
+  [433891] = { group = "core", kind = "button", spends = "art", art = "infernal", generates = 3,
                cadence = "reactive", expect = false, abbr = "IB", label = "Infernal Bolt (alt ID, unconfirmed)" },
-  [434506] = { group = "core", kind = "button", spends = "art", generates = 3,
+  [434506] = { group = "core", kind = "button", spends = "art", art = "infernal", generates = 3,
                cadence = "reactive", expect = false, abbr = "IB", label = "Infernal Bolt" },  -- CONFIRMED live
-  [434635] = { group = "core", kind = "button", spends = "art",
+  [434635] = { group = "core", kind = "button", spends = "art", art = "ruination",
                cadence = "reactive", expect = false, abbr = "RU", label = "Ruination" },      -- CONFIRMED live
-  [434636] = { group = "core", kind = "button", spends = "art",
+  [434636] = { group = "core", kind = "button", spends = "art", art = "ruination",
                cadence = "reactive", expect = false, abbr = "RU", label = "Ruination (alt ID, unconfirmed)" },
 
   -- ── Essential: the fel explosion (§3 "aoe" / lime) ────────────────────────

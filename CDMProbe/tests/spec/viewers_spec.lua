@@ -28,13 +28,28 @@ describe("Viewers — item identity resolvers", function()
     H.load("Viewers.lua")
   end)
 
-  describe("ns.ItemCooldownID", function()
-    it("is SHIPPED by the addon, not supplied by a test", function()
-      -- The regression guard proper.  If this function ever goes missing again — deleted
-      -- with its module, renamed, moved behind a load-order change — this fails loudly
-      -- instead of the HUD silently drawing nothing.
-      assert.equals("function", type(ns.ItemCooldownID))
+  -- THE EXISTENCE GATE.  Every symbol the pipeline calls directly across a module boundary,
+  -- asserted to actually SHIP.  Scoped to Viewers.lua's own surface plus the two cross-module
+  -- entry points State/HudLayout call unguarded, because those are the calls whose absence is
+  -- invisible: elsewhere they are stubbed, so busted stays green against a deleted function.
+  -- That is exactly how the v0.32.25 outage survived two days of a green suite.
+  describe("the shipped-symbol gate", function()
+    for _, name in ipairs({ "GetViewer", "GetItemFrames", "ItemCooldownID",
+                            "ItemBaseSpellID", "ItemDisplaySpellID" }) do
+      it(("ns.%s is SHIPPED by the addon, not supplied by a test"):format(name), function()
+        assert.equals("function", type(ns[name]))
+      end)
+    end
+
+    it("ns.HudBinds.Get is SHIPPED — State calls it unguarded for every keybind", function()
+      -- ⚠ mock_ns does NOT define ns.HudBinds, so nothing else in the suite would notice
+      -- this going missing: State would just hand back a nil keybind on every icon.
+      H.load("HudBinds.lua")
+      assert.equals("function", type(ns.HudBinds and ns.HudBinds.Get))
     end)
+  end)
+
+  describe("ns.ItemCooldownID", function()
 
     it("reads the item's own cooldownID field", function()
       assert.equals(34991, ns.ItemCooldownID({ cooldownID = 34991 }))

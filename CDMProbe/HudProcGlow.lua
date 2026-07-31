@@ -37,7 +37,7 @@ local function hookItem(item)
   if not ns.HasMethod(item, "RefreshOverlayGlow") then return end
   item.__glowHooked = true
   hooksecurefunc(item, "RefreshOverlayGlow", function(self)
-    if not (ns.HudOn and ns.HudOn()) then return end
+    if not ns.HudOn() then return end
     local a = self.SpellActivationAlert
     if a then a:SetAlpha(DIM) end
   end)
@@ -46,9 +46,8 @@ end
 -- Walk our tracked CDM item frames (State's robust enumeration).  Reused for the
 -- one-time hook install, the immediate dim pass, and the restore.
 local function forEachItem(fn)
-  if not ns.VIEWERS then return end
   for _, v in ipairs(ns.VIEWERS) do
-    local viewer = ns.GetViewer and ns.GetViewer(v.frame)
+    local viewer = ns.GetViewer(v.frame)
     if viewer then
       for _, item in ipairs(ns.GetItemFrames(viewer)) do
         fn(item)

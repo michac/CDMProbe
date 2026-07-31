@@ -207,9 +207,10 @@ function spec:RankWinner(ctx, excluded)
   end
   local k, lv, nt
 
-  -- Which Demonic Art is armed?  Infernal Bolt refills +3 (generates == 3); Ruination
-  -- is the no-refund triple-imp Art.  Only one is ever armed at a time.
-  local artIsInfernal = (ctx.artInfo and ctx.artInfo.generates == 3) or false
+  -- Which Demonic Art is armed?  Only one ever is.  Read the SEMANTIC field, never the
+  -- shard yield: `generates` is tuning arithmetic and would flip this decision if retuned
+  -- (SpecDemonology's transform block explains the split).
+  local artIsInfernal = (ctx.artInfo and ctx.artInfo.art == "infernal") or false
 
   -- L1 — Ruination: the free triple-imp Art, top press whenever armed.
   if ctx.artFrame and not artIsInfernal then

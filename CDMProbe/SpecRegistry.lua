@@ -83,9 +83,13 @@ function ns.ResolveActiveSpec()
     -- New spec: drop caches scoped to the PREVIOUS spec so the new one never reads a
     -- stale per-spellID estimate.  HudBinds self-invalidates on the same event, but the
     -- napkin has no listener of its own — this is the one cache the resolver must clear.
-    -- pcall'd: these run inside an event handler, where a silent throw must never wedge.
-    pcall(function() if ns.HudNapkin and ns.HudNapkin.Reset then ns.HudNapkin.Reset() end end)
-    pcall(function() if ns.HudBinds and ns.HudBinds.Invalidate then ns.HudBinds.Invalidate() end end)
+    -- pcall'd: these run inside an event handler, where a throw must never wedge the swap.
+    -- ⚠ DIRECT calls inside the pcall — no `ns.X and ns.X.Y` existence guard.  A guard here
+    -- would turn a renamed Reset into "the napkin silently keeps the old spec's estimates
+    -- across a respec", which is the same silent-no-op class as the v0.32.25 outage.  The
+    -- pcall reports a real throw; a missing definition is a bug and should be one.
+    pcall(ns.HudNapkin.Reset)
+    pcall(ns.HudBinds.Invalidate)
     ns.InvalidateSpecCaches()
   end
 end

@@ -244,15 +244,40 @@ function H.fresh()
   H.load("SpecDestruction.lua") -- self-registers spec 267
   H.load("CoachDestruction.lua")-- attaches the Destruction brain to spec 267
 
+  -- Forward-declared so the two module stubs below can close over it before it is filled.
+  local fx
+
+  -- A fake napkin for HudScore's sake; hudnapkin_spec replaces this by loading the
+  -- real module, so the two never fight.
+  ns.HudNapkin = {
+    SOON_LEAD = 3.0,
+    Remaining = function(id) return fx.remain[id] end,
+    SourceOf  = function(id) return fx.remainSource[id] end,
+    Start     = function() end,     -- St.Acquire calls this DIRECTLY (no nil guard)
+    Reset     = function() end,     -- ResolveActiveSpec calls this DIRECTLY on a spec swap
+  }
+
+  -- The keybind cache State stitches onto every row.  ⚠ Stubbed here ONLY so State can be
+  -- driven in isolation — per the v0.32.25 doctrine a stub proves the CALLER works given the
+  -- collaborator, never that the collaborator exists.  `viewers_spec`'s shipped-symbol gate
+  -- is the companion that loads the REAL HudBinds.lua and asserts `Get` is really there.
+  ns.HudBinds = {
+    Get        = function(spellID) return fx.keybind[spellID] end,
+    Start      = function() end,
+    Invalidate = function() end,
+  }
+
   -- Static activation is gone (Phase 5) — activate via the REAL resolver so every spec
   -- ships with ns.ActiveSpec = Demo exactly as before, transparently to the 137 tests.
+  -- ⚠ MUST come after the two stubs above: the resolver calls HudNapkin.Reset /
+  -- HudBinds.Invalidate directly on a spec change, with no existence guard.
   ns.ResolveActiveSpec()
 
   -- The fixture handle every spec pokes.  Tables are keyed by spellID.
-  local fx = {
+  fx = {
     mode = nil, shards = nil, projected = false, aoe = false,
     cost = {}, baseCD = {}, remain = {}, remainSource = {},
-    present = {}, override = {},
+    present = {}, override = {}, keybind = {},
     -- `known` drives the fake C_SpellBook.IsSpellKnown above (State's virtual-row fence).
     -- Empty by default, so virtual rows only appear where a spec explicitly asks for them.
     known = {},
@@ -266,13 +291,7 @@ function H.fresh()
 
   ns.HudChrome = { GetReady = function(item) return item and item.ready end }
 
-  -- A fake napkin for HudScore's sake; hudnapkin_spec replaces this by loading the
-  -- real module, so the two never fight.
-  ns.HudNapkin = {
-    SOON_LEAD = 3.0,
-    Remaining = function(id) return fx.remain[id] end,
-    SourceOf  = function(id) return fx.remainSource[id] end,
-  }
+  -- (ns.HudNapkin / ns.HudBinds are defined ABOVE, before ResolveActiveSpec.)
 
   -- The STATE surface HudScore.For reads (see its header): override / Mode /
   -- ProjectedShards / SourcePresent / aoe.  `override` IS fx.override, so a spec
