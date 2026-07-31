@@ -57,7 +57,7 @@ return function(H, SECRET)
   --             internals reads (`item.auraDataUnit`, `item.PandemicIcon`) are expressed.
   --   methods = { "GetAuraDataUnit", "CheckPandemicTimeDisplay" }
   --             defined as no-op stubs, purely so `ns.HasMethod` answers TRUE.  Their
-  --             ABSENCE is the point: a bind-time capability check (rule 18) has to be
+  --             ABSENCE is the point: a bind-time capability check (rule 17b) has to be
   --             falsifiable, and by default an item here exposes none of them, so a case
   --             states "the mechanism is present" by listing it and "absent" by not.
   --             ⚠ Never CALL these in the code under test — they are a capability probe.

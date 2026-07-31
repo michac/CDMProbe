@@ -301,7 +301,7 @@ function DL.Render(pulse, guidance, drawList)
   --                                                           answer the old pipeline could
   --                                                           never reach)
   --   ?           the read refused (secret / threw)       (=> no opinion, hand to the edge)
-  --   X           the writer methods are gone             (=> rule 18's fallback; if this
+  --   X           the writer methods are gone             (=> rule 17b's fallback; if this
   --                                                           appears, Blizzard moved the
   --                                                           internals — a finding, not a
   --                                                           bug)

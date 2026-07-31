@@ -233,7 +233,7 @@ local function status()
   -- read nil forever — indistinguishable from "no aura".  So the check is on the WRITER
   -- METHODS and its failure has to be loud, or the DoT line silently drops back to the
   -- alert latch (which cannot clear itself) with nothing on screen to say so.  ABSENT here
-  -- is the rule-18 fallback working as designed: a FINDING, not a bug.
+  -- is the rule-17b fallback working as designed: a FINDING, not a bug.
   local rows, unit, window = ns.State.AuraFrameCapability()
   if rows == 0 then
     ns.Print("  aura-frame read: |cff808080no item frames|r (are the CDM viewers shown?)")

@@ -208,7 +208,7 @@ describe("DecisionLog.Render", function()
     end)
 
     it("a refused read is `?` and a vanished mechanism is `X` — never `off`", function()
-      -- The distinction the whole rule-18 fence exists for: "we could not read it" and
+      -- The distinction the whole rule-17b fence exists for: "we could not read it" and
       -- "Blizzard stopped writing it" must both be visible, and neither may look like the
       -- positive claim that the DoT is down.
       assert.truthy(dotOf(build{ auraFrames = { [ID.TYRANT] =

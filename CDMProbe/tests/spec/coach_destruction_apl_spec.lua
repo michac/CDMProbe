@@ -182,7 +182,7 @@ local function build(f)
   --   dotFrame "target"|"player"|"none"|"unreadable"   what the frame says about presence
   --   dotFramePandemic (bool)                          the refresh-window mirror
   --   dotFrameIncapable                                the writer methods are gone —
-  --                                                    rule-18's fallback-to-the-latch case
+  --                                                    rule-17b's fallback-to-the-latch case
   --   dotFrameOn                                       which id carries it (default: dotID)
   local auraFrames = {}
   if f.dotFrame or f.dotFrameIncapable then
@@ -646,7 +646,7 @@ describe("Destruction rotation list (from specs/destruction/rotation.md)", funct
         assert.equals("frame", ctx.dotFrom)
       end)
 
-      it("an INCAPABLE frame falls back to the latch — rule 18's documented fallback", function()
+      it("an INCAPABLE frame falls back to the latch — rule 17b's documented fallback", function()
         -- The fields are widget internals with no deprecation path.  If Blizzard stops
         -- writing them the row must carry NO opinion, not a silent negative: a
         -- silently-absent field reading as "no DoT" is the confident-wrong-answer failure
