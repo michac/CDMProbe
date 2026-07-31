@@ -4,9 +4,8 @@
 -- State/Coach/Binder/Renderer reads it.  It exists to answer a small set of open
 -- questions about `CooldownViewerItemMixin:TriggerAlertEvent`; once those answers are
 -- settled game-wide invariants in knowledge/addon-dev/api-events-and-discovery.md §2.8,
--- delete this file, its `.toc` line, its command and its SavedVariables key.  This is the
--- shape the retired `/cdmp probe` was supposed to have had: ONE question, ONE tape, a
--- clear end date — not a kitchen sink that outlives its purpose.
+-- delete this file, its `.toc` line, its command and its SavedVariables key.  ONE question,
+-- ONE tape, a clear end date — not a kitchen sink that outlives its purpose.
 --
 -- THE QUESTIONS (docs/status.md; KB §2.8):
 --   Q1  Does `PandemicTime` fire at all, and does it fire IN COMBAT?

@@ -250,7 +250,7 @@ function spec:RankWinner(ctx, excluded)
 
   -- L4 — Implosion when off cooldown.  Its real gate is a SECRET imp count, so the press
   -- cannot be conditioned on it; sitting below the Tyrant block, it never hijacks the
-  -- setup, and the ROTATION_FALLBACK offers the alternative instead of a JUDGE hedge.
+  -- setup, and the ROTATION_FALLBACK offers the alternative instead of a separate hedge.
   if ctx.implosionProbablyUp then
     k, lv, nt = pick(key(S.IMPLOSION), "ROTATION"); if k then return k, lv, nt end
   end
