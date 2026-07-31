@@ -1130,8 +1130,8 @@ local D = {
 
   {
     name = "read/a-SECRET-isKnown-becomes-an-affirmative-true",
-    status = "pinned-defect",
-    fixes = "phase2 §3.4",
+    status = "green",
+    fixed = "phase2 §3.4",
     spec = 3,
     pins = "A SECRET VALUE IS TRUTHY IN LUA, so `info.isKnown and true or false` turns a "
         .. "refusal into `true` — the row then reads \"the client says you have this "
@@ -1148,8 +1148,8 @@ local D = {
 
   {
     name = "read/an-absent-isKnown-on-a-present-struct-becomes-false",
-    status = "pinned-defect",
-    fixes = "phase2 §3.4",
+    status = "green",
+    fixed = "phase2 §3.4",
     spec = 3,
     pins = "The same and/or trap in the other direction, and the more dangerous one: a "
         .. "struct that answers but omits `isKnown` yields FALSE, which is a DROP.  So "
@@ -1432,8 +1432,8 @@ local D = {
 
   {
     name = "read/isKnown-is-bare-indexed-on-a-struct-that-can-raise",
-    status = "pinned-defect",
-    fixes = "phase2 §3.9",
+    status = "green",
+    fixed = "phase2 §3.9",
     spec = 3,
     pins = "State pcalls the CALL and checks IsSecretTable, then stops — `St.Build` "
         .. "bare-indexes info.spellID / overrideSpellID / overrideTooltipSpellID / "
@@ -1451,17 +1451,19 @@ local D = {
 
   {
     name = "read/hasAura-is-bare-indexed-on-a-struct-that-can-raise",
-    status = "pinned-defect",
-    fixes = "phase2 §3.9",
+    status = "green",
+    fixed = "phase2 §3.9",
     spec = 3,
     pins = "The same contradiction at a second field, so the finding cannot be dismissed "
         .. "as one unlucky line.  If H.poison makes St.Build throw here too, the crash "
-        .. "path is structural rather than incidental.",
+        .. "path is structural rather than incidental.  ALSO pins the salvage: `isKnown` "
+        .. "is extracted AFTER `hasAura`, so a single pcall around the whole copy would "
+        .. "lose it silently — a raising field must not take its neighbours with it.",
     ref = "security-taint-and-restricted-data.md — restricted-data field access under "
        .. "12.0; cooldown-manager.md §7 Tier 1",
     rows = { { cid = 903, category = "Essential", frame = {}, infoPoison = { "hasAura" },
                info = { spellID = CHAOS_BOLT, isKnown = true, hasAura = true } } },
-    expect = { raw = { [903] = { spellID = CHAOS_BOLT, hasAura = ABSENT } } },
+    expect = { raw = { [903] = { spellID = CHAOS_BOLT, hasAura = ABSENT, isKnown = true } } },
   },
 
   ------------------------------------------------------------------------------

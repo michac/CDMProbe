@@ -96,6 +96,18 @@ local function readable(v)
   return type(v) == "number" and not ns.IsSecret(v)
 end
 
+-- The BOOLEAN sibling of `readable`, which is a `type(v) == "number"` test and therefore
+-- cannot guard a flag at all.  Deliberately a sibling rather than a widening: `readable`
+-- has 23 numeric call sites and every one of them means "is this a usable id".
+--
+-- ⚠ ORDER MATTERS.  `issecretvalue` is asked BEFORE `type`, because `type()` returns the
+-- TRUE type of a secret and therefore passes (security-taint-and-restricted-data.md rule
+-- 13).  And a boolean secret is exactly the case rule 15 says `if v then` may not decide.
+local function readableBool(v)
+  if ns.IsSecret(v) then return false end
+  return type(v) == "boolean"
+end
+
 local function cooldownInfo(cooldownID)
   if not (C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo) then
     return nil
@@ -103,6 +115,79 @@ local function cooldownInfo(cooldownID)
   local ok, info = pcall(C_CooldownViewer.GetCooldownViewerCooldownInfo, cooldownID)
   if not ok or type(info) ~= "table" or ns.IsSecretTable(info) then return nil end
   return info
+end
+
+--------------------------------------------------------------------------------
+-- readInfo — the struct, extracted ONCE into a plain record (§3.9)
+--------------------------------------------------------------------------------
+-- `cooldownInfo` above pcalls the CALL and checks `IsSecretTable`, then stops — and
+-- St.Build used to bare-index nine fields off the result, outside any pcall, twice for two
+-- of them.  Meanwhile `rawCooldown` pcalls the equivalent field access on a table that
+-- passed the SAME two checks, with the comment "a table that passes issecrettable can
+-- still throw on access under the 12.0 restrictions" (Util.lua:160-163).  Either that
+-- claim is true and Build's per-row loop was a live crash path — one that would take the
+-- whole 10 Hz pipeline down with no `dropped` entry and no decision-log line — or the
+-- other guard is superstition.  `H.poison` settles it: St.Build DID throw.  (The trigger
+-- is currently absent in the client: zero struct fields raised on index across 72
+-- cooldownIDs x 2 hero trees x in/out of combat, `[client]` 2026-07-31.  So this is
+-- cheap insurance, not a live fire.)
+--
+-- ONE pcall on the fast path, per-field only on the way down.  A single pcall around the
+-- whole copy is the cheap shape, but on a raise it would lose every field AFTER the one
+-- that threw — so a raising `isKnown` would silently take `flags` with it, which is the
+-- quiet-failure class this whole file is built against.  So: try the batch, and salvage
+-- field by field only if it fails.
+local INFO_FIELDS = { "spellID", "overrideSpellID", "overrideTooltipSpellID",
+                      "hasAura", "selfAura", "charges", "isKnown", "flags" }
+
+local function copyInfoFields(info, rec)
+  for i = 1, #INFO_FIELDS do
+    local k = INFO_FIELDS[i]
+    rec[k] = info[k]
+  end
+end
+
+-- The static candidate POOL, guarded at every step the way Census.lua's `poolOf` is: the
+-- index can raise, the table can be secret, and iterating it can raise independently of
+-- both.  A refusal yields an EMPTY pool, never a partial one presented as whole.
+local function readPool(info)
+  local out = {}
+  local t
+  if not pcall(function() t = info.linkedSpellIDs end) then return out end
+  if type(t) ~= "table" or ns.IsSecretTable(t) then return out end
+  local ok = pcall(function()
+    for _, id in ipairs(t) do
+      if readable(id) then out[#out + 1] = id end
+    end
+  end)
+  if not ok then return {} end
+  return out
+end
+
+local function readInfo(cooldownID)
+  local info = cooldownInfo(cooldownID)
+  if info == nil then return nil end
+  local rec = { raised = {} }
+  if not pcall(copyInfoFields, info, rec) then
+    for i = 1, #INFO_FIELDS do
+      local k = INFO_FIELDS[i]
+      rec[k] = nil
+      local ok, v = pcall(function() return info[k] end)
+      if ok then rec[k] = v else rec.raised[k] = true end
+    end
+  end
+  rec.linkedSpellIDs = readPool(info)
+  return rec
+end
+
+-- A struct FLAG off the extracted record: `nil` when the field could not be read at all,
+-- true/false otherwise.  ⚠ A SECRET flag stays TRUTHY here, deliberately — arming an aura
+-- read on a flag we could not read is the safe direction (`flags/a-SECRET-hasAura-is-
+-- truthy-and-arms-the-read` pins it).  It is only `isKnown`, which REMOVES a row, that
+-- must refuse to launder a refusal into an assertion; that one goes through readableBool.
+local function flagOf(rec, key)
+  if rec == nil or rec.raised[key] then return nil end
+  return rec[key] and true or false
 end
 
 --------------------------------------------------------------------------------
@@ -1502,7 +1587,11 @@ function St.Build(drain)
 
   local cooldowns = {}
   for cooldownID, categoryName in pairs(set) do
-    local info = cooldownInfo(cooldownID)
+    -- ONE guarded extraction of the struct, into a plain record (§3.9).  Every field below
+    -- is read off `info` the record, never off the client's table — so the double-index the
+    -- row build used to do is gone, and a raising field yields `nil` instead of taking the
+    -- whole 10 Hz pipeline down from inside a per-row loop.
+    local info = readInfo(cooldownID)
     local base = info and readable(info.spellID) and info.spellID or nil
     local live = liveSpellID(info) or base
     -- The DISPLAY identity, resolved here as well as in the fold, because the LIVE READS
@@ -1511,18 +1600,23 @@ function St.Build(drain)
     local ovID  = info and readable(info.overrideSpellID) and info.overrideSpellID or nil
     local ovtID = info and readable(info.overrideTooltipSpellID) and info.overrideTooltipSpellID or nil
     local ident = base ~= nil and ns.DisplayIdentity(base, ovID, ovtID) or base
-    local hasAura = info and info.hasAura and true or false
-    local selfAura = info and info.selfAura and true or false
-    local hasCharges = info and info.charges and true or false
-    -- ⚠ THREE-VALUED, and it MUST be built with an if.  The obvious one-liner
-    -- `info and (info.isKnown and true or false) or nil` is a Lua and/or trap: a FALSE
-    -- middle term falls through to the `or nil`, so `isKnown` could only ever read `true`
-    -- or `nil` — never `false`.  It shipped that way since W4 Phase 1 and went unnoticed
-    -- because the field had no consumer until field-fix A gave it one.  The three values are
-    -- load-bearing now: false = "the client says unlearned" (a drop), nil = "no info struct
-    -- / unreadable" (NOT a drop).
+    local hasAura    = flagOf(info, "hasAura")
+    local selfAura   = flagOf(info, "selfAura")
+    local hasCharges = flagOf(info, "charges")
+    -- ⚠ THREE-VALUED, and every one of the three is load-bearing: false = "the client says
+    -- unlearned" (a DROP), nil = "no struct, or we could not read the field" (NOT a drop),
+    -- true = talented.
+    --
+    -- It used to be `if info ~= nil then isKnown = info.isKnown and true or false end`, and
+    -- the comment there was right about the and/or trap it was avoiding and blind to two
+    -- others.  A SECRET VALUE IS TRUTHY IN LUA, so a refused read became an affirmative
+    -- `true` — a phantom ability re-entering the rotation, which is the exact shape
+    -- field-fix A existed to close.  And a struct that ANSWERS but omits the field became
+    -- `false`, i.e. a drop — a real button silently disappearing.  So "we don't know" was
+    -- reachable only when the WHOLE struct was missing.  `readableBool` closes both: it
+    -- asks `issecretvalue` before `type`, and it takes `nil` to `false`.
     local isKnown
-    if info ~= nil then isKnown = info.isKnown and true or false end
+    if info ~= nil and readableBool(info.isKnown) then isKnown = info.isKnown end
 
     -- Build the inverse identity index as we go (B3).
     if base then St.baseOfCast[base] = base end
@@ -1530,12 +1624,8 @@ function St.Build(drain)
     -- (the charge napkin's base -> cooldownID binding is done below, off the MEASURED
     --  `charge.charged` rather than the struct flag — see readCharge)
 
-    local linked = {}
-    if info and type(info.linkedSpellIDs) == "table" then
-      for _, id in ipairs(info.linkedSpellIDs) do
-        if readable(id) then linked[#linked + 1] = id end
-      end
-    end
+    -- The static candidate pool, already guarded end to end by readPool.
+    local linked = (info and info.linkedSpellIDs) or {}
 
     -- Charges, and the napkin's base -> cooldownID edge.  The alert and the OOC seed arrive
     -- keyed by cooldownID; a cast arrives keyed by spellID.  Bound off the MEASURED `charged`
@@ -1555,8 +1645,11 @@ function St.Build(drain)
       category   = categoryName,
       spellID    = ns.Stash(base),
       liveSpellID = ns.Stash(readable(live) and live or nil),
-      overrideSpellID = info and ns.Stash(readable(info.overrideSpellID) and info.overrideSpellID or nil) or nil,
-      overrideTooltipSpellID = info and ns.Stash(readable(info.overrideTooltipSpellID) and info.overrideTooltipSpellID or nil) or nil,
+      -- ⚠ THE ALREADY-RESOLVED LOCALS, not a second index of the struct.  These used to be
+      -- re-read here, which was the double-index half of §3.9 — two chances to raise, and
+      -- two chances to disagree with the identity the row was actually read under.
+      overrideSpellID = ns.Stash(ovID),
+      overrideTooltipSpellID = ns.Stash(ovtID),
       linkedSpellIDs = linked,
       selfAura   = selfAura,
       hasAura    = hasAura,
