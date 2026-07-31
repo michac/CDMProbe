@@ -551,18 +551,28 @@ local function readAura(hasAura, selfAura, activeByID, ids, aurasSecret)
   for _, id in ipairs(ids) do
     if readable(id) and activeByID[id] then return { readable = true, active = true } end
   end
+  -- ⚠ A REFUSAL ON ONE ID IS NOT A VERDICT ON THE ROW (§3.6, fixed 2026-07-31).  This used
+  -- to `return { readable = false }` on the FIRST pcall failure, so ids 2..n were never
+  -- asked and the row claimed "the aura space is unreadable" on evidence about ONE id —
+  -- when a later id might answer cleanly.  The ids are ALTERNATIVES (rungs 1-3 all draw
+  -- from the same pool), not one question asked once.  So remember the refusal, keep
+  -- walking, and fold it into the same branch that already handles a partially-hidden aura
+  -- space below: a positive answer from any id still wins, and if none comes, the refusal
+  -- makes `false` dishonest exactly the way a secret aura does.
+  local refused = false
   if C_UnitAuras and C_UnitAuras.GetPlayerAuraBySpellID then
     for _, id in ipairs(ids) do
       if readable(id) then
         local ok, aura = pcall(C_UnitAuras.GetPlayerAuraBySpellID, id)
-        if not ok then return { readable = false } end
-        if type(aura) == "table" then return { readable = true, active = true } end
+        if not ok then refused = true
+        elseif type(aura) == "table" then return { readable = true, active = true } end
       end
     end
   end
-  -- Not positively confirmed.  If auras are being hidden this pulse, absence is
-  -- unknowable -> readable:false.  Only a fully-readable aura space makes false honest.
-  if aurasSecret and aurasSecret > 0 then return { readable = false } end
+  -- Not positively confirmed.  If auras are being hidden this pulse — or one of our own
+  -- reads refused — absence is unknowable -> readable:false.  Only a fully-readable aura
+  -- space, fully asked, makes `false` honest.
+  if refused or (aurasSecret and aurasSecret > 0) then return { readable = false } end
   return { readable = true, active = false }
 end
 

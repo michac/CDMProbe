@@ -1208,8 +1208,8 @@ local D = {
 
   {
     name = "read/a-throwing-aura-read-condemns-the-whole-row",
-    status = "pinned-defect",
-    fixes = "phase2 §3.6",
+    status = "green",
+    fixed = "phase2 §3.6",
     spec = 3,
     pins = "`readAura` walks the row's associated ids and returns \"unreadable\" on the "
         .. "FIRST pcall failure — ids 2..n are never asked.  So the row claims the aura "
