@@ -46,12 +46,15 @@ function ns.SetActiveSpec(specID)
   end
 end
 
--- BUILD-SCOPED CACHE INVALIDATION (field-fix B).  A spec brain may cache a fact that is
--- constant for a BUILD but not for a character — Destruction caches its hero tree, which it
--- resolves once through the talent API rather than per pulse.  A spec that caches such a
--- thing exposes `Invalidate()`; this drops every registered spec's cache, not just the
--- active one, so swapping away and back cannot resurrect a stale answer.  pcall'd: it runs
--- from event handlers, where a throw must never wedge the resolver.
+-- BUILD-SCOPED CACHE INVALIDATION.  A spec brain may cache a fact that is constant for a
+-- BUILD but not for a character.  Such a spec exposes `Invalidate()`; this drops EVERY
+-- registered spec's cache, not just the active one, so swapping away and back cannot
+-- resurrect a stale answer.  pcall'd: it runs from event handlers, where a throw must
+-- never wedge the resolver.
+-- ⚠ No spec implements `Invalidate` today — Destruction's hero-tree cache moved into
+-- State (invalidated on SPELLS_CHANGED with the rest of the client reads).  The seam is
+-- kept because it is the sanctioned place for the next build-scoped cache; if you add
+-- one, this is already wired to the two events that can move it.
 function ns.InvalidateSpecCaches()
   for _, spec in pairs(ns.Specs) do
     if type(spec.Invalidate) == "function" then pcall(spec.Invalidate, spec) end

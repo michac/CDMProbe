@@ -91,42 +91,29 @@ end
 local function num(v) return type(v) == "number" and v or nil end
 
 --------------------------------------------------------------------------------
--- HERO TREE — asked, not inferred (field-fix B)
+-- HERO TREE — read by State, inferred here only as a fallback
 --------------------------------------------------------------------------------
--- ⚠ WHAT WAS WRONG.  This used to be a one-line structural inference: "Wither REPLACES
--- Immolate on Hellcaller, so a tracked Wither is the tell."  The field falsified it on the
--- first live session — a real Hellcaller build tracked Malevolence but IMMOLATE, and the
--- inference confidently returned Diabolist.  A single structural signal cannot carry this:
--- what the CDM tracks is a layout fact, and the hero tree is a talent fact.
+-- ⚠ WHAT WAS WRONG the first time.  This used to be a one-line structural inference:
+-- "Wither REPLACES Immolate on Hellcaller, so a tracked Wither is the tell."  The field
+-- falsified it on the first live session — a real Hellcaller build tracked Malevolence but
+-- IMMOLATE, and the inference confidently returned Diabolist.  A single structural signal
+-- cannot carry this: what the CDM tracks is a layout fact, the hero tree is a talent fact.
 --
--- So ASK.  `C_ClassTalents.GetActiveHeroTalentSpec()` returns the active SubTreeID
--- (Blizzard_APIDocumentationGenerated/ClassTalentsDocumentation.lua:82), and TraitSubTree @
--- 12.0.7 pins the two Warlock-Destruction values below.  Verified present in this build.
+-- So we ASK the talent API — but the ASKING is State's job, not the brain's.  `pulse.hero`
+-- carries the answer (State.lua's heroCache), which puts the hero tree ON THE PULSE: a
+-- captured pulse can now reproduce a Hellcaller decision, instead of the brain reaching
+-- into the live client from inside a 10 Hz Context.
 --
 -- The ladder, in order of trustworthiness:
---   1. the API                       — authoritative; cached, since it is respec-scoped
---   2. MULTI-signal inference        — strictly better than the one signal that already
---                                      failed: EITHER Hellcaller tell counts, and the
---                                      Diabolist tells are read independently
---   3. Diabolist, and SAY SO         — the KB's v1 profile is the least-surprising default,
---                                      but a defaulted answer is announced, never silent
-local HERO_BY_SUBTREE = { [58] = "hellcaller", [59] = "diabolist" }   -- TraitSubTree @ 12.0.7
-
-local heroCached = nil    -- the API's answer only.  Respec-scoped; cleared by spec:Invalidate
-local heroSaid   = nil    -- the last resolution announced, so the chat line fires once
-
--- pcall + IsSecret guarded per project doctrine: an API that is missing, restricted, or
--- throws must degrade to the inference, never take the pipeline down with it.
-local function heroFromAPI()
-  if heroCached ~= nil then return heroCached end
-  if not (C_ClassTalents and C_ClassTalents.GetActiveHeroTalentSpec) then return nil end
-  local ok, subTreeID = pcall(C_ClassTalents.GetActiveHeroTalentSpec)
-  if not ok or ns.IsSecret(subTreeID) or type(subTreeID) ~= "number" then return nil end
-  -- An UNKNOWN subtree is not an answer: fall through to the inference rather than caching
-  -- a nil we would then have to distinguish from "not asked yet".
-  heroCached = HERO_BY_SUBTREE[subTreeID]
-  return heroCached
-end
+--   1. `state.hero`             — State's talent-API read; authoritative when present
+--   2. MULTI-signal inference   — the fallback for a refused/absent API read.  Strictly
+--                                 better than the one signal that already failed: EITHER
+--                                 Hellcaller tell counts, and the Diabolist tells are read
+--                                 independently.  Battle-tested, so it stays.
+--   3. Diabolist, and SAY SO    — the KB's v1 profile is the least-surprising default, but
+--                                 a defaulted answer is announced, never silent.  The
+--                                 announcement itself lives in HudDriver (the one-shot
+--                                 notice pattern); this returns the reason for it.
 
 -- The fallback.  Deliberately NOT cached: it reads the tracked set, which is empty on the
 -- first pulses after a login/relayout — caching it there would freeze the wrong answer for
@@ -143,34 +130,12 @@ local function heroFromSignals(facts, artArmed, ritualUp)
   return "diabolist", "no hero-tree signal in the tracked set"
 end
 
-local function resolveHero(facts, artArmed, ritualUp)
-  local hero = heroFromAPI()
-  local how = "talent API"
-  if not hero then
-    local why
-    hero, why = heroFromSignals(facts, artArmed, ritualUp)
-    how = why and ("defaulted — " .. why) or "inferred from the tracked set"
-  end
-  -- ANNOUNCED, once per change.  A defaulted hero tree silently deciding the rotation is
-  -- exactly what went wrong in the field; the chat line is what makes it arguable.
-  local said = hero .. "|" .. how
-  if said ~= heroSaid then
-    heroSaid = said
-    ns.Printf("Destruction: hero tree = |cffffffff%s|r (%s)", hero, how)
-  end
-  return hero
-end
-
--- Cache invalidation.  The resolver calls this on any event that could have changed the
--- build (see SpecRegistry): a respec changes the hero tree without changing the SPEC, so
--- PLAYER_SPECIALIZATION_CHANGED alone is not enough — TRAIT_CONFIG_UPDATED is the one that
--- actually fires for a hero swap.
-function spec:Invalidate()
-  -- ⚠ `heroSaid` is deliberately NOT cleared.  TRAIT_CONFIG_UPDATED fires several times for
-  -- one loadout swap (and on login), so clearing the announcement latch here would print the
-  -- same unchanged hero tree three or four times in a row.  Keeping it means the chat line
-  -- fires on a real CHANGE of the resolved answer, which is what it is for.
-  heroCached = nil
+-- Returns (hero, how).  `how` is a human phrase describing the PROVENANCE, published on
+-- ctx so the driver can announce a resolution the player would want to argue with.
+local function resolveHero(stateHero, facts, artArmed, ritualUp)
+  if stateHero ~= nil then return stateHero, "talent API" end
+  local hero, why = heroFromSignals(facts, artArmed, ritualUp)
+  return hero, why and ("defaulted — " .. why) or "inferred from the tracked set"
 end
 
 --------------------------------------------------------------------------------
@@ -332,8 +297,20 @@ function spec:Context(state, env)
   -- These are now resolved INDEPENDENTLY, which is the field-fix.  The old code derived the
   -- tree FROM the DoT ("a tracked Wither means Hellcaller"), so one wrong reading of the
   -- tracked set corrupted both answers at once — and it did, in the field.
-  ctx.hero = resolveHero(factsByBase, ctx.artArmed, ctx.ritualUp)
+  ctx.hero, ctx.heroHow = resolveHero(state.hero, factsByBase, ctx.artArmed, ctx.ritualUp)
+  -- ⚠ `ctx.hellcaller` currently has NO consumer in RankWinner, and that is not an
+  -- oversight: L5b Malevolence fires because Malevolence is in `facts` at all, and L8's DoT
+  -- id resolves from whichever candidate the pulse carries.  Both are TRACKED-SET facts, so
+  -- the cascade needs no tree branch — which is exactly the independence the field-fix
+  -- bought (the old code derived the tree FROM the DoT, so one wrong read corrupted both).
+  -- Published anyway: it is the honest name for the build, the decision log wants it, and
+  -- the first line that genuinely needs a tree branch should read this and not re-infer.
   ctx.hellcaller = (ctx.hero == "hellcaller")
+  -- Published on the spec object for the DRIVER to announce.  Context runs at 10 Hz and is
+  -- PURE by contract, so it must not print; HudDriver owns the one-shot-notice pattern and
+  -- latches on this string changing.  A defaulted hero tree silently deciding the rotation
+  -- is exactly what went wrong in the field — the chat line is what makes it arguable.
+  self.heroResolution = ctx.hero .. "|" .. ctx.heroHow
 
   -- ⚠ WHICH ID IS THE DoT?  Not a constant — whichever of the candidates the pulse actually
   -- carries.  Immolate occupies TWO cooldownIDs with DIFFERENT spellIDs (the DoT aura 157736

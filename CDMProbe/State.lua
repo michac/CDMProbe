@@ -780,6 +780,45 @@ end
 -- and `wipe(nil)` would have thrown inside an event handler.
 local knownCache = {}
 
+-- THE ACTIVE HERO TALENT TREE, cached, on the same discipline as knownCache above.
+--
+-- This is a CLIENT READ, so it belongs in Stage 1 and nowhere else — architecture.md's
+-- "State is the only stage that touches the game API".  It used to live inside the
+-- Destruction brain's Context, which meant `C_ClassTalents.GetActiveHeroTalentSpec()` ran
+-- from a function the Coach calls at 10 Hz, and — worse — the hero tree DECIDED which
+-- rotation lines fire without ever appearing on the pulse.  A captured pulse therefore
+-- could not reproduce a Hellcaller decision, which is the entire payoff of the seam.
+--
+-- Cached because it is respec-scoped, wiped by the SAME `SPELLS_CHANGED` branch as
+-- knownCache: that event covers talent swaps, spec changes and hero-tree swaps alike.
+-- pcall + IsSecret guarded: an API that is missing, restricted, or throws must yield nil
+-- ("we don't know"), never take the pipeline down and never a poisoned number.  A nil here
+-- is honest — the Coach has a documented inference fallback for exactly this case.
+local heroCache = { asked = false, id = nil, name = nil }
+
+-- SubTreeID -> our generic hero name.  TraitSubTree @ 12.0.7.  State names no rotation,
+-- but it does carry the game's own vocabulary through, exactly as it does for `mode` and
+-- `powerType` — the ROTATIONAL meaning of "hellcaller" stays Coach-only.
+local HERO_BY_SUBTREE = {
+  [58] = "hellcaller",   -- Warlock
+  [59] = "diabolist",    -- Warlock
+}
+
+local function readHero()
+  if heroCache.asked then return heroCache.name, heroCache.id end
+  heroCache.asked = true
+  if not (C_ClassTalents and C_ClassTalents.GetActiveHeroTalentSpec) then return nil, nil end
+  local ok, subTreeID = pcall(C_ClassTalents.GetActiveHeroTalentSpec)
+  if not ok or ns.IsSecret(subTreeID) or type(subTreeID) ~= "number" then return nil, nil end
+  -- The raw id is carried even when we have no NAME for it, so a captured pulse from a
+  -- class we have not mapped is still self-describing rather than silently blank.
+  heroCache.id   = subTreeID
+  heroCache.name = HERO_BY_SUBTREE[subTreeID]
+  return heroCache.name, heroCache.id
+end
+
+St.ReadHero = readHero          -- test seam (the resolution path)
+
 local eframe = CreateFrame("Frame")
 eframe:SetScript("OnEvent", function(_, event, a1, a2, a3)
   if event == "COOLDOWN_VIEWER_SPELL_OVERRIDE_UPDATED" then
@@ -854,6 +893,8 @@ eframe:SetScript("OnEvent", function(_, event, a1, a2, a3)
     -- (talent swap, spec change, level, a temporarily-granted ability).  Wiping is the whole
     -- invalidation: the next Build re-reads the spellbook for each candidate once.
     wipe(knownCache)
+    -- The hero tree moves on exactly the same events, so it invalidates here too.
+    heroCache.asked, heroCache.id, heroCache.name = false, nil, nil
   elseif event == "PLAYER_REGEN_DISABLED" then
     St.combatStartedAt = GetTime()
     pushEvent({ kind = "combat_start", at = GetTime() })
@@ -1436,6 +1477,13 @@ function St.Build(drain)
     -- `/cdmp single|multi|aoe` sets in Mode.lua); the Coach READS it.  Spec-agnostic: it
     -- is a generic "st"|"aoe" enum, not a rotation fact.  Defaults "st" (single).
     mode   = (ns.Mode and ns.Mode.aoe) and "aoe" or "st",
+    -- THE ACTIVE HERO TALENT TREE, read from the client here so it rides the pulse: a
+    -- captured pulse must be able to reproduce a hero-gated decision.  `hero` is the
+    -- generic name ("hellcaller"), `heroSubTreeID` the raw TraitSubTree id — carried even
+    -- when unmapped so the capture is self-describing.  BOTH may be nil (API refused, or
+    -- a class we have no map for); the Coach has an inference fallback for that.
+    hero          = (readHero()),
+    heroSubTreeID = select(2, readHero()),
     -- RAW CDM view (retained, additive) — probe / DecisionLog short-codes / cdmp.py.
     cooldowns = cooldowns,
     -- DOMAIN view (the re-layer) — the pipeline's input; the Coach decides on THIS.

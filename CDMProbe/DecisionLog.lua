@@ -343,7 +343,11 @@ function DL.Record(pulse, guidance, drawList)
   -- tree the player was LEAVING.  So stamp the configuration whenever it CHANGES: the
   -- ability set is the one signal that moves on both a spec swap and a hero-tree swap.
   -- Computed only on the change-only path, so a deduped tick pays nothing.
-  local config = (ns.detectedSpecName or "?") .. " tracked:" .. trackedCodes(pulse)
+  -- The hero tree is part of the configuration now that it rides the pulse, so a re-stamp
+  -- names it directly instead of leaving the reader to infer it from the ability set.
+  local config = (ns.detectedSpecName or "?")
+    .. " hero:" .. tostring(pulse.hero or "?")
+    .. " tracked:" .. trackedCodes(pulse)
   if config ~= DL.lastConfig then
     DL.lastConfig = config
     entries[#entries + 1] = string.format("t%.1f # config %s", GetTime() - DL.t0, config)

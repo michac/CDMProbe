@@ -87,10 +87,30 @@ local function maybeNotifyUnsupported()
     ns.detectedSpecName or "this spec", id, n, n == 1 and " is" or "s are")
 end
 
+-- One-shot chat notice when the active spec brain resolves a build fact the player would
+-- want to argue with — today, Destruction's hero tree.  The brain publishes
+-- `spec.heroResolution` ("<hero>|<how>") from its Context; announcing is the DRIVER's job
+-- because Context is pure by contract and runs at 10 Hz.
+--
+-- ⚠ THE LATCH IS DELIBERATELY NEVER CLEARED.  TRAIT_CONFIG_UPDATED fires several times for
+-- one loadout swap (and on login), so re-arming it on invalidation would print the same
+-- unchanged hero tree three or four times in a row.  Latching on the RESOLUTION STRING
+-- means the line fires on a real CHANGE of the answer, which is what it is for.
+local function maybeNotifyHero()
+  local spec = ns.ActiveSpec
+  local res = spec and spec.heroResolution
+  if res == nil or res == D.notifiedHero then return end
+  D.notifiedHero = res
+  local hero, how = res:match("^([^|]*)|(.*)$")
+  ns.Printf("%s: hero tree = |cffffffff%s|r (%s)",
+    ns.detectedSpecName or "spec", hero or res, how or "?")
+end
+
 local function tick()
   maybeNotifyUnsupported()
   local pulse = ns.State.Build(false)
   local guidance = D.coach:Compute(pulse)
+  maybeNotifyHero()          -- after Compute: the brain's Context is what publishes it
   -- Live Layout + registry from the same icon-viewer walk (Phase 5a).  Register every
   -- handle -> frame so the Renderer can anchor a cue dot inside its icon corner.
   local layout, registry = ns.HudLayout.Scan()

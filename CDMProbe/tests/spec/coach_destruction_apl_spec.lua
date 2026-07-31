@@ -175,6 +175,9 @@ local function build(f)
   return {
     at = NOW, combat = (f.combat ~= false), combatStartedAt = NOW - 60,
     mode = f.mode or "st",
+    -- The hero tree rides the PULSE (State reads the talent API, not the brain).  nil =
+    -- State could not read it, which is what drives the brain's inference fallback.
+    hero = f.hero,
     power = { SoulShards = shardBar },
     buffs = buffs,
     history = {},
@@ -735,51 +738,49 @@ describe("Destruction rotation list (from specs/destruction/rotation.md)", funct
     end
     local function contextOf(facts) return ns.Specs[267]:Context(build(facts), Coach) end
 
-    after_each(function() _G.C_ClassTalents = nil end)
-
-    it("asks the talent API first: SubTreeID 58 is Hellcaller", function()
-      _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return 58 end }
-      local ctx = contextOf(live({ shards = 1 }))
+    ------------------------------------------------------------------------
+    -- The pulse carries it.  `state.hero` is State's talent-API read, and it is
+    -- AUTHORITATIVE — the brain never re-derives it when the pulse has an answer.
+    ------------------------------------------------------------------------
+    it("takes the hero tree from the PULSE: hellcaller", function()
+      local ctx = contextOf(live({ shards = 1, hero = "hellcaller" }))
       assert.equals("hellcaller", ctx.hero)
       assert.is_true(ctx.hellcaller)
+      assert.equals("talent API", ctx.heroHow)
     end)
 
-    it("SubTreeID 59 is Diabolist", function()
-      _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return 59 end }
-      assert.equals("diabolist", contextOf(live({ shards = 1 })).hero)
+    it("takes the hero tree from the PULSE: diabolist", function()
+      local ctx = contextOf(live({ shards = 1, hero = "diabolist" }))
+      assert.equals("diabolist", ctx.hero)
+      assert.is_false(ctx.hellcaller)
     end)
 
-    it("the API OVERRIDES the tracked set — the exact field failure", function()
-      -- Malevolence tracked, Wither NOT tracked, Immolate present: the structural
-      -- inference this replaces answered "Diabolist" here, confidently and wrongly.
-      _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return 58 end }
-      local ctx = contextOf(live({ shards = 1, ritual = true }))
+    it("the PULSE overrides the tracked set — the exact field failure", function()
+      -- Malevolence tracked, Wither NOT tracked, Immolate present, Ritual up: the
+      -- structural inference answered "Diabolist" here, confidently and wrongly.
+      assert.equals("hellcaller",
+        contextOf(live({ shards = 1, ritual = true, hero = "hellcaller" })).hero)
+    end)
+
+    it("publishes the resolution for the driver to announce, never printing itself", function()
+      local before = #H.printed
+      local ctx = contextOf(live({ shards = 1, hero = "hellcaller" }))
+      assert.equals("hellcaller|talent API", ns.Specs[267].heroResolution)
+      assert.equals(ctx.hero .. "|" .. ctx.heroHow, ns.Specs[267].heroResolution)
+      -- Context is PURE by contract: the chat line is HudDriver's job.
+      assert.equals(before, #H.printed)
+    end)
+
+    ------------------------------------------------------------------------
+    -- The inference path — used ONLY when the pulse carries no hero (State's read
+    -- refused or is absent).  MULTI-signal, so either Hellcaller tell counts.
+    ------------------------------------------------------------------------
+    it("falls back to the inference when the pulse carries no hero", function()
+      local ctx = contextOf(live({ shards = 1 }))
       assert.equals("hellcaller", ctx.hero)
+      assert.equals("inferred from the tracked set", ctx.heroHow)
     end)
 
-    it("caches the API answer, and spec:Invalidate() drops it", function()
-      local calls = 0
-      _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() calls = calls + 1; return 58 end }
-      contextOf(live({ shards = 1 })); contextOf(live({ shards = 1 }))
-      assert.equals(1, calls)
-      ns.Specs[267]:Invalidate()
-      contextOf(live({ shards = 1 }))
-      assert.equals(2, calls)
-    end)
-
-    it("survives an API that throws, falling through to the inference", function()
-      _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() error("restricted") end }
-      assert.equals("hellcaller", contextOf(live({ shards = 1 })).hero)
-    end)
-
-    it("an UNKNOWN SubTreeID is not an answer — it falls through, not caches", function()
-      _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return 999 end }
-      assert.equals("hellcaller", contextOf(live({ shards = 1 })).hero)
-    end)
-
-    ------------------------------------------------------------------------
-    -- The inference path (no API): MULTI-signal, so either Hellcaller tell counts.
-    ------------------------------------------------------------------------
     it("infers Hellcaller from MALEVOLENCE alone (no Wither)", function()
       assert.equals("hellcaller", contextOf(live({ shards = 1 })).hero)
     end)
@@ -826,49 +827,22 @@ describe("Destruction rotation list (from specs/destruction/rotation.md)", funct
       assert.equals("diabolist", contextOf({ ritual = true, shards = 1 }).hero)
     end)
 
-    it("defaults to Diabolist on AMBIGUOUS signals, and says so", function()
+    it("defaults to Diabolist on AMBIGUOUS signals, and says why", function()
       local ctx = contextOf(live({ ritual = true, shards = 1 }))
       assert.equals("diabolist", ctx.hero)
-      assert.truthy(table.concat(H.printed, "\n"):find("defaulted", 1, true))
+      assert.truthy(ctx.heroHow:find("defaulted", 1, true))
     end)
 
-    it("defaults to Diabolist with NO signal at all, and says so", function()
+    it("defaults to Diabolist with NO signal at all, and says why", function()
       local ctx = contextOf({ shards = 1 })
       assert.equals("diabolist", ctx.hero)
-      assert.truthy(table.concat(H.printed, "\n"):find("defaulted", 1, true))
+      assert.truthy(ctx.heroHow:find("defaulted", 1, true))
     end)
 
-    local function heroLines()
-      local n = 0
-      for _, line in ipairs(H.printed) do if line:find("hero tree", 1, true) then n = n + 1 end end
-      return n
-    end
-
-    it("announces the resolution ONCE, not once per pulse", function()
-      _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return 58 end }
-      contextOf(live({ shards = 1 })); contextOf(live({ shards = 1 }))
-      assert.equals(1, heroLines())
-    end)
-
-    it("an invalidation that resolves to the SAME tree does not re-announce", function()
-      -- TRAIT_CONFIG_UPDATED fires several times for one loadout swap; re-printing an
-      -- unchanged answer each time would be noise, so the announcement latch survives the
-      -- cache drop.
-      _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return 58 end }
-      contextOf(live({ shards = 1 }))
-      ns.Specs[267]:Invalidate()
-      contextOf(live({ shards = 1 }))
-      assert.equals(1, heroLines())
-    end)
-
-    it("but a REAL hero change does re-announce", function()
-      local sub = 58
-      _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return sub end }
-      contextOf(live({ shards = 1 }))
-      sub = 59
-      ns.Specs[267]:Invalidate()
-      assert.equals("diabolist", contextOf(live({ shards = 1 })).hero)
-      assert.equals(2, heroLines())
+    it("a defaulted resolution is published as defaulted, not laundered into 'talent API'",
+    function()
+      contextOf({ shards = 1 })
+      assert.truthy(ns.Specs[267].heroResolution:find("defaulted", 1, true))
     end)
 
     ------------------------------------------------------------------------
@@ -893,8 +867,7 @@ describe("Destruction rotation list (from specs/destruction/rotation.md)", funct
     end)
 
     it("hero and DoT are now INDEPENDENT — Hellcaller maintaining Immolate", function()
-      _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return 58 end }
-      local ctx = contextOf(live({ dot = "missing", shards = 1 }))
+      local ctx = contextOf(live({ dot = "missing", shards = 1, hero = "hellcaller" }))
       assert.equals("hellcaller", ctx.hero)
       assert.equals(ID.IMMO_CAST, ctx.dotID)      -- the pairing the old code could not express
     end)

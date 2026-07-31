@@ -896,3 +896,113 @@ describe("State charge napkin (field-fix C2)", function()
     assert.equals(1, (St.Charges.Read(CONF_CID)))
   end)
 end)
+
+--------------------------------------------------------------------------------
+-- THE HERO TALENT TREE — a client read, so it lives in Stage 1 and rides the pulse.
+--
+-- It used to be resolved inside the Destruction brain's Context, which meant the Coach
+-- called a game API at 10 Hz AND that the hero tree — which gates real rotation lines —
+-- never appeared on the pulse, so a captured pulse could not reproduce a Hellcaller
+-- decision.  These pin the resolution path itself; the brain's INFERENCE fallback (for
+-- when this returns nil) is pinned in coach_destruction_apl_spec.
+--------------------------------------------------------------------------------
+describe("State hero tree", function()
+  local ns, St
+  before_each(function()
+    ns = H.fresh()
+    H.load("State.lua")
+    St = ns.State
+  end)
+  after_each(function() _G.C_ClassTalents = nil end)
+
+  it("maps SubTreeID 58 to hellcaller, carrying the raw id too", function()
+    _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return 58 end }
+    local name, id = St.ReadHero()
+    assert.equals("hellcaller", name)
+    assert.equals(58, id)
+  end)
+
+  it("maps SubTreeID 59 to diabolist", function()
+    _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return 59 end }
+    assert.equals("diabolist", (St.ReadHero()))
+  end)
+
+  it("an UNKNOWN SubTreeID yields no name but still reports the raw id", function()
+    -- So a capture from a class we have not mapped is self-describing rather than blank.
+    _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return 999 end }
+    local name, id = St.ReadHero()
+    assert.is_nil(name)
+    assert.equals(999, id)
+  end)
+
+  it("an API that THROWS yields nil, not a crash — the brain's inference takes over", function()
+    _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() error("restricted") end }
+    assert.is_nil((St.ReadHero()))
+  end)
+
+  it("an ABSENT API yields nil", function()
+    _G.C_ClassTalents = nil
+    assert.is_nil((St.ReadHero()))
+  end)
+
+  it("a SECRET SubTreeID is refused — never a poisoned value on the pulse", function()
+    local secret = {}
+    H.secret[secret] = true
+    _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return secret end }
+    assert.is_nil((St.ReadHero()))
+  end)
+
+  it("caches the read — one API call, not one per pulse", function()
+    local calls = 0
+    _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() calls = calls + 1; return 58 end }
+    St.ReadHero(); St.ReadHero(); St.ReadHero()
+    assert.equals(1, calls)
+  end)
+
+  it("caches a REFUSED read too, so a broken API is not re-asked every tick", function()
+    local calls = 0
+    _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() calls = calls + 1; error("no") end }
+    St.ReadHero(); St.ReadHero()
+    assert.equals(1, calls)
+  end)
+
+  it("SPELLS_CHANGED drops the cache — a hero swap moves the answer", function()
+    local sub = 58
+    _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return sub end }
+    assert.equals("hellcaller", (St.ReadHero()))
+    sub = 59
+    assert.equals("hellcaller", (St.ReadHero()))   -- still cached
+    for _, f in ipairs(H.frames) do f:Fire("OnEvent", "SPELLS_CHANGED") end
+    assert.equals("diabolist", (St.ReadHero()))
+  end)
+
+  it("rides the PULSE, as name + raw id", function()
+    _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return 58 end }
+    _G.Enum.CooldownViewerCategory = { Essential = 0 }
+    _G.C_CooldownViewer = {
+      GetCooldownViewerCategorySet = function() return {} end,
+      GetCooldownViewerCooldownInfo = function() return nil end,
+    }
+    ns.OnLogin()
+    local pulse = St.Build(false)
+    assert.equals("hellcaller", pulse.hero)
+    assert.equals(58, pulse.heroSubTreeID)
+    _G.C_CooldownViewer = nil
+    _G.Enum.CooldownViewerCategory = nil
+  end)
+
+  it("carries nil hero when the read refuses — never a fabricated tree", function()
+    _G.C_ClassTalents = nil
+    _G.Enum.CooldownViewerCategory = { Essential = 0 }
+    _G.C_CooldownViewer = {
+      GetCooldownViewerCategorySet = function() return {} end,
+      GetCooldownViewerCooldownInfo = function() return nil end,
+    }
+    ns.OnLogin()
+    local pulse = St.Build(false)
+    assert.is_nil(pulse.hero)
+    assert.is_nil(pulse.heroSubTreeID)
+    _G.C_CooldownViewer = nil
+    _G.Enum.CooldownViewerCategory = nil
+  end)
+end)
