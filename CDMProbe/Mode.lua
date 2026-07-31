@@ -1,6 +1,5 @@
--- Mode.lua — the single/AoE target-mode toggle, extracted from the retired HudCore
--- (W4 cutover) so the feature survives the old engine's deletion.  A bool + setter +
--- 3 macro-friendly commands, nothing more.
+-- Mode.lua — the single/AoE target-mode toggle.  A bool + setter + 3 macro-friendly
+-- commands, nothing more.
 --
 -- WHO READS IT.  State forwards `ns.Mode.aoe` as its generic `mode` ("st"|"aoe") field
 -- and the Coach passes it to the active spec brain as `ctx.mode`.  WHAT a mode gates is

@@ -1,9 +1,9 @@
 -- HudBinds.lua — action-bar scan -> keybind string per spellID (cached).
 --
--- Identity chrome, deliberately OUTSIDE the §0.5.8 indicator contract: a keybind
--- is not a rotation signal, it's how you know which icon is which button.
+-- Identity chrome, deliberately OUTSIDE the cue contract: a keybind is not a rotation
+-- signal, it's how you know which icon is which button.
 --
--- Cost control (milestones "known risks"): the 180-slot scan is CACHED,
+-- Cost control: the 180-slot scan is CACHED,
 -- DEBOUNCED, and only ever runs OUT OF COMBAT.  Anything that could invalidate
 -- it (bindings changed, a slot's contents changed, spec swap, bar page flip)
 -- marks the cache dirty and arms a single timer; a rescan landing in combat is
@@ -146,8 +146,7 @@ local function runScan()
     return                       -- stays dirty; PLAYER_REGEN_ENABLED re-arms
   end
   -- Refresh the cache; the pipeline reads it live off State (State.readCd -> HudBinds.Get)
-  -- each tick, so there is no separate chrome hook to notify (the old engine's
-  -- ns.Hud.RefreshKeybinds was retired at the W4 cutover).
+  -- each tick, so there is nothing to notify.
   scan()
 end
 

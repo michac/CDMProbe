@@ -22,12 +22,8 @@ local DEFAULTS = {
   -- The greppable instrument for "why does /cdmp hud show nothing here?"; extracted to a
   -- flat .log by `wowkb.cdmp decisionlog`.  Structured, flushed on /reload.
   decisionlog = {},
-  -- TEMPORARY (AlertTape.lua) — a discovery tape for the CDM alert channel, answering
-  -- whether PandemicTime / ChargeGained / OnAura* fire in combat and whether the pandemic
-  -- fields are readable there.  Off unless `/cdmp alerts on` (`alerttape_on`).  **Delete
-  -- this key, AlertTape.lua and its .toc line once those rules are settled in
-  -- knowledge/addon-dev/api-events-and-discovery.md §2.8** — it is deliberately not a
-  -- permanent instrument.
+  -- TEMPORARY — the CDM alert-channel discovery tape.  Off unless `/cdmp alerts on`
+  -- (`alerttape_on`).  Its end date and what it is for: AlertTape.lua's header.
   alerttape = {},
   -- The moveable virtual-icon panel's saved point (HudVirtual.lua, `/cdmp panel`):
   -- `{ point, relPoint, x, y }`.  The EMPTY table means "no saved position" — RestorePosition

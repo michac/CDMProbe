@@ -45,12 +45,8 @@ end
 local function num(v) return type(v) == "number" and v or nil end
 
 --------------------------------------------------------------------------------
--- Context — the whole-board facts the cascade reads.  (Was Coach C:Context.)
+-- Context — the whole-board facts the cascade reads (contract: Coach.lua's header).
 --------------------------------------------------------------------------------
--- Returns ctx + the facts index (records by BASE spellID) so RankWinner/Emit can
--- address abilities by identity.  The Coach decides in spellID terms (the domain view);
--- cooldownID is transport the Binder owns — it never appears in the Coach's vocabulary.
--- `env` is the coach instance (carries env.shardCostFn — the injected live cost reader).
 function spec:Context(state, env)
   local S = ids()
   local factsByBase = {}
@@ -179,15 +175,11 @@ end
 --    Returns winnerKey, level, note.  No phase branch, and no nil "panel owns it" case:
 --    at pull start Dreadstalkers (held for the window, released by L6) is the answer,
 --    not a hardcoded SB+DB display.  Pooling is emergent — the build gates + the bottom
---    filler fill the bar on their own between higher-priority presses.  (Was Coach
---    C:RankWinner.)
+--    filler fill the bar on their own between higher-priority presses.
 --------------------------------------------------------------------------------
--- `excluded` (optional) — a cooldownID key removed from consideration at EVERY line
--- that names it, so the caller can recompute the honest SECOND place (the winner's
--- ability pulled, list re-run from the top — NOT "the next line").  Ported from
--- apl-prototype/apl.lua's evaluate_once(excluded).  `excluded` is a BASE spellID (the
--- winner), and since each ability is one base-keyed record, excluding it suppresses the
--- ability everywhere (Demonbolt in the block + L5; Dreadstalkers in the block + L3).
+-- `excluded` (contract: Coach.lua's header) suppresses an ability EVERYWHERE it appears,
+-- because each ability is one base-keyed record — Demonbolt in the block and at L5,
+-- Dreadstalkers in the block and at L3, both dropped by one exclusion.
 function spec:RankWinner(ctx, excluded)
   local S = ids()
   local projected = ctx.projected or ctx.shards or 0   -- value + signed incoming
@@ -285,8 +277,8 @@ function spec:RankWinner(ctx, excluded)
 end
 
 --------------------------------------------------------------------------------
--- Escalate — ROTATION -> LATE only from READABLE overdue-ness.  Secret buckets
---    (Demonic Core stacks) can never go LATE.  (Was Coach C:Escalate.)
+-- Escalate — Demo's readable overdue-ness.  Demonic Core stacks are secret, so a
+--    Core-gated press can never escalate.
 --------------------------------------------------------------------------------
 function spec:Escalate(winnerKey, level, ctx)
   if not winnerKey or level ~= "ROTATION" then return level end

@@ -6,9 +6,6 @@
 --     State.Build  ->  Coach:Compute  ->  Binder:Bind(guidance, layout)  ->  Renderer:Draw
 --       (pulse)         (Guidance)          (DrawList)                         (pixels)
 --
--- This IS the HUD now: the W4 cutover retired the old HudChrome/HudBoard/HudScore engine
--- and reclaimed `/cdmp hud` for the pipeline.  The transitional `hud2` alias and its two
--- one-shot login migrations were dropped in v0.32.34; nothing is called `hud2` any more.
 -- `/cdmp hud` toggles it; `/cdmp hud off` clears it, leaving Blizzard's UI pixel-clean.
 --
 -- THE TRIGGER (reuse the poll cadence).  A dedicated ~10 Hz ticker rebuilds the pulse
@@ -39,7 +36,7 @@ function ns.HudOn() return D.on end
 D.lastCues = 0        -- diagnostics: cues drawn on the last tick
 D.lastError = nil     -- diagnostics: last tick error text (nil = clean)
 
-local TICK_PERIOD = 0.1   -- ~10 Hz, matching State's poll + the old HUD's cadence
+local TICK_PERIOD = 0.1   -- ~10 Hz, matching State's poll cadence
 
 -- The three persistent pipeline instances, built once on first enable.  Pure factories,
 -- so re-use is free and holds the Renderer's frame/texture pool + handle registry.
@@ -217,8 +214,6 @@ end
 --------------------------------------------------------------------------------
 -- Command
 --------------------------------------------------------------------------------
--- THE `/cdmp hud` command (reclaimed at the W4 cutover; the transitional alias that carried
--- muscle memory across it was dropped in v0.32.34).
 local function hudCommand(rest)
   rest = (rest or ""):lower()
   if rest:find("layout") then return dumpLayout() end
@@ -231,8 +226,7 @@ ns.RegisterCommand("hud",
   "the HUD — the W4 pipeline (State -> Coach -> Binder -> Renderer). 'hud on|off' set it; 'hud layout' dumps the live Layout; 'hud status' the readout.",
   hudCommand)
 
--- /cdmp reset — turn the HUD off.  (The old engine + the probe that also hung off this
--- command are gone; the HUD is the only "experiment" left to reset.)
+-- /cdmp reset — turn the HUD off.  The HUD is the only thing left to reset.
 ns.RegisterCommand("reset", "turn the HUD off", function()
   if D.on then ns.SetHud(false) end
 end)
@@ -241,11 +235,9 @@ end)
 local prevOnLogin = ns.OnLogin
 function ns.OnLogin()
   if prevOnLogin then prevOnLogin() end
-  -- `ns.db.hud` is the pipeline's enable BOOL (reclaimed at the W4 cutover from the retired
-  -- old engine, which stored a SETTINGS TABLE under the same key).  The table-shaped value is
-  -- still dropped on sight — it is a type confusion, not a version we can read.
-  -- (The two one-shot migrations of the W4-era keys that lived here were removed in
-  --  v0.32.34, verified folded: neither key remains in SavedVariables.)
+  -- `ns.db.hud` is the pipeline's enable BOOL.  An older build stored a SETTINGS TABLE
+  -- under the same key, so a table-shaped value is dropped on sight — it is a type
+  -- confusion, not a version we can read.
   if ns.db and type(ns.db.hud) == "table" then ns.db.hud = nil end
   if ns.db and ns.db.hud then
     C_Timer.After(1.0, function() ns.SetHud(true) end)

@@ -338,14 +338,11 @@ function DL.Record(pulse, guidance, drawList)
   local entries = DL.session.entries
 
   -- CONFIG RE-STAMP.  The session header records the tracked set at the session's FIRST
-  -- record — which is the WRONG moment whenever the configuration changes later in the
-  -- load.  In the 2026-07-30 pass every run was its own login, but the respec happened
-  -- ~15 s AFTER logging in, so each session opened with the hero tree the player was
-  -- LEAVING and the header labelled the whole session with it (a Hellcaller run filed as
-  -- `tracked:Imm`).  The header was accurate for t0.0 and misleading for everything after.
-  -- So stamp the configuration whenever it CHANGES, not once per load: the ability set is
-  -- the one signal that moves on both a spec swap and a hero-tree swap.  Computed only on
-  -- the change-only path, so this costs nothing on a deduped tick.
+  -- record, which is accurate for t0.0 and MISLEADING for everything after any later
+  -- reconfiguration — a respec 15 s into a login labels the whole session with the hero
+  -- tree the player was LEAVING.  So stamp the configuration whenever it CHANGES: the
+  -- ability set is the one signal that moves on both a spec swap and a hero-tree swap.
+  -- Computed only on the change-only path, so a deduped tick pays nothing.
   local config = (ns.detectedSpecName or "?") .. " tracked:" .. trackedCodes(pulse)
   if config ~= DL.lastConfig then
     DL.lastConfig = config

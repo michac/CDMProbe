@@ -1,50 +1,47 @@
 -- Coach.lua — Stage 2 of the W4 pipeline: State -> **Coach** -> Guidance.
 --
--- WHY THIS EXISTS (docs/archive/w4-build-plan.md Phase 2, the ⛔ decision gate).  The live
--- HUD (HudState -> HudScore -> HudBoard -> HudChrome) scores every ability
--- INDEPENDENTLY, with no priority order.  The committed Guidance v1 contract
--- (guidance-contract.json) requires SINGLE-TOP-PRESS: at most ONE cue is the
--- "press now" call (ROTATION, or LATE when overdue) — the rotation's #1 ready
--- ability — and every other ready ability caps at AVAILABLE.  That makes the Coach
--- a RANKED WINNER, which the reused per-ability scorer structurally cannot be
--- (HudScore floors a probably-up hard-CD to NEVER, and its context-prunes lower
--- levels per-ability so two presses can green at once).  So the Coach REUSES the
--- readable facts but REDESIGNS the decision as an explicit priority cascade.
+-- THE CONTRACT — SINGLE TOP PRESS (guidance-contract.json).  At most ONE cue is the
+-- "press now" call (ROTATION, or LATE when overdue): the rotation's #1 ready ability.
+-- Everything else is decoration.  That makes the Coach a RANKED WINNER — an explicit
+-- priority cascade, never a per-ability scorer, which structurally cannot produce one
+-- winner because two abilities can independently score "press me".
 --
--- THE SHAPE (agreed this session):
---   1. Classify  — a PURE pass over the State pulse producing a rich candidate
---      record per cooldown (pressable / napkin-probably-up / armed / overdue /
---      transformed …).  Key change from HudScore: a hard-CD with an ELAPSED napkin
---      is ROTATION-ELIGIBLE, not NEVER.
---   2. Context   — the whole-board facts the cascade reads (phase, shards+incoming,
---      coreUp, artArmed, tyrant proximity, board freshness, mode, opener).
---   3. RankWinner — the ordered cascade: exactly one winner cooldownID + level.
---   4. Escalate  — ROTATION -> LATE only from READABLE overdue-ness (napkin elapsed
---      past the lead, or HoG parked at cap).  Secret buckets never go LATE.
---   5. Emit      — a SEPARATE pass over the abilities the winner did NOT claim: the
---      ROTATION_FALLBACK runner-up (winner's ability pulled, list re-run) and the
---      dumb per-ability SOON decoration, non-press BY CONSTRUCTION and coexisting
---      with the one press; plus resourceBars.  (JUDGE retired — the runner-up now
---      carries the uncertainty the hedge used to.)
+-- THE SHAPE — five passes, and the split between the shell and the spec brain:
+--   1. Classify  — PURE pass over the pulse -> a candidate record per ability
+--      (pressable / napkin-probably-up / armed / overdue / transformed …).  A hard-CD
+--      with an ELAPSED napkin is ROTATION-ELIGIBLE, not "never".            [SHELL]
+--   2. Context   — the whole-board facts the cascade reads.                 [BRAIN]
+--   3. RankWinner— the ordered cascade: exactly one winner + level.         [BRAIN]
+--   4. Escalate  — ROTATION -> LATE only from READABLE overdue-ness.  A cooldown we
+--      cannot read never goes LATE.                                        [BRAIN]
+--   5. Emit      — a SEPARATE pass over what the winner did NOT claim: the
+--      ROTATION_FALLBACK runner-up (winner pulled, list re-run) and the per-ability
+--      SOON decoration, non-press BY CONSTRUCTION; plus resourceBars.       [SHELL]
 --
--- PURE of frames, timers, and the live client — like HudBoard, a FACTORY
--- (Coach.New(cfg) / __index).  Everything volatile arrives in the `state` pulse
--- (State.Build's shape).  Deterministic in -> out: that is what lets the Tier-1
--- branch-coverage spec (busted coach_apl_spec) arbitrate it — the independent oracle
--- authored from apl-prototype/pseudocode.md (the golden corpus retired W4 Phase 8, its
--- rotation-gate role replaced by that per-branch spec).  Wired live behind
--- `/cdmp hud` — the pipeline driver (State -> Coach -> Binder -> Renderer).  It ran
--- parallel to the old HudBoard/HudScore engine during W4 Phase 5c; that engine was deleted
--- at the cutover and this is the sole path now.
+-- PURE of frames, timers, and the live client — a FACTORY (Coach.New(cfg) / __index).
+-- Everything volatile arrives in the `state` pulse (State.Build's shape).
+-- Deterministic in -> out: that is what lets the Tier-1 branch-coverage specs
+-- (coach_apl_spec / coach_destruction_apl_spec) arbitrate it as independent oracles,
+-- authored from the rotation docs rather than from this code.
 --
--- SPEC-AGNOSTIC (Phase 2): the Coach is now a GENERIC SHELL — Classify / Emit /
--- ResourceBars / Sequence + the Compute orchestration — that any spec drives.  The
--- rotation BRAIN (Context / RankWinner / Escalate + the Demo tunables + HoG's cost) moved
--- to CoachDemonology.lua, which attaches those methods to the active spec object (see
--- SpecRegistry / SpecDemonology).  Compute reads ns.ActiveSpec and delegates; an
--- unsupported spec (ActiveSpec == nil) yields EmptyGuidance (the Phase-1 passive-HUD
--- contract).  A second spec is a sibling Coach<Spec>.lua overriding the same three methods
--- — exactly the seam the old HudBoard documented, now realized.
+-- SPEC-AGNOSTIC.  This file is the generic SHELL; the rotation BRAIN (Context /
+-- RankWinner / Escalate + the tunables) lives on the active spec object, attached by
+-- Coach<Spec>.lua.  Compute reads ns.ActiveSpec and delegates; ActiveSpec == nil yields
+-- EmptyGuidance (the passive-HUD contract).  A second spec is a sibling Coach<Spec>.lua
+-- overriding the same three methods and nothing else.
+--
+-- THE BRAIN CONTRACT, stated ONCE here rather than re-stated in every Coach<Spec>.lua:
+--   * `Context(state, env)` -> ctx + a facts index keyed by BASE spellID.  The Coach
+--     decides in the domain view's vocabulary; cooldownID is transport the Binder owns
+--     and never appears in the Coach's vocabulary.  `env` is the coach instance, which
+--     carries `env.shardCostFn` (the injected live cost reader).
+--   * `RankWinner(ctx, excluded)` -> winnerKey, level, note.  `excluded` is a BASE
+--     spellID dropped at EVERY line that names it, so the shell can recompute the honest
+--     SECOND place by re-running the list from the top — NOT by taking "the next line".
+--     One base-keyed record per ability is what makes that a one-word exclusion.
+--   * `Escalate(winnerKey, level, ctx)` -> level.  ROTATION -> LATE only from READABLE
+--     overdue-ness; a bucket whose true gate is secret can never drive an escalation.
+-- Each brain's own header documents only its DELTA from this.
 local ADDON, ns = ...
 
 ns.Coach = {}
@@ -139,9 +136,8 @@ local function landedThisPulse(state, base)
 end
 
 --------------------------------------------------------------------------------
--- 1. Classify — the per-cooldown candidate record (REUSES HudScore's readable
---    sub-logic, re-pointed at the pulse; owns a REDESIGNED "probably-up is
---    pressable" semantics).  Auras are inputs, never scored (return nil).
+-- 1. Classify — the per-cooldown candidate record.  Owns the "probably-up is
+--    PRESSABLE" semantics.  Auras are inputs, never scored (return nil).
 --------------------------------------------------------------------------------
 function C.Classify(cd, state)
   -- `identity` is State's display-keyed identity (ns.DisplayIdentity) — the spell the row
@@ -223,8 +219,7 @@ end
 --------------------------------------------------------------------------------
 -- fallbackKey/fallbackNote — the SECOND place from RankWinner(ctx, winnerKey): the
 -- honest "what would I press instead" once the winner's ability is removed.  Always
--- offered when castable (the retired JUDGE hedge is replaced by showing the runner-up
--- as a real press).
+-- offered when castable.
 function C:Emit(state, ctx, winnerKey, level, winnerNote, fallbackKey, fallbackNote)
   local cues = {}
 
@@ -286,9 +281,8 @@ end
 
 --------------------------------------------------------------------------------
 -- sequence — RETIRED at the TCT redesign (docs/archive/w4-phase6-tct-redesign.md).  The
--- one-press-at-a-time cue walk replaced the opener panel (6e = drop the panel), so
--- the Coach never emits a panel now.  The contract field stays (show:false) for the
--- Binder/Renderer; 5e deletes HudPane/HudOpener/HudBurst.
+-- one-press-at-a-time cue walk replaced the opener panel, so the Coach never emits one.
+-- The contract field stays (show:false) for the Binder/Renderer.
 --------------------------------------------------------------------------------
 function C:Sequence(_state, _ctx)
   return { show = false }
@@ -321,8 +315,8 @@ function C:Compute(state)
   local winnerKey, level, note = spec:RankWinner(ctx)
   level = spec:Escalate(winnerKey, level, ctx)
   -- The honest second place: re-run the list with the winner's ability excluded.  Always
-  -- computed (the "always try to calculate a fallback" directive); Emit shows it whenever
-  -- it is castable, so the runner-up carries the uncertainty the JUDGE cue used to hedge.
+  -- computed; Emit shows it whenever it is castable, so the runner-up itself carries the
+  -- "I am not certain" signal rather than a separate hedge token.
   local fbKey, fbNote
   if winnerKey then
     local k, _, nt = spec:RankWinner(ctx, winnerKey)

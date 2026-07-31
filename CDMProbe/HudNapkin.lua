@@ -7,9 +7,8 @@
 -- INSTANT the cooldown lands, which mid-GCD is already too late to weave.  The
 -- lead time IS the feature.
 --
--- THE MECHANISM (promoted from Probes.lua's `casts` probe, which was logging
--- only).  We cannot read a live cooldown remaining — that's a Secret Value.  But
--- two things ARE readable: the moment a cast SUCCEEDS, and the spell's BASE
+-- THE MECHANISM.  We cannot read a live cooldown remaining — that's a Secret Value.
+-- But two things ARE readable: the moment a cast SUCCEEDS, and the spell's BASE
 -- cooldown length (static spell metadata, notes.md §1).  So:
 --
 --     on UNIT_SPELLCAST_SUCCEEDED(player, _, spellID):
@@ -20,40 +19,37 @@
 -- fenced so drift can only ever make the HUD EARLY, never WRONG:
 --
 --   1. THE OBSERVED EDGE IS GROUND TRUTH AND ALWAYS WINS.  An `Available` alert
---      clears the napkin outright (HudState calls Clear on that edge).  If CDR or
---      a reset proc brought the ability up early, the dot goes ROTATION at once
+--      clears the napkin outright (State.lua calls N.Clear on that edge).  If CDR or
+--      a reset proc brought the ability up early, the cue goes ROTATION at once
 --      regardless of what the estimate said.
+--      ⚠ CAVEAT, and it is a real one: State's readiness fold consults the napkin's
+--      `on-cooldown` verdict BEFORE `readyEdge`, deliberately, to win the just-cast
+--      race — so a genuine mid-cooldown RESET proc can be held back for as long as the
+--      estimate says.  Backlogged in docs/status.md ("the napkin's ready-edge
+--      precedence"); the honest fix compares the edge's timestamp against the napkin
+--      record's start so a FRESH edge wins and only a STALE one loses.
 --   2. EXPIRY NEVER CLAIMS READINESS.  If the estimate runs out with no edge
 --      seen, the state is "should be up, unconfirmed" and is SHOWN as that.  We
 --      never promote a dot to ROTATION on an estimate — that is the one thing
 --      that would make the dot lie.  Haste-scaled recharge and CDR make the
 --      estimate run long as often as short; the doctrine from notes.md §1 is
 --      round down, fire early, and yield to the observed edge.
---   3. READABILITY IS CHECKED, NOT ASSUMED.  milestones.md §7 assumes
---      UNIT_SPELLCAST_SUCCEEDED's spellID is readable in all combat contexts —
---      confirmed in a delve and at an open-world dummy, and taken as settled.
---      The check stays anyway, because the cost of being wrong is a feature that
---      silently tracks nothing: if it ever reads secret, this module records that
---      and `hud status` reports "napkin unavailable".  Reported, not inferred
---      later from a shrug.
+--   3. READABILITY IS CHECKED, NOT ASSUMED.  UNIT_SPELLCAST_SUCCEEDED's spellID is
+--      readable in every combat context we have measured, and taken as settled.  The
+--      check stays anyway, because the cost of being wrong is a feature that silently
+--      tracks nothing: if it ever reads secret, this module counts it (`N.secret`)
+--      rather than leaving the reader to infer it from a shrug.
+--
+-- TWO WAYS TO FILL ONE STORE.  Out of combat the client tells us the real remaining
+-- time (ns.ReadCooldown), and that lands here as a record with `source = "read"` rather
+-- than in a parallel store — one countdown, so N.Remaining and the SOON treatment need
+-- no special case.  Only PROVENANCE differs.  Precedence between the three sources:
+--   1. an OBSERVED ALERT EDGE always wins — `Available` clears seed and estimate alike;
+--   2. a SEED overwrites a cast-derived ESTIMATE (the client's own number beats our
+--      base-cooldown arithmetic);
+--   3. an ESTIMATE fills only what neither of the above has.
 local ADDON, ns = ...
 
---------------------------------------------------------------------------------
--- M3d — the SECOND way to fill the same store
---------------------------------------------------------------------------------
--- Out of combat the client will tell us the real remaining time (Util.lua
--- ns.ReadCooldown, measured 13/13 readable OOC).  That lands here as a napkin
--- record with `source = "read"` rather than in a parallel store: ONE countdown,
--- two ways to fill it, so N.Remaining and the SOON treatment need no change at
--- all.  The only thing that differs is PROVENANCE, which the row prints.
---
--- PRECEDENCE, stated once because this is where a future reader will get it
--- wrong — there are now THREE sources:
---   1. an OBSERVED ALERT EDGE always wins.  `Available` clears seed and
---      estimate alike (HudState's onAlert), exactly as it did in M3c.
---   2. a SEED overwrites a cast-derived ESTIMATE.  It is the client's own
---      number, not our base-cooldown arithmetic.
---   3. an ESTIMATE fills only what neither of the above has.
 ns.HudNapkin = {
   casts    = {},     -- spellID -> { started, length, source = "cast"|"read" }
   readable = nil,    -- nil = no player cast seen yet; true/false = spellID legible
@@ -61,7 +57,7 @@ ns.HudNapkin = {
   secret   = 0,      -- ...and with a secret one (the go-dark risk, counted)
   tracked  = 0,      -- ...of those, how many had a base cooldown worth tracking
   cleared  = 0,      -- napkins retired by an observed Available edge (ground truth)
-  seeded   = 0,      -- M3d — records written from a real client read, not arithmetic
+  seeded   = 0,      -- records written from a real client read, not arithmetic
 }
 local N = ns.HudNapkin
 
@@ -93,7 +89,7 @@ local function onSucceeded(_, _, spellID)
   end
 end
 
--- M3d — file a countdown from a REAL READ.  `started`/`length` are the client's
+-- File a countdown from a REAL READ.  `started`/`length` are the client's
 -- own startTime/duration in GetTime() units, so N.Remaining's arithmetic is
 -- unchanged; only the provenance differs.
 --
@@ -134,7 +130,7 @@ function N.Unconfirmed(spellID)
   return N.Remaining(spellID) == 0
 end
 
--- Ground truth arrived.  Called from HudState on an Available edge.
+-- Ground truth arrived.  Called from State.lua on an observed Available edge.
 function N.Clear(spellID)
   if type(spellID) ~= "number" then return end
   if N.casts[spellID] then

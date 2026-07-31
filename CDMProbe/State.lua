@@ -10,13 +10,6 @@
 -- architecture sanctions "a game-fact input like base cooldowns": State's code names
 -- no spell and no role; the rotational meaning stays Coach-only.)
 --
--- WHY IT EXISTS (was HudState.lua).  The old HudState was the de-facto State layer —
--- 1,254 lines that also scored and painted (w4-hud-audit.md A4), with three copies of
--- live-identity resolution (B1) and three event-ingest frames (A3).  This is the
--- clean-room Stage-1 extraction the W4 refactor built up from; it ran alongside
--- HudState during Phase 1 (parallel observation) and REPLACED it at the W4 cutover,
--- when the whole old engine was deleted.
---
 -- FOUR THINGS MAKE THIS "State", not "a reader":
 --   1. ANCHORED ON THE CDM DATABASE, not the live viewer frames.  We enumerate the
 --      full trackable set per category via C_CooldownViewer.GetCooldownViewerCategorySet
@@ -28,12 +21,12 @@
 --      return Secret Values that cannot be compared/formatted/keyed without erroring.
 --      Every live fact is therefore a VALUE or a marked absence (`readable=false`,
 --      the value field simply absent) — never a raw secret, on screen or on disk.
---   3. IDENTITY RESOLUTION LIVES HERE, ONE COPY (fixes B1).  We carry the raw ids
---      (spellID = base, plus overrideSpellID / overrideTooltipSpellID) and resolve a
---      single `liveSpellID` the whole pipeline reads, with its inverse `BaseOfCast`
---      (B3) beside it.  Keybinds still resolve off the BASE (the v0.7.0 finding-3
---      rule); the two resolutions are deliberately NOT unified.
---   4. READINESS IS OBSERVED, NOT GUESSED (W4 Phase 7).  The cd model is THREE
+--   3. IDENTITY RESOLUTION LIVES HERE, ONE COPY.  We carry the raw ids (spellID =
+--      base, plus overrideSpellID / overrideTooltipSpellID) and resolve a single
+--      `liveSpellID` the whole pipeline reads, with its inverse `BaseOfCast` beside it.
+--      Keybinds still resolve off the BASE; the two resolutions are deliberately NOT
+--      unified (see the identity section below).
+--   4. READINESS IS OBSERVED, NOT GUESSED.  The cd model is THREE
 --      honest states — ready | on-cooldown | unknown — with `source` (live|napkin|
 --      none) a trust annotation on `remaining`, not a second axis.  Readiness rests
 --      on an OOC read, the OOC baseline carried across combat entry, or an OBSERVED
@@ -43,8 +36,7 @@
 --
 -- NOT IN THIS FILE: any consumer of State.  Build() emits a table; nothing here scores
 -- it.  The live driver (HudDriver, /cdmp hud) Acquire()s ingestion and calls Build each
--- tick; the Coach above decides.  (A W4-Phase-1 statelog layer used to record pulses to
--- disk here for an independent test corpus; it was retired at the W4 cutover.)
+-- tick; the Coach above decides.
 local ADDON, ns = ...
 
 ns.State = {}
@@ -125,14 +117,9 @@ end
 --     aura/linkedSpellID rungs of that ladder live on the item MIXIN, not the info
 --     struct, so the observed COOLDOWN_VIEWER_SPELL_OVERRIDE_UPDATED override —
 --     which is exactly what an aura-driven transform fires — stands in for them).
---   * `spellID` (base) is `info.spellID` untouched.  KEYBINDS RESOLVE OFF THE BASE
---     (HudBinds.GetForItem, the v0.7.0 finding-3 rule): the action bar holds the
---     base spell, so while HoG is transformed into Ruination the base still finds
---     the key.  Unifying the two reintroduces that bug.
---
--- `S.override` mirrors HudState's override map but is owned independently — State
--- must not reach into HudState's state (that would couple two things W4 is prying
--- apart).  Populated from the same event, guarded the same way.
+--   * `spellID` (base) is `info.spellID` untouched.  KEYBINDS RESOLVE OFF THE BASE —
+--     the v0.7.0 rule stated in full at HudBinds.lua's header.  Unifying the two
+--     resolutions reintroduces that bug.
 St.override = {}          -- base spellID -> observed live override spellID
 
 local function liveSpellID(info)
@@ -634,13 +621,14 @@ local function onAlert(item, event)
   -- the two known-good edges act as its control group.  A no-op (one boolean test) unless
   -- `/cdmp alerts on`.  pcall'd: a discovery instrument must never break the pipeline.
   -- ⚠ One of only TWO legitimate guards on an `ns.` symbol in the addon (the other is
-  -- ns.SpecInfo in Util.lua).  AlertTape is a TEMPORARY instrument scheduled for deletion,
-  -- i.e. a genuinely optional collaborator — the case the no-guards rule carves out.  Every
-  -- other module we ship is called DIRECTLY so a missing definition throws.
+  -- ns.SpecInfo in Viewers.lua's DisplayIdentity).  AlertTape is a TEMPORARY instrument
+  -- scheduled for deletion, i.e. a genuinely OPTIONAL collaborator — the case the no-guards
+  -- rule carves out.  Every other module we ship is called DIRECTLY, so a missing
+  -- definition throws.
   if ns.AlertTape then pcall(ns.AlertTape.Record, item, event, cid) end
 
   -- THE PIPELINE.
-  if St.consumers <= 0 then return end   -- gated like the old HUD's ns.Hud.on
+  if St.consumers <= 0 then return end   -- nobody is ingesting: drop it
   local now = GetTime()
 
   -- READINESS (Phase 7b) — the two settled cooldown edges.
@@ -884,10 +872,8 @@ end)
 -- `power.SoulShards.incoming` (architecture.md Stage-1) = the net shard yield of casts
 -- currently IN FLIGHT, so the Coach can rank on PROJECTED shards (value + incoming) —
 -- the overcap guard and the HoG-SOON "pressable the instant an in-flight builder's
--- shard lands" cue.  Sourced from State's OWN cast history (a 'start' with no later
--- 'succeeded' for the same base, within a short flight window), NOT from HudState — the
--- clean-room separation (see the S.override note) is deliberate: State owns its
--- projection and never reaches into the old HUD's `S.cast`.
+-- shard lands" cue.  Sourced from State's OWN cast history: a 'start' with no later
+-- 'succeeded' for the same base, within a short flight window.
 --
 -- SPEC-AGNOSTIC BY THE SAME RULE AS THE NAPKIN.  The per-cast delta comes from the
 -- INJECTED `ns.SpecPowerDelta(base)` reader — the "injected mechanical shard-yield table"
@@ -977,13 +963,12 @@ St.ProjectIncoming  = projectIncoming    -- test seam (multi-power proof)
 --------------------------------------------------------------------------------
 -- The DOMAIN VIEW fold (W4 re-layer, filtered by field-fix A) — PURE
 --------------------------------------------------------------------------------
--- `abilities[base]` is documented as "the PRESSABLE representative row" of an ability.
--- Until 2026-07-30 it was nothing of the sort: State anchors on the CDM DATABASE with
--- `allowUnlearned = true` (see the header), so the fold happily promoted rows for spells
--- the character has not talented and rows the Layout can never draw.  Both read `ready`
--- forever — a hard cooldown that never runs — so they WIN the priority list and sit above
--- every real press.  One live session logged **216 dropped Soul Fire cues** from exactly
--- this: an untalented Soul Fire outranking the whole rotation, every GCD.
+-- `abilities[base]` is "the PRESSABLE representative row" of an ability, and PRESSABLE is
+-- ENFORCED here, not merely intended.  State anchors on the CDM DATABASE with
+-- `allowUnlearned = true` (see the header), so without this filter the fold promotes rows
+-- for spells the character has not talented and rows the Layout can never draw.  Both
+-- read `ready` FOREVER — a hard cooldown that never runs — so they win the priority list
+-- and sit above every real press.
 --
 -- TWO SIGNALS, and the order matters:
 --   * `displayable` (PRIMARY) — an item frame exists for this cooldownID in the live
@@ -995,11 +980,6 @@ St.ProjectIncoming  = projectIncoming    -- test seam (multi-power proof)
 --     since Phase 1 with zero consumers until now.  Catches the untalented rows
 --     (Soul Fire / Havoc / Channel Demonfire) that DO have no frame either, but this is
 --     the direct statement of the fact rather than a consequence of it.
---
--- WHY HERE AND NOT IN THE COACH.  `abilities` is the documented pressable view, and an
--- ability with no icon is not pressable.  Filtering at the source fixes BOTH registered
--- specs with no Coach edit and no spec edit — which is also why the existing branch
--- oracles stay untouched and green.
 --
 -- ⚠ FAILURE DIRECTION, deliberately chosen.  The whole point is REMOVING rows, so a wrong
 -- signal removes a real button — the same class of harm as the nil-guard outage.  Three
@@ -1282,9 +1262,7 @@ St.DisplayedIdentities = displayedIdentities  -- test seam (the display-identity
 St.SpellKnown        = spellKnown
 
 --------------------------------------------------------------------------------
--- Build — the pulse
---------------------------------------------------------------------------------
--- Constructs the reduced picture for THIS instant.  `drain` (capture path) moves
+-- St.Build — the reduced picture for THIS instant.  `drain` (capture path) moves
 -- the pending events into the pulse and clears them; a diagnostic Build leaves them
 -- for the next real capture so "delta since last pulse" stays honest.
 function St.Build(drain)

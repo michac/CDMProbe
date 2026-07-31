@@ -27,8 +27,8 @@
 -- `color:[r,g,b,a]`); that doc says the Stage-3/4 shape "is revised when the
 -- Binder is actually built".
 --
--- PURE-ISH FACTORY, like Coach/HudBoard: Renderer.New(cfg) / __index, theme
--- injectable, no global render state.  The pool + registry live on the instance.
+-- PURE-ISH FACTORY, like the Coach: Renderer.New(cfg) / __index, theme injectable, no
+-- global render state.  The pool + registry live on the instance.
 local ADDON, ns = ...
 
 ns.Renderer = {}
@@ -91,19 +91,17 @@ local GLOW_SPEC = {
   ROTATION_FALLBACK = { spin = false, pulse = false },
 }
 
--- powerType -> RGBA.  SOUL_SHARDS is the soul-violet HudChrome's rail paints a
--- GENERATE edge with (HudChrome.lua:1051) — the shard colour by construction.
+-- powerType -> RGBA.  SOUL_SHARDS is the soul-violet — the shard colour by construction.
 local function defaultPowerColor()
   return {
     SOUL_SHARDS = { 0.690, 0.420, 1.000, 1.00 },
   }
 end
 
--- Empty-pip ring for the resource bar (a state, not a guess) — HudChrome RAIL_RING.
+-- Empty-pip ring for the resource bar (a state, not a guess).
 local EMPTY_PIP = { 0.30, 0.29, 0.36, 0.60 }
 
--- Keybind-hint text colour — near-white green, reads on any icon (copied from
--- HudChrome KEY_COL, HudChrome.lua:45; keep in lock-step until the cutover).
+-- Keybind-hint text colour — near-white green, reads on any icon.
 local KEY_COL = { 0.78, 0.92, 0.80 }
 
 -- State -> row tint for the panel.  A bare colour cue on top of the state word.
@@ -231,21 +229,16 @@ function R:drawCues(cues)
         local dot = self.cueFrames[key]
         if not dot then
           dot = holder:CreateTexture(nil, "OVERLAY")
-          -- A CLEAN disc: a solid fill clipped by a real MaskTexture OBJECT.
-          --
-          -- Two cuts got here.  (1) WHITE8X8 + `SetMask(path)` drew a SQUARE — so that
-          -- combination demonstrably does not clip, which settles the interaction
-          -- addon-dev/frames-textures-animation.md §5.7 flags as uncited: `SetMask(path)`
-          -- does NOT survive/apply alongside `SetColorTexture`.  (2) The raid-blip atlas
-          -- WhiteCircle-RaidBlips is genuinely round, but ships a baked dark outline (blips
-          -- need to read against a map), and that border cannot be tinted away —
-          -- SetVertexColor MULTIPLIES, so black stays black — leaving a hard edge against
-          -- the glow instead of blending into it.
-          --
-          -- This is the idiom RingedFrameTemplate actually uses (:103-117): a MaskTexture
-          -- created on the parent and attached with AddMaskTexture, not the SetMask
-          -- shortcut.  Borderless by construction, since the shape comes from the mask's
-          -- alpha and the colour from our own fill.
+          -- A CLEAN disc: a solid fill clipped by a real MaskTexture OBJECT, attached
+          -- with AddMaskTexture.  Borderless by construction — the shape comes from the
+          -- mask's alpha, the colour from our own fill.  Two measured API facts rule out
+          -- the shorter routes:
+          --   * `SetMask(path)` does NOT clip a `SetColorTexture` fill — that pairing
+          --     draws a SQUARE (settles the interaction addon-dev/frames-textures-
+          --     animation.md §5.7 flags as uncited).
+          --   * the `WhiteCircle-RaidBlips` atlas is genuinely round but ships a BAKED
+          --     dark outline, and SetVertexColor MULTIPLIES, so black stays black — the
+          --     border cannot be tinted away and reads as a hard edge against the glow.
           local mask = holder:CreateMaskTexture()
           mask:SetTexture("Interface\\CharacterFrame\\TempPortraitAlphaMask",
                           "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")

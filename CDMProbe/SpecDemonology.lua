@@ -1,24 +1,20 @@
 -- SpecDemonology.lua — the per-spec data table (v1 target: Demonology Warlock).
 --
--- ONE table, ONE edit site.  Every Hud* module reads identity + signals from
--- here and holds no spell constants of its own, so adding a second spec (M7)
--- means adding a sibling file, not touching the renderers.
+-- ONE table, ONE edit site.  Every other module reads identity + signals from here and
+-- holds no spell constants of its own, so adding a spec is a sibling file, not an edit
+-- to the pipeline.
 --
--- M3c-a replaced the single `role` enum with a SIGNAL BUCKET.  `role` conflated
--- three separate concepts, and the tell was HudChrome's batch table: `spender`
--- and `burst` carried IDENTICAL tint values, so `burst` never encoded anything —
--- it only smuggled burst-lane membership through the tint field.  The bucket
--- splits those concepts apart so `HudScore` can read each one on its own:
+-- Each entry is a SIGNAL BUCKET — one field per concept, so a consumer reads exactly
+-- the bit it needs and nothing is smuggled through a field that means something else:
 --
---   group      — the §3 colour group (hue carries GROUP, never per-ability
---                identity, and never actionability — that's the dot's job now)
+--   group      — the colour group (hue carries GROUP, never per-ability identity,
+--                and never actionability — that's the cue's job)
 --   kind       — "button" (an icon you press) | "aura" (a buff viewer entry)
 --   spends     — what pressing it CONSUMES: "shards" | "core" | "art".  The
 --                numeric cost is NEVER authored here — it is talent-dependent,
 --                so it's read at runtime via ns.ShardCost (Util.lua).
---   generates  — deterministic Soul Shard yield.  SUBSUMES the old `ghost`
---                field: one field, one meaning.  Drives both the in-flight
---                ghost fill and the overcap guard in HudScore.
+--   generates  — deterministic Soul Shard yield.  Drives both the in-flight
+--                projection and the overcap guard.
 --   cadence    — "oncd"     use it whenever it's up (the burst summons)
 --                "gated"    press it when the resource gate opens (HoG)
 --                "reactive" press it when a proc/condition arms it
@@ -29,10 +25,10 @@
 --   burstAlign — belongs in the burst window; hold it for Tyrant alignment
 --   goGate     — a SEPARATE bit from burstAlign, on purpose.  The go-gate is
 --                Tyrant + Dreadstalkers ONLY.  Collapsing it into burstAlign is
---                how §0.5.8.6 blocking error #2 got shipped the first time:
+--                how this shipped broken the first time:
 --                someone re-derives the lane from burstAlign and Grimoire (which
 --                is burst-aligned but is NOT a go-gate) sneaks back into it.
---   stage      — (M4) HOLD this inside the BURST window so it lands fresh IN the
+--   stage      — HOLD this inside the BURST window so it lands fresh IN the
 --                window instead of firing on cooldown just before it.  Its own bit
 --                (not "goGate and not Tyrant") so the hold can never catch Tyrant,
 --                the very thing the window is waiting for.  Dreadstalkers only.
@@ -45,10 +41,10 @@
 --   secretGate — the sentence a judgeable=false ability prints instead of a call
 --   expect     — DEFAULT TRUE.  False means "never expect this to be bound to a
 --                CDM icon" — it exists only as a live spell OVERRIDE.  Read by
---                the M3c-b B7 expected-vs-bound warning, which would otherwise
+--                the expected-vs-bound warning, which would otherwise
 --                report every Demonic Art transform as a missing ability.
---   lost       — the sentence B7 prints for what a MISSING ability costs you.
---                Says what is lost, not just what is absent.
+--   lost       — the sentence the expected-vs-bound warning prints for what a
+--                MISSING ability costs you: what is lost, not just what is absent.
 --   baseCD     — documented base cooldown, sanity-check only.  ns.BaseCooldown
 --                reads the live value; nil here means "the docs don't assert it".
 --   label      — human name, for `/cdmp hud status` only
@@ -65,11 +61,11 @@ local ADDON, ns = ...
 -- active spec's functions are ever invoked through the rebound globals.
 local spec = {}
 
--- Group hues — THE source of truth (B6).  These triples were first tuned in the
--- retired Resource.lua (deleted W4a); their authority now lives HERE, so the
--- render modules read `ns.SpecGroups` and hold no colour constants of their own.
--- spec.md §3: summon = fel green, core shadow = violet, fel explosion = lime,
--- proc/resource = cyan, defensive = blue, CC = slate, mobility = gold.
+-- Group hues — THE source of truth, so no render module holds a colour constant of its
+-- own.  ⚠ DORMANT with SpecColor (see the banner further down); the pipeline's Renderer
+-- colours by emphasis, not by group.  design.md: summon = fel green, core shadow =
+-- violet, fel explosion = lime, proc/resource = cyan, defensive = blue, CC = slate,
+-- mobility = gold.
 spec.SpecGroups = {
   summon  = { 0.216, 0.784, 0.435 }, -- fel green     — demon summons / burst
   core    = { 0.627, 0.396, 1.000 }, -- shadow violet — core shadow damage
@@ -95,11 +91,11 @@ spec.SpecIDs = {
   -- always AVAILABLE, and no keybind resolved so the sequence strip printed the
   -- NAME.  One id fixes both reports; 136726 stays a harmless alias below.
   IMP_LORD      = 1276452,
-  -- Buff viewers (M3b proc presence via the TriggerAlertEvent aura edges;
-  -- item:IsShown() is only the best-effort LEVEL backstop — see HudState.lua):
+  -- Buff viewers (proc presence comes from the buff item's IsActive(); item:IsShown()
+  -- is only a best-effort backstop — see State.lua):
   DEMONIC_CORE   = 264173,   -- BuffBar
   DIABOLIC_RITUAL = 428514,  -- BuffIcon — the Demonic Art container
-  WILD_IMP       = 296553,   -- BuffIcon — M5 #17 stack text
+  WILD_IMP       = 296553,   -- BuffIcon — the stack-text surface
   DOMINION       = 1276166,  -- BuffBar
 }
 
@@ -168,19 +164,19 @@ spec.Spec = {
     burstAlign = true, goGate = true, emphasis = "burst",
     baseCD = 60, abbr = "T", label = "Summon Demonic Tyrant",
   },
-  -- `stage = true` (M4): inside the BURST window HudScore reads this AVAILABLE
-  -- "stage for Tyrant" instead of greenlighting it on cooldown, so it lands FRESH
-  -- in the window — rotation.md #5: a Dreadstalkers cast too early expires before
-  -- Tyrant. Keyed on this bit (not "goGate and not Tyrant") so Tyrant is never held.
+  -- `stage = true`: inside the BURST window this reads "stage for Tyrant" instead of
+  -- greenlighting on cooldown, so it lands FRESH in the window — rotation.md #5: a
+  -- Dreadstalkers cast too early expires before Tyrant.  Keyed on this bit (not
+  -- "goGate and not Tyrant") so Tyrant itself is never held.
   [S.DREADSTALKERS] = {
     group = "summon", kind = "button", spends = "shards", cadence = "oncd",
     burstAlign = true, goGate = true, stage = true, baseCD = 20,
     abbr = "D", label = "Call Dreadstalkers",
   },
   -- The Grimoire summons are burst-ALIGNED but NOT part of the go-gate (see
-  -- `goGate` above).  `stage = true` (M4.1): both are 2-min summons paired with
-  -- Tyrant (diabolist-sequences.md — out BEFORE Tyrant), so inside the BURST
-  -- window HudScore reads them AVAILABLE "stage for Tyrant" like Dreadstalkers.
+  -- `goGate` above).  `stage = true`: both are 2-min summons paired with Tyrant
+  -- (diabolist-sequences.md — out BEFORE Tyrant), so inside the BURST window they
+  -- stage for Tyrant like Dreadstalkers.
   -- They stay `optional` in the queue drain: 2-min CD = present every OTHER
   -- Tyrant, so a missing one must drop-through, not jam.
   -- `discretion = true` (feedback 2026-07-23): when up, these read cyan "ready —
@@ -214,7 +210,7 @@ spec.Spec = {
   },
   -- C2, the pole fix.  v0.9.1 classified Demonbolt as a `builder`, which put it
   -- at the OPPOSITE tint pole from Hand of Gul'dan — its single most common
-  -- partner in the cast log (313 + 313 two-grams).  §0.5.1 calls it a bucket-2
+  -- partner in the cast log (313 + 313 two-grams).  A bucket-2
   -- spender: it CONSUMES a Demonic Core proc (that's the press decision) and
   -- happens to refund 2 shards.  So `spends = "core"` decides the pole, and
   -- `generates = 2` is what drives the overcap guard.
@@ -260,7 +256,7 @@ spec.Spec = {
 
   -- ── Essential: the fel explosion (§3 "aoe" / lime) ────────────────────────
   -- THE judgeable=false case.  Implosion's real gate is Wild Imps >= 6.  The
-  -- count is displayed by Blizzard and is a Secret Value to us (§0.5.5), so we
+  -- count is displayed by Blizzard and is a Secret Value to us, so we
   -- cannot compute the gate and must never claim this is the press.  It caps at
   -- AVAILABLE and hands the call back, with the reason stated.
   [S.IMPLOSION] = {
@@ -287,8 +283,8 @@ spec.Spec = {
   [119898]  = { group = "cc",  kind = "button", cadence = "utility", label = "Command Demon" },
   [119914]  = { group = "cc",  kind = "button", cadence = "utility", label = "Axe Toss" },
   [6789]    = { group = "cc",  kind = "button", cadence = "utility", label = "Mortal Coil" },
-  -- THE DEFECT THAT MOTIVATED M3c-b.  Devour Magic is a pet purge that OVERRIDES
-  -- the Grimoire button, and because M3c-a scored the base spell unconditionally
+  -- Devour Magic is a pet purge that OVERRIDES
+  -- the Grimoire button, and because the base spell used to be scored unconditionally
   -- the HUD advertised "Grimoire: Fel Ravager - up - use on cooldown - waiting
   -- 18s" on a button that was a purge.  Mapped so the live identity resolves to
   -- something real: a utility, i.e. "your call", i.e. never a lit dot.
@@ -315,86 +311,64 @@ spec.Spec = {
   [S.DOMINION]        = { group = "core",   kind = "aura", label = "Dominion of Argus" },
 }
 
--- Proc routing (M3b, §0.5.8.3 #2/#3) -------------------------------------------
+--------------------------------------------------------------------------------
+-- ⚠ DORMANT (Tier 3) — no live reader, from here to `Lookup helpers` below.
+--------------------------------------------------------------------------------
+-- `SpecNoCue` · `SpecProcGlow` · `SpecStacks` · `SpecOpener` · `SpecBurst` (and,
+-- further down, `SpecGroups` / `SpecColor` / `SpecPole` / `SpecGhost`) were all read by
+-- the old HudScore/HudChrome/HudOpener/HudQueue/HudBurst engine, DELETED at the W4
+-- cutover.  Nothing in the pipeline reads them today.
 --
--- source buff spellID -> which BUTTON lights up.  The mapping lives here, in the
--- per-spec table, so HudState stays spec-agnostic: it observes presence edges and
--- asks this table where to put the glow.  M3c-a adds a second consumer —
--- HudScore reads the same table to decide `procArmed`, so the glow and the dot
--- can never disagree about what's armed.
+-- They are kept on purpose, for two reasons: they are the REVIVAL SURFACE if the
+-- sequence pane / proc routing / group tinting come back, and every name here is part
+-- of the `ns.SpecFields` rebind contract (SpecRegistry.lua) that the multi-spec seam
+-- copies off the active spec.  SpecDestruction omits the whole set, which is the proof
+-- they are optional.  ⚠ `SpecGroups` is read by `SpecColor` — those two live or die
+-- together.
 --
---   target      — base spellID of the icon to glow (nil = "wherever the spell
---                 override lands", resolved live from
---                 COOLDOWN_VIEWER_SPELL_OVERRIDE_UPDATED)
---   softenAbove — shard count at or above which the glow SOFTENS instead of
---                 clearing (§0.5.8.4): Demonbolt refunds +2, so from 4 shards it
---                 overcaps and the cap cue outranks the Core glow.  The proc is
---                 still real, so we dim it rather than lie about it.  HudScore's
---                 overcap guard is the same rule expressed as a level.
---   transform   — this proc arms a spell OVERRIDE; the override event is the
---                 primary trigger and this presence edge only corroborates.
--- M4.6 §4.7 — buttons that NEVER carry a cue of their own.
--- The Grimoires are driven by the BURST SEQUENCE: the pane already says when to
--- press them, so an independent cue is a second voice giving the same order out
--- of step with the first — and because they are `discretion` buttons it was a
--- CYAN "your call" cue arguing with a pane step that had already decided.
--- ⚠ This is a suppression, not a settled design.  If we later decide that firing
--- a Grimoire outside burst beats letting it idle a whole minute, this table is
--- the thing to revisit — the scoring for these buttons is untouched and still
--- correct, only the CUE is muted.  (Also: 132411 Singe Magic / 388215 Devour
--- Magic override this same button; those are utilities and never cue anyway.)
+-- The per-table essays that used to sit here argued with modules that no longer exist;
+-- they are in git history and `docs/archive/` if a revival needs them.  Keep the DATA,
+-- not the argument.
+--------------------------------------------------------------------------------
+
 spec.SpecNoCue = {
   [1276467]     = true,   -- Grimoire: Fel Ravager
   [S.IMP_LORD]  = true,   -- Grimoire: Imp Lord
   [136726]      = true,   -- Grimoire: Imp Lord (talent entry-id alias)
 }
 
+-- source buff spellID -> which BUTTON lights up.
 spec.SpecProcGlow = {
   [S.DEMONIC_CORE] = {
     target = S.DEMONBOLT, group = "proc", softenAbove = 4,
     label = "Demonic Core -> Demonbolt", why = "core up",
   },
   [S.DIABOLIC_RITUAL] = {
-    -- v1 blind spot: only the HoG -> Ruination half is glowable.  Shadow Bolt is
-    -- NOT in the tracked set (notes.md §2), so SB -> Infernal Bolt has no icon to
-    -- light — flagged in guidance-model.md §0.5.5, never faked.
+    -- Only the HoG -> Ruination half is glowable: Shadow Bolt is not in the CDM
+    -- tracked set, so SB -> Infernal Bolt has no icon to light.  Flagged, never faked.
     target = S.HAND_OF_GULDAN, group = "summon", transform = true,
     label = "Diabolic Ritual -> transformed button (HoG half only)",
     why = "art armed",
   },
 }
 
--- Stack-count emphasis (M3, §0.5.8.3 #17) --------------------------------------
---
--- Which tracked auras get their (unreadable) stack count enlarged, and what
--- static gate is printed beside it.  The number stays Blizzard's — we cannot
--- read it — so this surfaces the ONE AoE decision without pretending to make it.
---
--- The two constants are DIFFERENT and must never be crossed (notes.md §1):
--- Wild Imps gate Implosion at >=6; Demonic Core caps at 4.
+-- Which tracked auras get their (unreadable) stack count enlarged, and the static gate
+-- printed beside it.  The number stays Blizzard's — we cannot read it.
+-- ⚠ The two constants are DIFFERENT and must never be crossed (notes.md §1): Wild Imps
+-- gate Implosion at >=6; Demonic Core caps at 4.
 spec.SpecStacks = {
   [S.WILD_IMP] = { suffix = "/6", label = "Wild Imp -> Implosion gate" },
 }
 
--- The pre-pull opener (M3, §0.5.8.3 #8) ----------------------------------------
+-- The pre-pull opener — the "Tyrant-first burst", verified against the live #1 parse
+-- (Inphected, WCL bracket 291, 2026-07-21).  ONE opener, deliberately: no alternate /
+-- variant machinery, because WCL structurally cannot show which variant was chosen.
 --
--- Consumed by HudOpener via the reusable HudQueue widget.  ONE opener — the
--- "Tyrant-first burst", verified against the live #1 parse (Inphected, WCL
--- bracket 291, 2026-07-21): Dreadstalkers + Imp Lord pre-stage, Tyrant at t~3.4s,
--- HoG HoG, Implosion, then rebuild.  Matches diabolist-sequences.md SEQUENCE 1a.
--- (There is deliberately NO alternate/variant machinery here — if the opener ever
--- needs to change, we revise this one table.  The old "1a"/"1b" split was a
--- speculative contingency WCL structurally can't show and was never authored.)
---
--- The `preamble` casts (pre-pull HoG, then DB/SB to seed a Core) happen BEFORE we
--- are listening and cannot be cast-verified — they are SHOWN as setup, never
--- advance-tracked.  `alt` lets one step match either of two abilities (the first
--- in-combat spend is Demonbolt if a Core seeded, else Shadow Bolt).  `optional`
--- steps (Imp Lord "if up", Implosion "AoE only") drop without stalling the queue.
--- `prereqs` (M4) — the pre-pull WALL-DOWN state the sequence pane shows above the
--- strip, each lit when met.  `spell` prereqs check readiness (ready edge, or the
--- napkin within `lead` seconds); `shards` checks the live count.  For the opener
--- these are the hard pre-pull conditions, so `lead` defaults to 0 (ready NOW).
+-- `preamble` casts happen BEFORE we are listening and are SHOWN as setup, never
+-- advance-tracked.  `alt` lets one step match either of two abilities.  `optional`
+-- steps drop without stalling the queue.  `prereqs` are the pre-pull wall-down state:
+-- `spell` checks readiness (ready edge, or the napkin within `lead` seconds), `shards`
+-- the live count; `lead` defaults to 0 (ready NOW).
 spec.SpecOpener = {
   header   = "OPENER",
   preamble = "pre-stack: HoG -> DB/SB (seed a Core)",
@@ -418,15 +392,10 @@ spec.SpecOpener = {
   },
 }
 
--- The BURST window (M4) — consumed by HudBurst, arming the SAME sequence pane when
--- HudState.Mode flips BURST (a Tyrant window opening mid-fight).  The burn order
--- for the window: Tyrant, dump shards into HoG, spend banked Cores, Implosion on
--- AoE.  `prereqs` use `lead = 5` (= HudState HOLD_LEAD) so "Tyrant" lights while
--- it is still coming up, matching when the window actually opens.
--- M4.1 — the sequence now PREPENDS the staged summons (Dreadstalkers + Imp Lord)
--- to mirror the opener and diabolist-sequences.md: they land out BEFORE Tyrant, so
--- the strip shows them as the windup, then Tyrant, then the burn (HoG HoG -> cores
--- -> Implosion).  Imp Lord is `optional` (2-min CD = off-Tyrant cycles drop it).
+-- The BURST window — a Tyrant window opening mid-fight.  Staged summons first
+-- (Dreadstalkers + Imp Lord land BEFORE Tyrant), then Tyrant, then the burn: dump
+-- shards into HoG, spend banked Cores, Implosion on AoE.  `lead = 5` on the prereqs so
+-- "Tyrant" lights while it is still coming up, matching when the window opens.
 spec.SpecBurst = {
   header   = "BURST",
   preamble = "Tyrant window — stage demons, then dump",
@@ -469,12 +438,9 @@ function spec.SpecColor(spellID)
   return c[1], c[2], c[3]
 end
 
--- Which BATCH TINT pole an ability sits at (§0.5.8.4).  One classifier, read by
--- both HudChrome (the accent) and the row, so the two can never disagree.
---
--- Order matters and encodes C2: `spends` is checked BEFORE `generates`, so
--- Demonbolt (spends a Core, refunds 2 shards) lands at the CONSUMER pole beside
--- Hand of Gul'dan rather than opposite it.
+-- DORMANT (see the banner above).  Which BATCH TINT pole an ability sits at.
+-- Order matters: `spends` is checked BEFORE `generates`, so Demonbolt (spends a Core,
+-- refunds 2 shards) lands at the CONSUMER pole beside HoG rather than opposite it.
 function spec.SpecPole(info)
   if info.kind == "aura" then return "proc" end
   if info.cadence == "utility" then return "utility" end
@@ -483,7 +449,8 @@ function spec.SpecPole(info)
   return "consumer"
 end
 
--- Deterministic shard yield of an in-flight cast (anticipation layer / overcap).
+-- DORMANT (see the banner above); superseded by SpecPowerDelta below.  Deterministic
+-- shard yield of an in-flight cast.
 function spec.SpecGhost(spellID)
   return (ns.SpecInfo(spellID).generates) or 0
 end

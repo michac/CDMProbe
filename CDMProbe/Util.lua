@@ -43,8 +43,8 @@ end
 -- `SetFont` returns FALSE when the .ttf can't load, and a FontString whose font
 -- failed to set draws NOTHING.  So an unguarded call is not "falls back to
 -- something ugly", it is "the text silently disappears" — which for the imp
--- count (§7.2 item 3) would hide the readout rather than degrade it.  HudRow had
--- this guard; HudChrome's stack path did not.  Hence one helper, two callers.
+-- count would hide the readout rather than degrade it.  Hence one helper, and every
+-- caller goes through it.
 --
 -- Returns true if the bundled font took, false if we fell back — callers that
 -- care about metrics (anything relying on monospaced digit advance) can check.
@@ -69,11 +69,10 @@ function ns.IsSecret(v)
   return ok and secret or false
 end
 
--- True if t is a Secret TABLE — a distinct verdict from ns.IsSecret on a field.
--- Both were OBSERVED by the v0.12.0 probe (`<secret table>` and `<secret
--- fields>` are separate lines in Section A), which is why every reader has to
--- ask both questions: a secret table cannot be indexed at all, while a readable
--- table can still hand back secret members.
+-- True if t is a Secret TABLE — a distinct verdict from ns.IsSecret on a field, and
+-- both were OBSERVED, which is why every reader has to ask both questions: a secret
+-- table cannot be indexed at all, while a readable table can still hand back secret
+-- members.
 function ns.IsSecretTable(t)
   if type(issecrettable) ~= "function" then return false end
   local ok, s = pcall(issecrettable, t)
@@ -97,12 +96,6 @@ end
 -- to the STRING "<secret>" — which is itself the finding a reader wants ("this read
 -- secret here") — and anything not a scalar drops to nil rather than persisting a
 -- live frame/table reference.
---
--- This is Probe.lua's file-local `stash` promoted to a shared helper (M4.5 T3 / W4
--- Phase 1): State stamps event payloads (`ns.Stash(base)`, transform from/to) that may
--- end up serialized, and needs the exact same secret-never-reaches-disk discipline the
--- probe snapshot has.  One idiom, one home.  (Probe.lua keeps its own copy for now; do not chase that
--- de-dupe here — it is a behavioural no-op and this file must stay low-risk.)
 function ns.Stash(v)
   if ns.IsSecret(v) then return "<secret>" end
   local t = type(v)
@@ -134,17 +127,15 @@ end
 
 --------------------------------------------------------------------------------
 -- ns.ReadCooldown — the ONE door for "what does the client say about this
--- cooldown right now"  (M3d D1)
+-- cooldown right now"
 --------------------------------------------------------------------------------
--- THIS IS READING, NOT GUESSING, and the distinction is the whole milestone.
--- The M3b doctrine — readiness comes only from an OBSERVED EDGE, we refuse to
--- infer a secret — stands unchanged INSIDE COMBAT.  The seam is the combat
--- boundary, and it was MEASURED, not assumed: the v0.12.0 probe (Probe.lua
--- Section A) read C_Spell.GetSpellCooldown on all 13 tracked spells in two
--- contexts and got 13/13 readable OUT OF COMBAT, 0/13 IN COMBAT.  Open-world
--- both runs, so the gate is COMBAT, not instancing.  And the residual worry —
--- that duration=0 everywhere meant a "not on cooldown" constant rather than a
--- real value — was closed by a genuine mid-cooldown read:
+-- THIS IS READING, NOT GUESSING.  The doctrine — readiness comes only from an
+-- OBSERVED EDGE, we refuse to infer a secret — stands unchanged INSIDE COMBAT.  The
+-- seam is the combat boundary, and it was MEASURED, not assumed: C_Spell.GetSpellCooldown
+-- across all 13 tracked spells read 13/13 OUT OF COMBAT and 0/13 IN COMBAT, open-world
+-- both runs, so the gate is COMBAT, not instancing.  And the residual worry — that
+-- duration=0 everywhere meant a "not on cooldown" constant rather than a real value —
+-- was closed by a genuine mid-cooldown read:
 --
 --     Summon Demonic Tyrant        duration=60 startTime=126156.254
 --
@@ -155,7 +146,7 @@ end
 -- `nil` is the load-bearing return: an unreadable read is NOT evidence of
 -- anything, and every caller must leave the state it had alone rather than
 -- overwrite it with a shrug.
-local GCD_SPELLID = 61304   -- the global cooldown, as a spell (Probe.lua:155)
+local GCD_SPELLID = 61304   -- the global cooldown, as a spell
 
 -- The raw guarded read, shared by the spell and the GCD paths.  Guards in
 -- order, because each is a DIFFERENT failure: the call itself -> a secret table
@@ -266,7 +257,7 @@ end
 -- table is correct for exactly one loadout and silently wrong for every other.
 -- The client already knows the answer for the character actually logged in.
 --
--- ⚠ THE v0.10.0 DEFECT (fixed here, §7.2 item 1).  This returned the first
+-- ⚠ THE v0.10.0 DEFECT (fixed here).  This returned the first
 -- non-zero cost of ANY power type, and most of the tracked set costs MANA.  So
 -- Demonbolt's 5000-mana cost became "shards 3<500" (via the fragment heuristic
 -- below) and was compared against a shard count that maxes at 5 — a gate that can
@@ -300,16 +291,16 @@ function ns.PowerCost(spellID, powerType)
       end
     end
   end
-  -- 0 = "no cost in the resource we asked about".  NOTE this still reports
-  -- "genuinely free" and "unreadable" identically — HudScore's gated branch
-  -- guards that ambiguity explicitly and must keep doing so.
+  -- 0 = "no cost in the resource we asked about".  ⚠ This still reports "genuinely
+  -- free" and "unreadable" identically, so a caller gating on cost must guard the
+  -- ambiguity itself rather than reading 0 as a fact.
   return 0, nil
 end
 
 -- The SAME cost, normalised to WHOLE SOUL SHARDS so it can be compared against
 -- UnitPower(player, SoulShards) — which reports 0..5.
 --
--- This is the load-bearing half of the units caveat above.  M3c-a's gate rule is
+-- This is the load-bearing half of the units caveat above.  The gate rule is
 -- `shards >= cost`, so a cost still expressed in FRAGMENTS (10 per shard) would
 -- make every gate unreachable and every dot permanently dark.  The shard cap is
 -- 5, so any reported cost that is a clean multiple of 10 can only be fragments —
@@ -322,7 +313,6 @@ end
 -- v0.10.0 it only ever saw MANA figures, where it "worked" — 5000 -> 500 — and manufactured
 -- the defect's signature numbers.  Now that the type filter means it only sees shards, the
 -- decision log's `PW:` field is the read that confirms or falsifies it.  @verify-ingame
--- (`/cdmp hud debug`, which used to print both columns, was retired at the W4 cutover.)
 function ns.ShardCost(spellID)
   -- No Enum -> no way to ask about the right resource, and an UNFILTERED read is
   -- exactly the defect.  Report "unreadable" instead, which the scorer already

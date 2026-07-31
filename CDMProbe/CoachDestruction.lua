@@ -174,11 +174,8 @@ function spec:Invalidate()
 end
 
 --------------------------------------------------------------------------------
--- Context — the whole-board facts the cascade reads.
+-- Context — the whole-board facts the cascade reads (contract: Coach.lua's header).
 --------------------------------------------------------------------------------
--- `env` is the coach instance (carries env.shardCostFn, the injected live cost reader).
--- Everything is keyed by BASE spellID: the Coach decides in the domain view's vocabulary,
--- and cooldownID is transport the Binder owns.
 function spec:Context(state, env)
   local S = ids()
   local abilities = state.abilities or {}
@@ -266,14 +263,12 @@ function spec:Context(state, env)
     return (cur ~= nil and cur >= 1) or false
   end
   -- ⚠ FOR A CHARGED ABILITY THE COUNT IS AUTHORITATIVE — the cooldown state is NOT, and
-  -- trusting it is what made the HUD recommend Conflagrate at ZERO charges in the first live
-  -- pass.  The mechanism, measured: the CDM raises `Available` every time a CHARGE is
-  -- restored, but for a charged ability it never raises `OnCooldown` at all (capture: cid
-  -- 18860 Available x7, OnCooldown x0, while eligible for both).  So State's ready-edge
-  -- latches true on the first charge and is never cleared, and `cd` reads `ready` forever —
-  -- 190 of 194 log lines said `Conf=R`.  The napkin cannot rescue it either: Conflagrate's
-  -- `RecoveryTime` is 0 in DB2 (the recharge lives on ChargeCategory 672), so the
-  -- base-cooldown countdown is 0 and the just-cast guard never fires.
+  -- trusting it is what made the HUD recommend Conflagrate at ZERO charges.  The mechanism,
+  -- measured: the CDM raises `Available` every time a CHARGE is restored but never raises
+  -- `OnCooldown` at all for a charged ability, so State's ready-edge latches true on the
+  -- first charge and is never cleared — `cd` then reads `ready` forever.  The napkin cannot
+  -- rescue it either: Conflagrate's `RecoveryTime` is 0 in DB2 (the recharge lives on its
+  -- ChargeCategory), so the base-cooldown countdown is 0 and the just-cast guard never fires.
   --
   -- Hence: if we have a count for a charge pool, it DECIDES. Only when there is no count at
   -- all do we fall back to the cooldown read.  This also keeps the napkin's honesty rule
@@ -422,13 +417,11 @@ end
 --    Evaluated top to bottom; the FIRST line whose ability is usable is the one press.
 --    Returns winnerKey, level, note.
 --------------------------------------------------------------------------------
--- `excluded` (optional) — a BASE spellID removed from consideration at EVERY line that
--- names it, so the shell can recompute the honest SECOND place (the winner's ABILITY
--- pulled, list re-run from the top — NOT "the next line").  Destruction makes this sharper
--- than Demonology because two abilities each sit on multiple lines: Chaos Bolt at L1 (as
--- Ruination), L3 and L11; Incinerate at L6, L12 (as Infernal Bolt) and L13.  Excluding by
--- base spellID suppresses every one of them for free, since all the lines key on the same
--- base id — including the transform lines, which ride their base frame.
+-- `excluded` (contract: Coach.lua's header) matters more here than on Demonology, because
+-- two abilities each sit on several lines: Chaos Bolt at L1 (as Ruination), L3 and L11;
+-- Incinerate at L6, L12 (as Infernal Bolt) and L13.  All of them key on the same base
+-- spellID — including the transform lines, which ride their base frame — so one exclusion
+-- drops every occurrence.
 function spec:RankWinner(ctx, excluded)
   local S = ids()
   local projected = ctx.projected or ctx.shards or 0   -- value + signed incoming
@@ -548,8 +541,7 @@ function spec:RankWinner(ctx, excluded)
 end
 
 --------------------------------------------------------------------------------
--- Escalate — ROTATION -> LATE ONLY from READABLE overdue-ness.  A secret-gated quantity
---    can never drive an escalation.
+-- Escalate — Destruction's readable overdue-ness.
 --------------------------------------------------------------------------------
 -- Two readable ways to be late on Destruction, and no window suppression: unlike
 -- Demonology (where a ready summon inside the Tyrant window is a STAGED press, not a

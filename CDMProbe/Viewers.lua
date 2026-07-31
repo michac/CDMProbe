@@ -31,13 +31,13 @@ function ns.GetItemFrames(viewer)
   return out, "GetChildren() filtered"
 end
 
--- ⚠ THE SECRET-ID TRAP (M3c-b B2).  `type(secretValue) == "number"` is **TRUE**,
+-- ⚠ THE SECRET-ID TRAP.  `type(secretValue) == "number"` is **TRUE**,
 -- so the obvious guard — `if ok and type(id) == "number"` — HAPPILY RETURNS A
 -- SECRET VALUE.  The buff viewer's GetSpellID() reads secret in combat
 -- (probe-confirmed), so a rebind landing mid-fight used to write a secret into
 -- `e.baseSpellID`, and every downstream `e.baseSpellID == spellID` then compared
--- one — including `entriesForSpell` in HudState, which is the entire proc-glow
--- routing path.  A secret never escapes these two functions again: every
+-- one — poisoning the identity comparison that the whole proc-glow routing path runs
+-- on.  A secret never escapes these functions again: every
 -- strategy is ns.IsSecret-checked, an unreadable one FALLS THROUGH to the next,
 -- and the last word is `nil` — "we don't know" — never a poisoned number.
 local function readable(id)
@@ -135,11 +135,8 @@ end
 --     missed, AND the keybind was looked up for Shadow Bolt — which is not on the bars.
 -- Both symptoms are one cause, so the rule lives in ONE place and both producers call it.
 --
--- ⚠ USE THE STATIC OVERRIDES, NEVER `liveSpellID`.  `liveSpellID` moves to Infernal Bolt
--- 433891 while the Demonic Art is armed, so keying on it would make Incinerate's identity
--- VANISH mid-combat — exactly when the ability is most active.  `overrideSpellID` /
--- `overrideTooltipSpellID` carry the displayed id throughout.  (Same reasoning as State's
--- `displayedIdentities` fence, which unions both fields for the same reason.)
+-- ⚠ USE THE STATIC OVERRIDES, NEVER `liveSpellID` — the reasoning is stated in full at
+-- State.lua's `displayedIdentities`, which unions the same two fields for the same reason.
 --
 -- Adopting an override is DELIBERATELY conservative — it must be a real, pressable
 -- ability of the active spec:

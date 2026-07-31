@@ -1,12 +1,9 @@
 -- HudLayout.lua — the LIVE Layout + registry source for the W4 pipeline (Phase 5a).
 --
--- WHY THIS EXISTS (docs/archive/w4-phase5-cutover-plan.md 5a, architecture.md Stage-3).  The
--- Binder (Stage 3) merges the Coach's cooldownID-keyed Guidance with a **Layout** —
--- geometry/identity per displayed icon, keyed the SAME way — and the Renderer (Stage 4)
--- needs a **registry** mapping each handle to its live Blizzard item frame.  Both come
--- from the SAME walk of the CDM icon viewers: `HudCore.rebind()` already walks exactly
--- those frames (cooldownID + spellID + item frame per icon) and `State.itemFrameMap()`
--- already maps cooldownID -> frame.  This is that walk RE-HOMED as a clean producer:
+-- WHY THIS EXISTS (architecture.md Stage-3).  The Binder (Stage 3) merges the Coach's
+-- Guidance with a **Layout** — geometry/identity per displayed icon — and the Renderer
+-- (Stage 4) needs a **registry** mapping each handle to its live Blizzard item frame.
+-- Both come from ONE walk of the CDM icon viewers, which is what this file is:
 --
 --   layout[cooldownID]   = { spellID = <base>, side = "TOPRIGHT" }   -> the Binder
 --   registry[cooldownID] = <Blizzard item frame>                     -> the Renderer
@@ -35,7 +32,7 @@ ns.HudLayout = {}
 local L = ns.HudLayout
 
 -- The icon viewers that get cue dots (the pressable rows).  Buff viewers carry procs,
--- not press cues, so they are NOT in the Layout — mirrors HudCore's ICON_VIEWERS.
+-- not press cues, so they are NOT in the Layout.
 local ICON_VIEWERS = { "EssentialCooldownViewer", "UtilityCooldownViewer" }
 
 -- v1: every dot rides the icon's upper-right corner (cutover decision 2).  Carried on
@@ -66,10 +63,10 @@ end
 --------------------------------------------------------------------------------
 -- Scan — IMPURE.  Walk the live icon viewers and resolve each item, then Build.
 --------------------------------------------------------------------------------
--- The same frames HudCore.rebind walks; the same id resolvers the whole addon uses
--- (ns.ItemCooldownID / ns.ItemBaseSpellID, both Secret-Value-guarded — they return nil
--- rather than a poisoned number).  An item with no readable cooldownID is skipped by
--- Build.  Returns (layout, registry) ready for the Binder + the Renderer's Register.
+-- The same id resolvers the whole addon uses (ns.ItemCooldownID / ns.ItemDisplaySpellID,
+-- both Secret-Value-guarded — they return nil rather than a poisoned number).  An item
+-- with no readable cooldownID is skipped by Build.  Returns (layout, registry) ready for
+-- the Binder + the Renderer's Register.
 function L.Scan()
   local entries = {}
   for _, name in ipairs(ICON_VIEWERS) do
