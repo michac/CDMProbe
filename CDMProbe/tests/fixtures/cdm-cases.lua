@@ -410,8 +410,8 @@ local B = {
 
   {
     name = "identity/rung3-vs-rung4-the-display-ladder-is-inverted",
-    status = "pinned-defect",
-    fixes = "phase2 §3.5",
+    status = "green",
+    fixed = "phase2 §3.5",
     spec = 3,
     pins = "On a row carrying BOTH override fields the two ladders disagree: liveSpellID "
         .. "takes the tooltip (correct), ns.DisplayIdentity takes overrideSpellID first "

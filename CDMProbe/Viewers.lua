@@ -148,10 +148,22 @@ end
 --                                    it merely rides.
 -- Anything short of all three falls back to `base`, which is today's behaviour — so a spec
 -- with no display-overridden rows is completely unaffected.
+--
+-- ⚠ RUNG 3 BEFORE RUNG 4 (§3.5, fixed 2026-07-31).  This tried `overrideSpellID` first,
+-- which is the REVERSE of Blizzard's own `GetSpellID()` ladder — rung 3
+-- `overrideTooltipSpellID` outranks rung 4 `overrideSpellID`
+-- (CooldownViewerItemData.lua:174-196, cooldown-manager.md §2) — and State's `liveSpellID`
+-- already had it right.  So on a row carrying BOTH fields the two ladders disagreed, and it
+-- was the DISPLAY one, the id a row is keyed and read under, that was wrong against the
+-- client.  Exactly two rows carry both today (cid 133729 Blight of Weakness, cid 133730
+-- Blight of Tongues, `[client]` 2026-07-31), and both are `cadence = "utility"`, so neither
+-- is ever cued or scored: real, reachable, and zero blast radius — which is why this was
+-- fixed calmly and last rather than first.  The seam is still the one the v0.32.36
+-- Diabolist bug lived in; the three fences below are unchanged.
 function ns.DisplayIdentity(base, overrideSpellID, overrideTooltipSpellID)
   if type(base) ~= "number" then return base end
-  local shown = overrideSpellID
-  if type(shown) ~= "number" or ns.IsSecret(shown) then shown = overrideTooltipSpellID end
+  local shown = overrideTooltipSpellID
+  if type(shown) ~= "number" or ns.IsSecret(shown) then shown = overrideSpellID end
   if type(shown) ~= "number" or ns.IsSecret(shown) or shown == base then return base end
   -- ⚠ NOT a banned nil guard.  ns.SpecInfo is a REBOUND global — SpecRegistry copies it off
   -- the active spec and leaves it nil on an unregistered spec (the passive path), so this is
