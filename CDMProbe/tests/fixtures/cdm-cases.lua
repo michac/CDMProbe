@@ -953,8 +953,11 @@ local C = {
     spec = 3,
     pins = "For a CHARGED ability GetSpellCooldown reports the RECHARGE of the NEXT "
         .. "charge, so an ability with one banked would seed as on cooldown.  A banked "
-        .. "charge means pressable, whatever the recharge says — and the short-circuit is "
-        .. "before the GCD read, so that read never happens either.",
+        .. "charge means pressable, whatever the recharge says, and the GCD trap below it "
+        .. "is never reached.  (⚠ `gcdCount` reads 1, not 0, since §3.3: the GCD is a "
+        .. "PULSE-level fact read once up front, so it is no longer a per-entry cost that "
+        .. "a short-circuit can avoid.  What this case pins is the cd verdict, and that is "
+        .. "unchanged; the count is here so the hoist stays visible from both sides.)",
     ref = "cooldown-manager.md §3.1 order 1 — the charges source, guarded on "
        .. "`cooldownStartTime > 0 and currentCharges > 0` [CooldownViewer.lua:864]",
     rows = {
@@ -969,7 +972,7 @@ local C = {
         cd     = { state = "ready", remaining = 0, source = "live" },
         charge = { readable = true, cur = 1, max = 2, source = "live", charged = true },
       } },
-      asked = { gcdCount = 0 },
+      asked = { gcdCount = 1 },
     },
   },
 
@@ -1038,13 +1041,13 @@ local C = {
 
   {
     name = "combat/the-GCD-is-re-read-once-per-enumerated-entry",
-    status = "pinned-defect",
-    fixes = "phase2 §3.3",
+    status = "green",
+    fixed = "phase2 §3.3",
     spec = 3,
-    pins = "The GCD is one global fact per instant, but `ns.ReadCooldown` resolves it "
-        .. "inside itself, so it is re-read for EVERY entry — ~64 identical guarded reads "
-        .. "per tick at 10 Hz on Demonology.  Read it once per pulse and pass it down: "
-        .. "pure win, no behaviour change — and this case is the entire fix as one number.",
+    pins = "The GCD is ONE GLOBAL FACT PER INSTANT, so a pulse reads it once and passes it "
+        .. "down — three enumerated rows, one GCD read.  `ns.ReadCooldown` used to resolve "
+        .. "it inside itself, which made it ~64 identical guarded reads per tick at 10 Hz "
+        .. "on Demonology; the whole fix, and the whole proof of it, is this one number.",
     ref = "security-taint-and-restricted-data.md — the GCD is a single global fact; "
        .. "cooldown-manager.md §4 (the CDM itself polls, it does not re-resolve)",
     rows = {

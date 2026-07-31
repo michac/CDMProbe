@@ -286,8 +286,13 @@ end
 --
 -- The GLOW deliberately still reads `live`: Blizzard lands the proc highlight on the
 -- EMPOWERED spell, so there the override is the right id.  Readiness is not.
-local function readCd(ident, live, base, cooldownID)
-  local isReady, remaining, duration, startTime = ns.ReadCooldown(ident)
+--
+-- `gcd` is the pulse's ONE hoisted GCD read (`{ duration, startTime }`, from ns.ReadGCD),
+-- threaded down from St.Build.  It is always a table — an empty one when the read refused,
+-- which is a DISTINCT answer from "nobody asked" and drops ns.ReadCooldown onto its 1.5s
+-- backstop rather than making it re-ask per entry (§3.3).
+local function readCd(ident, live, base, cooldownID, gcd)
+  local isReady, remaining, duration, startTime = ns.ReadCooldown(ident, gcd)
   if isReady ~= nil then
     -- Readable (OOC): the precise truth, AND the baseline stash that outlives combat.
     -- Remember this cd's base id too — the fold key the domain view falls back to when a
@@ -1488,6 +1493,12 @@ function St.Build(drain)
   -- ONE full active-buff scan for the whole pulse — the spec-agnostic proc source.
   local auraList, activeByID, auraSecret = scanActiveAuras()
   local items = itemFrameMap()   -- cooldownID -> item frame, for the buff-item probe
+  -- ONE GCD read for the whole pulse (§3.3).  It is a single global fact per instant, and
+  -- ns.ReadCooldown used to resolve it inside itself — ~64 identical guarded reads per tick
+  -- at 10 Hz.  Always a table, empty when the read refused, so a `nil` here can never be
+  -- mistaken for "not asked" and make the callee re-ask.
+  local gDur, gStart = ns.ReadGCD()
+  local gcd = { gDur, gStart }
 
   local cooldowns = {}
   for cooldownID, categoryName in pairs(set) do
@@ -1557,7 +1568,7 @@ function St.Build(drain)
       displayable = items[cooldownID] ~= nil,
       flags      = info and ns.Stash(info.flags) or nil,
       -- live facts (secrecy first-class)
-      cd     = stampCd(cooldownID, readCd(ident, live, base, cooldownID), now),
+      cd     = stampCd(cooldownID, readCd(ident, live, base, cooldownID, gcd), now),
       charge = charge,
       aura   = readAura(hasAura, selfAura, activeByID, auraIds, auraSecret),
       glow   = readGlow(live),   -- the combat-readable proc-highlight signal

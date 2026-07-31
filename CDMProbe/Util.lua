@@ -207,7 +207,24 @@ function ns.ReadCharges(spellID)
   return cur, max
 end
 
-function ns.ReadCooldown(spellID)
+-- ns.ReadGCD — the global cooldown's own (duration, startTime), read ONCE.
+--
+-- It is one global fact per instant, but `ns.ReadCooldown` used to resolve it inside
+-- itself, so it was re-read for EVERY enumerated entry — ~64 identical guarded reads per
+-- tick at 10 Hz.  Callers that enumerate hoist this out of their loop and pass it down.
+--
+-- ⚠ COMBAT-GATED, exactly like the read it feeds.  The short-circuit used to live INSIDE
+-- ns.ReadCooldown (below), so hoisting the read without hoisting the gate would have
+-- started burning a guarded call per pulse in combat, where it can only ever refuse.
+function ns.ReadGCD()
+  if InCombatLockdown() then return nil end
+  return rawCooldown(GCD_SPELLID)
+end
+
+-- `gcd` is the OPTIONAL hoisted GCD read: `{ duration, startTime }` from ns.ReadGCD, or
+-- nil to resolve it here as before.  Passing it is what makes the trap below cost one read
+-- per pulse instead of one per entry.
+function ns.ReadCooldown(spellID, gcd)
   if type(spellID) ~= "number" or ns.IsSecret(spellID) then return nil end
   -- Short-circuited HERE as well as at the call site, because a caller added
   -- later will not remember the rule.  The guards above would refuse a combat
@@ -227,7 +244,8 @@ function ns.ReadCooldown(spellID)
   -- reads EVERY ability as on-cooldown for 1.5s after any cast.  Resolved
   -- against the LIVE GCD rather than a magic number: a (startTime, duration)
   -- pair matching the GCD's own is the GCD, not this spell's cooldown.
-  local gDur, gStart = rawCooldown(GCD_SPELLID)
+  local gDur, gStart
+  if gcd ~= nil then gDur, gStart = gcd[1], gcd[2] else gDur, gStart = rawCooldown(GCD_SPELLID) end
   if gDur and gDur > 0 then
     if duration == gDur and startTime == gStart then
       return true, 0, duration, startTime
