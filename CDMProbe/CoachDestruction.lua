@@ -40,6 +40,13 @@ local spec = ns.Specs[267]   -- the Destruction object registered by SpecDestruc
 spec.LATE_LEAD = 4.0    -- a probably-up press left elapsed this long => overdue.  Read by
                         -- the shell's Classify off ns.ActiveSpec.LATE_LEAD.
 
+-- How long a `PandemicTime` latch is believed before it decays to no claim.  NOT a tuning
+-- preference — an upper bound derived from the game: Immolate/Wither runs 18s and the
+-- refresh window is ~30% of that (~5.4s), so nothing can honestly still be "in pandemic"
+-- past this.  6.0 leaves a second of slack for a late poll.  See ctx.dotRefreshable for
+-- the capture that forced it (a latch still firing at 13.4s).
+spec.DOT_PANDEMIC_TTL = 6.0
+
 -- The shard gates of the priority list, named.  rotation.md rounds simc's fractional
 -- thresholds to whole shards ON PURPOSE (`<= 4.2` and `<= 4.6` both become `<= 4`), which
 -- is the CONSERVATIVE direction: it builds one press later than simc would rather than
@@ -367,12 +374,35 @@ function spec:Context(state, env)
   end
   ctx.dotState = dotState
 
-  -- The REFRESH half of L8.  ALIVE now, and edge-driven: Blizzard raises `PandemicTime` when
-  -- the DoT genuinely enters its refresh window, computed per spell from the duration a
-  -- recast would carry over — a better number than any lead we could tune, and the only one
-  -- available at all, since the window's endpoints are Secret Values in combat.  A later
-  -- `fresh`/`absent` edge supersedes it, so a recast stops the cue immediately.
+  -- The REFRESH half of L8.  Edge-driven: Blizzard raises `PandemicTime` when the DoT
+  -- genuinely enters its refresh window, computed per spell from the duration a recast
+  -- would carry over — a better number than any lead we could tune, and the only one
+  -- available at all, since the window's endpoints are Secret Values in combat.
+  --
+  -- ⚠ BUT THE LATCH EXPIRES, and that is a fix, not a nicety (field capture 2026-07-30).
+  -- The latch is only ever superseded by a later `fresh`/`absent` edge — so if that clear
+  -- never arrives, a one-shot "you are in the refresh window" pins the cue on FOREVER.  It
+  -- does happen: on Hellcaller the capture shows `Imm=pandemic` still driving a Wither cue
+  -- **13.4 seconds** after it fired, with the DoT visibly near full duration.  Immolate is an
+  -- 18s DoT (Blizzard spell data), so its refresh window is ~5.4s — a 13.4s-old pandemic
+  -- claim is not merely suspect, it is arithmetically impossible.
+  --
+  -- So an aged-out pandemic edge decays to NO CLAIM, which is the project's standing rule
+  -- applied to this channel: absence of evidence is never evidence of absence, and an
+  -- expired estimate says "unknown", never "act now".  The failure direction is safe in
+  -- both halves — we stop nagging about a DoT that is probably fine, and if it really does
+  -- fall off, `OnAuraRemoved` fires `absent` and L8 re-fires as "apply it", untouched.
+  --
+  -- ⚠ NOTE FOR THE NEXT READER: `dotEdges` never carries a `Wth` key at all — on Hellcaller
+  -- the alert arrives on IMMOLATE's two cooldownIDs, because the CDM row is still Immolate's
+  -- even though the spell is replaced.  The edge scan above walks all three candidate ids for
+  -- exactly that reason.  Whether a Wither RECAST raises `OnAuraApplied` on those rows is the
+  -- open question behind the missed clear — `/cdmp alerts on` is the instrument for it.
   ctx.dotEdge = edge and edge.state or nil
+  if ctx.dotEdge == "pandemic" then
+    local age = (num(state.at) or 0) - (num(edge.at) or 0)
+    if age > self.DOT_PANDEMIC_TTL then ctx.dotEdge = nil end
+  end
   ctx.dotRefreshable = (dotState == "missing") or (ctx.dotEdge == "pandemic") or false
 
   -- ── The execute gate (L7's second half) ────────────────────────────────────

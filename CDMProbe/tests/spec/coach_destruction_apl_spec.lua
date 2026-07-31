@@ -90,7 +90,8 @@ end
 --   ritual/backdraft/chaotic/fiendish   buff presence
 --   dot "up"|"missing"|"unknown" the Immolate/Wither presence read (the OOC channel)
 --   dotEdge "pandemic"|"fresh"|"absent"  the CDM alert latch (the COMBAT channel), and
---                       dotEdgeOn / dotEdgesRaw pick which of the DoT's ids carries it
+--                       dotEdgeOn / dotEdgesRaw pick which of the DoT's ids carries it;
+--                       dotEdgeAge ages it in seconds (default 1) for the TTL
 --   hellcaller (bool)   swap the tracked maintenance DoT from Immolate to Wither
 --   immolateAsCast      track Immolate on its CAST id 348 (what the live build does)
 --   noWither            a Hellcaller build that does NOT track Wither (the field case)
@@ -165,7 +166,7 @@ local function build(f)
   -- `dotEdgeOn` picks WHICH of the DoT's ids carries it — the two-cooldownID case.
   local dotEdges = {}
   if f.dotEdge then
-    dotEdges[f.dotEdgeOn or dotID] = { state = f.dotEdge, at = NOW - 1 }
+    dotEdges[f.dotEdgeOn or dotID] = { state = f.dotEdge, at = NOW - (f.dotEdgeAge or 1) }
   end
   -- Raw form, for the case where the SAME DoT has latched on both of its ids at different
   -- times: { [spellID] = { state, at } }.
@@ -482,6 +483,42 @@ describe("Destruction rotation list (from specs/destruction/rotation.md)", funct
       local w = winner({ dot = "up", dotEdge = "pandemic", shards = 1 })
       assert.equals(ID.IMMO, w.cid)
       assert.equals("pandemic refresh", w.cue.note)
+    end)
+
+    ------------------------------------------------------------------------
+    -- THE LATCH EXPIRES.  Field capture 2026-07-30: `Imm=pandemic` was still driving a
+    -- Wither cue **13.4s** after it fired, with the DoT near full duration.  The latch is
+    -- only ever superseded by a later fresh/absent edge, so a clear that never arrives
+    -- pins the cue on forever.  Immolate/Wither is an 18s DoT — its refresh window is
+    -- ~5.4s — so a 13.4s-old pandemic claim is arithmetically impossible, not just stale.
+    ------------------------------------------------------------------------
+    it("still refreshes on a pandemic edge INSIDE the TTL", function()
+      local w = winner({ dot = "up", dotEdge = "pandemic", dotEdgeAge = 5, shards = 1 })
+      assert.equals(ID.IMMO, w.cid)
+      assert.equals("pandemic refresh", w.cue.note)
+    end)
+
+    it("STOPS refreshing once the pandemic latch has aged out — the field defect", function()
+      -- 13.4s is the age actually observed pinning the cue on.
+      local w = winner({ dot = "up", dotEdge = "pandemic", dotEdgeAge = 13.4, shards = 1 })
+      assert.are_not.equal(ID.IMMO, w.cid)
+    end)
+
+    it("an aged-out latch decays to NO CLAIM, not to 'the DoT is missing'", function()
+      -- The failure direction matters: expiring must make us quieter, never turn a
+      -- healthy DoT into an "apply it now" press.  ctx.dotState stays `up`.
+      local ctx = ns.Specs[267]:Context(
+        build({ dot = "up", dotEdge = "pandemic", dotEdgeAge = 30, shards = 1 }), Coach)
+      assert.equals("up", ctx.dotState)
+      assert.is_nil(ctx.dotEdge)
+      assert.is_false(ctx.dotRefreshable)
+    end)
+
+    it("a MISSING DoT is unaffected by the TTL — absence stays true until it is applied", function()
+      -- Only the `pandemic` claim decays.  An `absent` edge is a fact about the world that
+      -- stays true however old it is, until OnAuraApplied says otherwise.
+      local w = winner({ dot = "up", dotEdge = "absent", dotEdgeAge = 60, shards = 1 })
+      assert.equals(ID.IMMO, w.cid)
     end)
 
     it("leaves a healthy DoT alone — a `fresh` edge supersedes the pandemic latch", function()
