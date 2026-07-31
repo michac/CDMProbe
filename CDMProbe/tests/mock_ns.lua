@@ -135,7 +135,7 @@ end
 -- is never Play()ed — over-providing methods is harmless; MISSING one surfaces as
 -- a clear "attempt to call nil", which is the honest failure we want).
 local function newStub()
-  local t = { _scripts = {}, _level = 1 }
+  local t = { _scripts = {}, _events = {}, _level = 1 }
   local function chain(self) return self end
   for _, m in ipairs({
     "SetAllPoints", "SetScale",
@@ -147,7 +147,6 @@ local function newStub()
     -- The moveable-panel surface (HudVirtual Phase 2).  `EnableMouse` is RECORDING (below):
     -- "does the panel eat clicks right now" is the lock state's user-visible half.
     "SetMovable", "RegisterForDrag", "StartMoving", "StopMovingOrSizing", "SetClampedToScreen",
-    "RegisterEvent", "RegisterUnitEvent", "UnregisterEvent", "UnregisterAllEvents",
     "SetLooping", "Play", "Stop", "Pause", "Finish",
     "SetDuration", "SetSmoothing", "SetOffset", "SetFromAlpha", "SetToAlpha",
     "SetOrder", "SetStartDelay", "SetChildKey", "SetTarget", "SetTargetKey",
@@ -200,8 +199,31 @@ local function newStub()
   function t:SetScript(ev, fn) self._scripts[ev] = fn; return self end
   function t:HookScript(ev, fn) self._scripts[ev] = fn; return self end
   function t:GetScript(ev) return self._scripts[ev] end
-  -- Test-only: invoke a stored handler as WoW would (self, ...).
-  function t:Fire(ev, ...) local f = self._scripts[ev]; if f then return f(self, ...) end end
+
+  -- EVENT REGISTRATION IS MODELLED, not a no-op.  ⚠ This was a chainable no-op until
+  -- 2026-07-31, and that made an entire class of bug untestable: `Fire` dispatched to any
+  -- frame with an OnEvent script whether or not it had ever registered the event, so
+  -- "State never listens for TRAIT_CONFIG_UPDATED" looked identical to "State handles it".
+  -- The live bug that hid there — build caches invalidated only from an Acquire-gated
+  -- frame, so a hero-tree swap with the HUD off was never seen — passed its own new test
+  -- until this was fixed.  A harness that cannot express the failure cannot gate it.
+  function t:RegisterEvent(ev) self._events[ev] = true; return self end
+  function t:RegisterUnitEvent(ev) self._events[ev] = true; return self end
+  function t:UnregisterEvent(ev) self._events[ev] = nil; return self end
+  function t:UnregisterAllEvents() self._events = {}; return self end
+  function t:IsEventRegistered(ev) return self._events[ev] == true end
+  -- Test-only: invoke a stored handler as WoW would (self, ...) — but ONLY for an event
+  -- this frame actually registered, which is what the client does.  A non-OnEvent script
+  -- (OnUpdate, OnDragStart, …) has no registration and always fires.
+  function t:Fire(ev, ...)
+    local f = self._scripts[ev]
+    if not f then return end
+    if ev == "OnEvent" then
+      local event = ...
+      if not self._events[event] then return end
+    end
+    return f(self, ...)
+  end
   function t:CreateFontString(...) return newStub() end
   function t:CreateTexture(...) return newStub() end
   function t:CreateMaskTexture(...) return newStub() end

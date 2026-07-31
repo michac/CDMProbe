@@ -842,6 +842,38 @@ end
 
 St.ReadHero = readHero          -- test seam (the resolution path)
 
+-- Drop every BUILD-SCOPED client cache: knownness and the hero tree.  Both are facts about
+-- the current TALENT BUILD, not about the character, so both move on a respec.
+function St.InvalidateBuildCaches()
+  wipe(knownCache)
+  heroCache.asked, heroCache.id, heroCache.name = false, nil, nil
+end
+
+-- ⚠ ALWAYS ON, and this is a FIX rather than a tidy-up.  CACHE INVALIDATION IS NOT AN
+-- INGESTION CONCERN: a cache must be correct whether or not anyone is consuming it.  Both
+-- caches used to be invalidated only from the Acquire-gated `eframe` below, which had two
+-- holes, and the second is the dangerous one:
+--   * with the HUD OFF nothing was registered at all, so a respec left `heroCache` holding
+--     the PREVIOUS tree indefinitely;
+--   * turning the HUD back on did NOT clear it either — Acquire re-registers the event, it
+--     cannot replay the one that was missed.
+-- The Coach then gated Destruction's rotation lines on the wrong hero tree until the next
+-- talent change, and the decision log's `# config … hero:…` re-stamp named the wrong tree
+-- with it, so the trace agreed with the bug instead of exposing it.
+--
+-- TRAIT_CONFIG_UPDATED is the load-bearing registration: a HERO-TREE swap changes the build
+-- WITHOUT changing the spec, so PLAYER_SPECIALIZATION_CHANGED never fires for it (the same
+-- reasoning SpecRegistry.lua records as field-fix B), and SPELLS_CHANGED is not guaranteed
+-- for it either.  Registering all three is a few table reads on events that fire rarely.
+--
+-- ⚠ CREATED BEFORE `eframe` ON PURPOSE: the off-game harness reaches State's event frame
+-- via H.lastFrame(), so a frame created after it would silently become "the" frame.
+local cacheFrame = CreateFrame("Frame")
+cacheFrame:RegisterEvent("SPELLS_CHANGED")
+cacheFrame:RegisterEvent("TRAIT_CONFIG_UPDATED")
+cacheFrame:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
+cacheFrame:SetScript("OnEvent", function() St.InvalidateBuildCaches() end)
+
 local eframe = CreateFrame("Frame")
 eframe:SetScript("OnEvent", function(_, event, a1, a2, a3)
   if event == "COOLDOWN_VIEWER_SPELL_OVERRIDE_UPDATED" then
@@ -912,12 +944,11 @@ eframe:SetScript("OnEvent", function(_, event, a1, a2, a3)
       if type(base) == "number" then spendStartShards[base] = nil end
     end
   elseif event == "SPELLS_CHANGED" then
-    -- Knownness is respec-scoped, and this is the event that covers every way it can move
-    -- (talent swap, spec change, level, a temporarily-granted ability).  Wiping is the whole
-    -- invalidation: the next Build re-reads the spellbook for each candidate once.
-    wipe(knownCache)
-    -- The hero tree moves on exactly the same events, so it invalidates here too.
-    heroCache.asked, heroCache.id, heroCache.name = false, nil, nil
+    -- Kept so an ingesting session still invalidates on the spot, but `cacheFrame` above is
+    -- the OWNER — it is always on, and it also catches TRAIT_CONFIG_UPDATED, which is the
+    -- only event a hero-tree swap is guaranteed to fire.  Do not re-inline the wipes here:
+    -- two owners of one invalidation is how the HUD-off hole got missed the first time.
+    St.InvalidateBuildCaches()
   elseif event == "PLAYER_REGEN_DISABLED" then
     St.combatStartedAt = GetTime()
     pushEvent({ kind = "combat_start", at = GetTime() })

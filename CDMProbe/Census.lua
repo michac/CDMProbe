@@ -85,7 +85,10 @@ local ADDON, ns = ...
 ns.Census = {}
 local Cs = ns.Census
 
-local CAPTURES = 8    -- captures kept on disk (each is ~60 rows)
+-- ⚠ 16, not 8.  A full session is 2 specs x 2 hero trees x {OOC, CMB} = EIGHT captures
+-- exactly, i.e. zero headroom: one extra manual capture would silently evict the first,
+-- and the one it evicts is the OOC baseline everything else is compared against.
+local CAPTURES = 16
 
 --------------------------------------------------------------------------------
 -- The five-way read.  classify() names WHAT we got; sample() renders it only when
@@ -145,6 +148,37 @@ local function poolOf(info)
   end)
   if not ok then return { c = "threw-iter" } end
   return { c = "table", n = #parts, v = table.concat(parts, ",") }
+end
+
+--------------------------------------------------------------------------------
+-- WHICH BUILD IS THIS?  The label problem, and it is not cosmetic.
+--------------------------------------------------------------------------------
+-- Every question here is answered PER BUILD: the CDM's tracked set changes wholesale on a
+-- spec swap and substantially on a hero-tree swap, so two captures with different labels
+-- are not comparable row by row — and a capture with the WRONG label is worse than a
+-- missing one, because it answers a different question than the one you asked and never
+-- says so.
+--
+-- ⚠ THE HERO TREE IS READ FRESH HERE, not through ns.State.ReadHero(), which is CACHED.
+-- We read BOTH and compare, because a disagreement is itself a finding: it means the
+-- PIPELINE is running on a stale hero tree, and Destruction gates real rotation lines on
+-- that (Hellcaller's Malevolence / Wither vs Diabolist's Demonic Art).  A `heroStale` row
+-- in a capture is a live bug report, not a census artefact.
+local function heroFresh()
+  if not (C_ClassTalents and C_ClassTalents.GetActiveHeroTalentSpec) then
+    return { c = "absent" }
+  end
+  local ok, v = pcall(C_ClassTalents.GetActiveHeroTalentSpec)
+  return { c = classify(ok, v), v = sample(ok, v) }
+end
+
+-- The talent LOADOUT, so two builds inside one hero tree are distinguishable at a glance.
+-- Without it, "Destruction/hellcaller" labels two captures that may have different tracked
+-- sets, and the diff between them reads as client nondeterminism rather than as a respec.
+local function configID()
+  if not (C_ClassTalents and C_ClassTalents.GetActiveConfigID) then return { c = "absent" } end
+  local ok, v = pcall(C_ClassTalents.GetActiveConfigID)
+  return { c = classify(ok, v), v = sample(ok, v) }
 end
 
 --------------------------------------------------------------------------------
@@ -260,14 +294,25 @@ function Cs.Capture(label)
 
   table.sort(rows, function(a, b) return a.cid < b.cid end)
 
+  -- The hero tree, read two ways (see heroFresh's header).
+  local fresh = heroFresh()
+  local cachedName, cachedID = ns.State.ReadHero()
+
   local cap = {
-    at = GetTime(), combat = combat, label = label or "manual",
-    version = ns.version,
-    -- The DETECTED spec name, not the ACTIVE one: the resolver stashes it even for an
-    -- unsupported spec, so a capture from a passive character still says which one.
-    spec = ns.detectedSpecName or "?",
+    -- ⚠ A WALL CLOCK, not just GetTime().  GetTime() is seconds since the client started,
+    -- so it is not comparable across sessions and does not sort a ring that outlives one.
+    -- "Which of these two captures is tonight's" has to be answerable from the file.
+    when = date("%Y-%m-%d %H:%M:%S"), at = GetTime(),
+    combat = combat, label = label or "manual", version = ns.version,
+    -- The DETECTED spec, not the ACTIVE one: the resolver stashes it even for an
+    -- unsupported spec, so a capture from a passive character still says which one.  The
+    -- numeric id travels better than the localised name.
+    spec = ns.detectedSpecName or "?", specID = ns.detectedSpecID,
     active = ns.ActiveSpec ~= nil,
-    hero = ns.State and ns.State.ReadHero and (ns.State.ReadHero()) or nil,
+    heroID = fresh.v, heroClass = fresh.c, hero = cachedName,
+    -- TRUE when the pipeline's cached answer disagrees with the live one — a live bug.
+    heroStale = (fresh.c == "number" and cachedID ~= nil and cachedID ~= fresh.v) or nil,
+    config = configID().v,
     cids = n, frames = frameCount, catError = catError, rows = rows,
   }
 
@@ -289,10 +334,17 @@ local function isTab1(cats)
 end
 
 local function summarise(cap)
-  ns.Heading(string.format("CDM census — %s · %s%s · %s%s", cap.combat, cap.spec,
-    cap.active and "" or " (passive)",
-    cap.hero or "no hero", cap.catError and (" |cffff4040" .. cap.catError .. "|r") or ""))
-  ns.Printf("  %d cooldownID(s), %d with a live item frame", cap.cids, cap.frames)
+  ns.Heading(string.format("CDM census — %s · %s%s · hero:%s (%s) · cfg:%s%s",
+    cap.combat, cap.spec, cap.active and "" or " (passive)",
+    tostring(cap.heroID), tostring(cap.hero or "?"), tostring(cap.config or "?"),
+    cap.catError and (" |cffff4040" .. cap.catError .. "|r") or ""))
+  ns.Printf("  %s · %d cooldownID(s), %d with a live item frame",
+    cap.when, cap.cids, cap.frames)
+  if cap.heroStale then
+    -- Not a census artefact: the pipeline is deciding on the wrong hero tree RIGHT NOW.
+    ns.Printf("  |cffff4040\u{26A0} PIPELINE HERO IS STALE|r — live tree is %s, State cached %s. "
+      .. "Rotation lines are gated on the cached one.", tostring(cap.heroID), tostring(cap.hero))
+  end
 
   local dual, q1, q2, threw, elected, poolOnly = {}, {}, {}, {}, 0, 0
   local wasSet, auraUnit = {}, {}

@@ -973,6 +973,32 @@ describe("State hero tree", function()
     assert.equals(1, calls)
   end)
 
+  -- ⚠ THE HUD-OFF HOLE.  Both build caches used to be invalidated only from the
+  -- Acquire-gated event frame, so with no consumer holding ingestion a respec left the hero
+  -- tree holding the PREVIOUS answer — and Acquire could not fix it afterwards, because
+  -- re-registering an event does not replay the one that was missed.  The Coach then gated
+  -- Destruction's rotation on the wrong tree.  `cacheFrame` is always on; these pin that.
+  it("TRAIT_CONFIG_UPDATED drops the cache with NO consumer — a hero swap fires only this", function()
+    local sub = 58
+    _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return sub end }
+    assert.equals("hellcaller", (St.ReadHero()))
+    sub = 59
+    -- No St.Acquire() anywhere in this test: the HUD is off, exactly as it is when you
+    -- respec at a trainer.  A hero-tree swap does NOT fire PLAYER_SPECIALIZATION_CHANGED.
+    assert.equals(0, St.consumers)
+    for _, f in ipairs(H.frames) do f:Fire("OnEvent", "TRAIT_CONFIG_UPDATED") end
+    assert.equals("diabolist", (St.ReadHero()))
+  end)
+
+  it("PLAYER_SPECIALIZATION_CHANGED drops it too — a full spec swap moves it as well", function()
+    local sub = 58
+    _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return sub end }
+    assert.equals("hellcaller", (St.ReadHero()))
+    sub = 59
+    for _, f in ipairs(H.frames) do f:Fire("OnEvent", "PLAYER_SPECIALIZATION_CHANGED") end
+    assert.equals("diabolist", (St.ReadHero()))
+  end)
+
   it("SPELLS_CHANGED drops the cache — a hero swap moves the answer", function()
     local sub = 58
     _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return sub end }

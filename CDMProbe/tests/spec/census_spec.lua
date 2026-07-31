@@ -60,12 +60,90 @@ describe("CDM struct census", function()
   before_each(function()
     ns = H.fresh()
     H.load("Census.lua")
+    -- The REAL State.lua: the capture cross-checks its cached hero tree against a fresh
+    -- read, and that comparison is only meaningful against the shipping cache.
+    H.load("State.lua")
     Cs = ns.Census
     ns.db = {}
+    _G.date = function() return "2026-07-31 20:00:00" end
   end)
   after_each(function()
     _G.C_CooldownViewer = nil
+    _G.C_ClassTalents = nil
     _G.Enum.CooldownViewerCategory = nil
+  end)
+
+  ------------------------------------------------------------------------------
+  -- THE LABEL.  Every question is answered PER BUILD, so a capture with the wrong label is
+  -- worse than a missing one: it answers a different question and never says so.
+  ------------------------------------------------------------------------------
+  describe("labelling the build", function()
+    it("carries a WALL CLOCK, not just GetTime()", function()
+      -- GetTime() is seconds since client start: not comparable across sessions, and the
+      -- ring outlives one.  "Which of these is tonight's" must be answerable from the file.
+      world({ [903] = { cats = { "Essential" }, info = { spellID = CHAOS_BOLT } } })
+      assert.equals("2026-07-31 20:00:00", Cs.Capture().when)
+    end)
+
+    it("names the spec by id as well as name, and whether it is registered", function()
+      world({ [903] = { cats = { "Essential" }, info = { spellID = CHAOS_BOLT } } })
+      H.setSpecIndex(3); ns.ResolveActiveSpec()
+      local cap = Cs.Capture()
+      assert.equals("Destruction", cap.spec)
+      assert.equals(267, cap.specID)
+      assert.is_true(cap.active)
+    end)
+
+    it("an UNREGISTERED spec is still named — a passive capture says which one", function()
+      world({ [903] = { cats = { "Essential" }, info = { spellID = CHAOS_BOLT } } })
+      H.setSpecIndex(2); ns.ResolveActiveSpec()      -- Affliction: registered nowhere
+      local cap = Cs.Capture()
+      assert.equals("Affliction", cap.spec)
+      assert.is_false(cap.active)
+    end)
+
+    it("reads the hero tree FRESH, not through State's cache", function()
+      world({ [903] = { cats = { "Essential" }, info = { spellID = CHAOS_BOLT } } })
+      local sub = 58
+      _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return sub end,
+                            GetActiveConfigID = function() return 12345 end }
+      assert.equals(58, Cs.Capture().heroID)
+      sub = 59                                        -- swapped, and nothing invalidated
+      assert.equals(59, Cs.Capture().heroID)          -- the capture still tells the truth
+    end)
+
+    it("FLAGS a stale pipeline hero tree — that is a live bug, not a census artefact", function()
+      world({ [903] = { cats = { "Essential" }, info = { spellID = CHAOS_BOLT } } })
+      local sub = 58
+      _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return sub end }
+      ns.State.ReadHero()                             -- prime State's cache at 58
+      sub = 59                                        -- swap, WITHOUT invalidating
+      local cap = Cs.Capture()
+      assert.equals(59, cap.heroID)                   -- live
+      assert.equals("hellcaller", cap.hero)           -- what the pipeline still believes
+      assert.is_true(cap.heroStale)
+    end)
+
+    it("does NOT cry stale when the pipeline agrees", function()
+      world({ [903] = { cats = { "Essential" }, info = { spellID = CHAOS_BOLT } } })
+      _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return 58 end }
+      ns.State.ReadHero()
+      assert.is_nil(Cs.Capture().heroStale)
+    end)
+
+    it("carries the talent CONFIG id, so two builds in one hero tree are distinguishable", function()
+      world({ [903] = { cats = { "Essential" }, info = { spellID = CHAOS_BOLT } } })
+      _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return 58 end,
+                            GetActiveConfigID = function() return 98765 end }
+      assert.equals(98765, Cs.Capture().config)
+    end)
+
+    it("survives C_ClassTalents being absent entirely", function()
+      world({ [903] = { cats = { "Essential" }, info = { spellID = CHAOS_BOLT } } })
+      local cap = Cs.Capture()
+      assert.equals("absent", cap.heroClass)
+      assert.is_nil(cap.heroStale)
+    end)
   end)
 
   ------------------------------------------------------------------------------
@@ -242,10 +320,14 @@ describe("CDM struct census", function()
       assert.equals(3, seen)          -- and each one is REPORTED, not silently dropped
     end)
 
-    it("rings the captures so a long session cannot grow without bound", function()
+    it("keeps a FULL session's worth: 2 specs x 2 hero trees x OOC/CMB, with headroom", function()
+      -- At 8 the ring held exactly one full session and no more, so a single extra manual
+      -- capture evicted the OOC baseline everything else is compared against.
       world({ [903] = { cats = { "Essential" }, info = { spellID = CHAOS_BOLT } } })
-      for _ = 1, 12 do Cs.Capture() end
+      for _ = 1, 8 do Cs.Capture() end
       assert.equals(8, #ns.db.census)
+      for _ = 1, 20 do Cs.Capture() end
+      assert.equals(16, #ns.db.census)
     end)
 
     it("sorts rows by cooldownID, so two captures diff cleanly", function()
