@@ -374,6 +374,7 @@ function H.fresh()
   H.printed = {}
   ns.Print   = function(msg) H.printed[#H.printed + 1] = tostring(msg) end
   ns.Printf  = function(fmt, ...) ns.Print(string.format(fmt, ...)) end
+  ns.Heading = function(t) ns.Print(tostring(t)) end
 
   -- Core.lua's command registry, recorded so a spec can DRIVE a slash verb (`/cdmp panel
   -- unlock`) through the same handler the game dispatches — the module registers at load,

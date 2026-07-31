@@ -10,6 +10,7 @@ Mode.lua
 Util.lua
 Viewers.lua
 AlertTape.lua
+Census.lua
 SpecRegistry.lua
 SpecDemonology.lua
 CoachDemonology.lua

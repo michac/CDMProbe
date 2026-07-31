@@ -24,6 +24,10 @@ local DEFAULTS = {
   -- TEMPORARY — the CDM alert-channel discovery tape.  Off unless `/cdmp alerts on`
   -- (`alerttape_on`).  Its end date and what it is for: AlertTape.lua's header.
   alerttape = {},
+  -- TEMPORARY — the CDM STRUCT CENSUS (`/cdmp census`), a ring of the last few captures.
+  -- Answers the six "is this defect live or latent" questions roster-state-plan.md Phase 2
+  -- is gated on.  Its end date and what it is for: Census.lua's header.  Delete with it.
+  census = {},
   -- The moveable virtual-icon panel's saved point (HudVirtual.lua, `/cdmp panel`):
   -- `{ point, relPoint, x, y }`.  The EMPTY table means "no saved position" — RestorePosition
   -- detects that via the absent `point` and falls back to the default anchor, exactly as
