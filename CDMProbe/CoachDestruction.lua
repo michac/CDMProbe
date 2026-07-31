@@ -340,14 +340,38 @@ function spec:Context(state, env)
   -- become "the DoT is missing" — that would spam the refresh press every GCD on a spec
   -- whose DoT is its spine.  So L8 fires only on positive evidence of absence.
   --
-  -- TWO CHANNELS, in trust order:
-  --   1. THE ALERT LATCH (field-fix C) — `absent` / `fresh` / `pandemic`, observed off the
-  --      CDM's own choke point.  It is the only one that works IN COMBAT, and it is the only
-  --      route to "refresh it early" at all, because the pandemic STATE is secret.  Read
-  --      across every candidate id, since either Immolate row can raise the alert; the
+  -- THREE CHANNELS, in trust order (reordered 2026-07-31, roster-state-plan §3.10):
+  --   1. THE PER-FRAME AURA VERDICT — `state.auraFrames[id]`, State's read of the item
+  --      frame's `auraDataUnit` / `PandemicIcon`.  Blizzard recomputes both EVERY FRAME off
+  --      secrets we cannot read, so unlike an edge they SELF-CLEAR.  `unit ~= nil` is the
+  --      aura being up, `unit == nil` on a capable+readable row is positive evidence it is
+  --      DOWN — the "apply it" answer nothing else can reach.  Highest trust, and only
+  --      consulted when `capable`: the fields are widget internals with no deprecation
+  --      path, so a silently-absent one must not read as "no DoT".
+  --   2. THE ALERT LATCH (field-fix C) — `absent` / `fresh` / `pandemic`, observed off the
+  --      CDM's own choke point.  DEMOTED to a fast path: it is a one-shot NOTIFICATION, not
+  --      a state, and a re-application of a live aura raises nothing at all, so it goes
+  --      silent for as long as the DoT is maintained (measured: 41 Immolate casts produced
+  --      one OnAuraApplied, one PandemicTime and zero OnAuraRemoved).  Still the quickest
+  --      signal when it does fire, and still the whole answer on a row that is not capable.
+  --      Read across every candidate id, since either Immolate row can raise the alert; the
   --      NEWEST wins, and State has already resolved cooldownIDs to base spellIDs.
-  --   2. the aura / buff-item presence read — the pre-existing channel, still correct out of
-  --      combat and still the fallback when nothing has latched yet.
+  --   3. the aura / buff-item presence read — the OOC fallback.  ⚠ `dotRow.buff` no longer
+  --      exists for a tab-1 row (§3.1): `IsActive()` there is `self.cooldownID ~= nil`, a
+  --      constant `true`, which is what jammed this whole read to "up" on both hero trees.
+  --      The `b` branch below survives only for a DoT tracked on a tab-2 row.
+  --   4. otherwise "unknown" — an unreadable DoT stays silent, never becomes "apply it now".
+  local frames = state.auraFrames or {}
+  local frame
+  for _, name in ipairs(DOT_KEYS) do
+    local id = S[name]
+    local f = id and frames[id]
+    -- First CAPABLE candidate with an opinion wins; a capable-but-refused read is still an
+    -- answer ("we asked and could not tell"), so it stops the walk rather than falling
+    -- through to a different id's stale reading.
+    if type(f) == "table" and f.capable then frame = f; break end
+  end
+
   local edges = state.dotEdges or {}
   local edge
   for _, name in ipairs(DOT_KEYS) do
@@ -358,7 +382,9 @@ function spec:Context(state, env)
 
   local dotRow = dotID and abilities[dotID]
   local dotState = "unknown"
-  if edge then
+  if frame and frame.unitReadable then
+    dotState = (frame.unit ~= nil) and "up" or "missing"
+  elseif edge then
     if edge.state == "absent" then dotState = "missing"
     else dotState = "up" end                       -- "fresh" and "pandemic" both mean up
   elseif buffActive(dotID) then
@@ -373,8 +399,27 @@ function spec:Context(state, env)
     end
   end
   ctx.dotState = dotState
+  -- WHICH CHANNEL DECIDED — carried so the decision log can render it.  A trace that shows
+  -- `Imm=up` without saying whether a self-clearing frame read or a 40-second-old latch
+  -- produced it cannot explain the decision, which is exactly the hole the field capture
+  -- fell into.
+  ctx.dotFrom = (frame and frame.unitReadable and "frame")
+    or (edge and "edge")
+    or ((dotState ~= "unknown") and "aura")
+    or nil
 
-  -- The REFRESH half of L8.  Edge-driven: Blizzard raises `PandemicTime` when the DoT
+  -- The REFRESH half of L8, on the same three-channel trust order.
+  --
+  -- ⚠ CHANNEL 1 IS `PandemicIcon`, AND IT DOES NOT NEED A TTL.  `IsInPandemicTime` compares
+  -- two Secret Values, so calling it throws — but Blizzard evaluates it from the item's
+  -- OnUpdate every frame anyway and Show/HidePandemicStateFrame set and nil the icon frame
+  -- (CooldownViewer.lua:98, :562-585).  So it is a POLL of a live predicate: it arms on
+  -- entering the window and clears itself on the refresh, which is the whole thing the
+  -- latch below cannot do.  No age, no decay, no TTL — it is either true now or it is not.
+  --
+  -- Channel 2, the alert edge, stays underneath it for a row that is not `capable`.
+  --
+  -- Edge-driven: Blizzard raises `PandemicTime` when the DoT
   -- genuinely enters its refresh window, computed per spell from the duration a recast
   -- would carry over — a better number than any lead we could tune, and the only one
   -- available at all, since the window's endpoints are Secret Values in combat.
@@ -398,12 +443,25 @@ function spec:Context(state, env)
   -- even though the spell is replaced.  The edge scan above walks all three candidate ids for
   -- exactly that reason.  Whether a Wither RECAST raises `OnAuraApplied` on those rows is the
   -- open question behind the missed clear — `/cdmp alerts on` is the instrument for it.
+  -- ⚠ THE TTL SURVIVES HERE AND ONLY HERE.  It is a fence around the LATCH's inability to
+  -- clear itself; the frame poll needs no such thing, so it is deliberately not applied to
+  -- `frame.pandemic`.
   ctx.dotEdge = edge and edge.state or nil
   if ctx.dotEdge == "pandemic" then
     local age = (num(state.at) or 0) - (num(edge.at) or 0)
     if age > self.DOT_PANDEMIC_TTL then ctx.dotEdge = nil end
   end
-  ctx.dotRefreshable = (dotState == "missing") or (ctx.dotEdge == "pandemic") or false
+
+  local framePandemic
+  if frame and frame.capable then framePandemic = frame.pandemic and true or false end
+  ctx.dotPandemic = framePandemic          -- the frame's own answer, nil when it has none
+  ctx.dotRefreshable = (dotState == "missing")
+    or (framePandemic == true)
+    -- The latch only gets a say where the frame has none: a `capable` row that says
+    -- `pandemic = false` is a live reading of the window, and must not be overridden by a
+    -- one-shot notification that fired at some point and never retracted.
+    or (framePandemic == nil and ctx.dotEdge == "pandemic")
+    or false
 
   -- ── The execute gate (L7's second half) ────────────────────────────────────
   -- Target health at or below 20%.  This is NOT a Secret Value — it is ordinary unit data

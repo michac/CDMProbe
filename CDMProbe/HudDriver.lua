@@ -228,6 +228,25 @@ local function status()
   end
   ns.Printf("  last tick: %d cue(s) drawn%s", D.lastCues,
     D.lastError and ("   |cffff4040error:|r " .. D.lastError) or "   |cff88ff88clean|r")
+  -- THE §3.10 CAPABILITY VERDICT.  `item.auraDataUnit` / `item.PandemicIcon` are widget
+  -- INTERNALS, not API: no deprecation, no error, and if Blizzard stops writing them they
+  -- read nil forever — indistinguishable from "no aura".  So the check is on the WRITER
+  -- METHODS and its failure has to be loud, or the DoT line silently drops back to the
+  -- alert latch (which cannot clear itself) with nothing on screen to say so.  ABSENT here
+  -- is the rule-18 fallback working as designed: a FINDING, not a bug.
+  local rows, unit, window = ns.State.AuraFrameCapability()
+  if rows == 0 then
+    ns.Print("  aura-frame read: |cff808080no item frames|r (are the CDM viewers shown?)")
+  else
+    local function half(n, name)
+      return (n == rows and "|cff88ff88" or (n == 0 and "|cffff4040" or "|cffffcc00"))
+        .. n .. "/" .. rows .. "|r " .. name
+    end
+    ns.Printf("  aura-frame read: %s, %s%s",
+      half(unit, "auraDataUnit"), half(window, "pandemic writers"),
+      (unit == 0 or window == 0)
+        and "   |cffff4040the internals moved — DoT is on the edge-latch fallback|r" or "")
+  end
   ns.Print("  |cffffffff/cdmp hud layout|r dumps the live Layout.")
 end
 

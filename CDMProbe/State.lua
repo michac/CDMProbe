@@ -501,6 +501,17 @@ end
 -- secret.  We MEASURE that here: read `IsActive()` and `IsShown()` guarded, and carry
 -- `hideWhenInactive` (whether `shown` is even a signal — the ShouldBeShown caveat).
 -- Duration/stacks are deliberately NOT read: they are auraData-derived and secret.
+--
+-- ⚠ CALL THIS FOR TAB-2 ROWS ONLY (§3.1, fixed 2026-07-31).  Everything above reasons
+-- about Demonic Core, which is a TrackedBuff — and that is the trail showing which family
+-- was actually checked.  `CooldownViewerItemMixin:ShouldBeActive()` is
+-- `return self.cooldownID ~= nil` (CooldownViewer.lua:362-364) and ONLY
+-- `CooldownViewerBuffItemMixin` overrides it (:1186), so on any Essential/Utility row
+-- `item:IsActive()` is a CONSTANT `true` — no error, no nil, nothing to tell it from a
+-- real signal.  17 tab-1 rows on Destruction carry an aura flag, cid 164597 Immolate among
+-- them (`[client]` 2026-07-31), and `buffs` feeds both brains directly: gating this read on
+-- the struct flags instead of on FAMILY jammed the DoT read to "up" on both hero trees.
+-- The gate lives at the CALL SITE in St.Build, where `categoryName` is in scope.
 local function readBuffItem(item)
   if not item then return nil end
   local out = {}
@@ -518,6 +529,74 @@ local function readBuffItem(item)
   end
   local ok, hwi = pcall(function() return item.hideWhenInactive end)
   if ok and type(hwi) == "boolean" then out.hideWhenInactive = hwi end
+  return out
+end
+
+--------------------------------------------------------------------------------
+-- auraFrame{capable, unit, unitReadable, pandemic} — the PER-FRAME AURA VERDICT
+--------------------------------------------------------------------------------
+-- READING THE VERDICT INSTEAD OF THE VALUE (security-taint-and-restricted-data.md §4.11).
+-- Blizzard's own untainted code reads a secret, decides something from it, and writes that
+-- decision into ordinary widget state.  The decision is readable even when its inputs are
+-- not.  Two such fields, both measured over a full DoT cycle in combat:
+--
+--   item.auraDataUnit   "player" | "target" | nil   IS the aura up, and on which side.
+--                       Written per refresh (ItemData.lua:401-406) while the whole
+--                       AuraData record is sealed.
+--   item.PandemicIcon   table | nil                 IS it in the refresh window.
+--                       `IsInPandemicTime` compares two SECRET numbers, so CALLING it
+--                       throws — but CheckPandemicTimeDisplay runs it from the item's
+--                       OnUpdate anyway and Show/HidePandemicStateFrame set and nil this
+--                       frame reference (CooldownViewer.lua:98, :562-585).
+--
+-- WHY THIS EXISTS AT ALL.  `PandemicTime` is a one-shot NOTIFICATION, not a state — it
+-- clears its own trigger time and sets `nextAvailableTimeToPlayPandemicAlert` to prevent
+-- re-firing (:552-555) — and re-applying a live aura raises nothing at all.  So the alert
+-- latch sees an aura's first application and first pandemic entry, then silence.  Both
+-- fields above are recomputed EVERY FRAME, so both SELF-CLEAR, which is exactly what the
+-- edge cannot do.  Measured: 169 DoT cues in one pull, all `pandemic_refresh`, none
+-- `not_up`.
+--
+-- ⚠ THE CAPABILITY CHECK IS METHOD-BASED, NOT FIELD-BASED, and that is the load-bearing
+-- part.  These are implementation details at a pinned build, not API: no deprecation, no
+-- error.  If Blizzard stops writing `auraDataUnit` it reads nil forever — indistinguishable
+-- from a legitimate "no aura", i.e. a confident wrong answer in the WORST direction ("your
+-- DoT is down, apply it now", every GCD).  An absent field cannot tell us that; an absent
+-- WRITER can.  So `capable` asks for the two methods that do the writing, and a row that
+-- has neither carries no opinion at all — the Coach falls back to the alert latch.
+--
+-- ⚠ NOT FAMILY-GATED, unlike readBuffItem above.  The signal was measured on the TAB-1
+-- Essential row (cid 164597) as well as the tab-2 one — `auraDataUnit` is written by
+-- CooldownViewerItemDataMixin, which every item mixin descends from (CooldownViewer.lua:87).
+-- Only `IsActive()` is the two-mixin trap.
+--
+-- ⚠ AND WE NEVER CALL THE METHODS.  ns.HasMethod is an existence probe; calling
+-- GetAuraDataUnit would be a read we do not need (the field is right there) and calling
+-- CheckPandemicTimeDisplay would drive Blizzard's display from addon code.
+local function readAuraFrame(item)
+  if not item then return nil end
+  local capable = ns.HasMethod(item, "GetAuraDataUnit")
+    and (ns.HasMethod(item, "CheckPandemicTimeDisplay")
+      or ns.HasMethod(item, "ShowPandemicStateFrame"))
+  local out = { capable = capable and true or false }
+
+  -- The index itself is pcall'd, for the reason Util.lua:160-163 states: a table that
+  -- passes every prior guard can still throw on access under the 12.0 restrictions.  A
+  -- refusal is `unitReadable = false` with NO `unit` — never a fabricated absence, which
+  -- downstream would read as "the aura is down".
+  local ok, unit = pcall(function() return item.auraDataUnit end)
+  if ok and not ns.IsSecret(unit) then
+    out.unitReadable = true
+    if type(unit) == "string" then out.unit = unit end
+  else
+    out.unitReadable = false
+  end
+
+  -- Presence, not contents — we never index the icon frame.  A refused read is `false`
+  -- ("no refresh-window claim"), which is the quiet direction: it stops us saying "refresh
+  -- now", it never invents a DoT state.  Only meaningful when `capable`.
+  local okp, icon = pcall(function() return item.PandemicIcon end)
+  out.pandemic = (okp and not ns.IsSecret(icon) and icon ~= nil) and true or false
   return out
 end
 
@@ -541,6 +620,27 @@ local function itemFrameMap()
     end
   end
   return map
+end
+
+-- THE §3.10 CAPABILITY VERDICT, surfaced on `/cdmp hud status`.
+--
+-- `readAuraFrame`'s bind-time check is per row and silent by design — a row without the
+-- writer methods just carries no opinion.  That is the right runtime behaviour and the
+-- wrong DIAGNOSTIC one: if a patch moves the internals, EVERY row goes quiet at once and
+-- the HUD degrades to the edge latch with nothing on screen to say so.  Rule 18 asks for a
+-- documented fallback AND a loud failure; this is the loud half.  Returns
+-- (rows, withUnitReader, withWindowWriter) so the readout can say which half went.
+function St.AuraFrameCapability()
+  local rows, unit, window = 0, 0, 0
+  for _, item in pairs(itemFrameMap()) do
+    rows = rows + 1
+    if ns.HasMethod(item, "GetAuraDataUnit") then unit = unit + 1 end
+    if ns.HasMethod(item, "CheckPandemicTimeDisplay")
+        or ns.HasMethod(item, "ShowPandemicStateFrame") then
+      window = window + 1
+    end
+  end
+  return rows, unit, window
 end
 
 --------------------------------------------------------------------------------
@@ -1112,8 +1212,20 @@ local function pressableRep(rows)
   return nil
 end
 
+-- How much of an opinion a per-frame aura verdict carries, so the fold can pick the best of
+-- an ability's rows deterministically instead of losing to `pairs` order.  POSITIVE WINS:
+-- a bound aura outranks a capable "nothing bound", which outranks a refused read, which
+-- outranks a row whose writer methods are missing entirely.
+local function auraFrameRank(f)
+  if type(f) ~= "table" then return -1 end
+  if not f.capable then return 0 end
+  if f.unit ~= nil then return 3 end
+  if f.unitReadable then return 2 end
+  return 1
+end
+
 local function domainView(cooldowns, fold, filterDisplayable, edges)
-  local abilities, dropped, dotEdges = {}, {}, {}
+  local abilities, dropped, dotEdges, auraFrames = {}, {}, {}, {}
   -- Display-identity claims, resolved in a SECOND pass.  `pairs(rowsByBase)` order is
   -- unstable, so deciding a contested identity inline would make the domain view depend on
   -- table order — the exact class of bug the log's fixed render orders exist to prevent.
@@ -1139,6 +1251,14 @@ local function domainView(cooldowns, fold, filterDisplayable, edges)
         if not prev or (type(e.at) == "number" and type(prev.at) == "number" and e.at >= prev.at) then
           dotEdges[base] = e
         end
+      end
+      -- The per-frame aura verdict (§3.10), folded the same way and for the same reason:
+      -- Immolate's aura row sits on the Buff-bar viewer and never enters `abilities`, yet
+      -- it carries `auraDataUnit` just like the Essential cast row.  Newest-wins makes no
+      -- sense for a poll, so this folds on STRENGTH OF OPINION instead.
+      local af = entry.auraFrame
+      if af and auraFrameRank(af) > auraFrameRank(auraFrames[base]) then
+        auraFrames[base] = af
       end
     end
   end
@@ -1185,7 +1305,7 @@ local function domainView(cooldowns, fold, filterDisplayable, edges)
     end
   end
 
-  return abilities, dropped, dotEdges
+  return abilities, dropped, dotEdges, auraFrames
 end
 
 St.DomainView = domainView               -- test seam (the field-fix A/C proof)
@@ -1441,9 +1561,17 @@ function St.Build(drain)
       charge = charge,
       aura   = readAura(hasAura, selfAura, activeByID, auraIds, auraSecret),
       glow   = readGlow(live),   -- the combat-readable proc-highlight signal
-      -- buff-item frame state (isActive/shown) — measured for the aura entries, the
-      -- candidate per-buff combat signal the DB struct doesn't carry.
-      buff   = (hasAura or selfAura) and readBuffItem(items[cooldownID]) or nil,
+      -- buff-item frame state (isActive/shown) — the per-buff combat signal the DB struct
+      -- doesn't carry.  ⚠ GATED ON FAMILY, NOT ON THE STRUCT FLAGS (§3.1).  `IsActive()`
+      -- is a real signal only on CooldownViewerBuffItemMixin; on tab 1 it is
+      -- `self.cooldownID ~= nil`, a constant `true`, and 17 tab-1 rows carry an aura flag.
+      -- See readBuffItem's header for the traced consequence.
+      buff   = (categoryName == "TrackedBuff" or categoryName == "TrackedBar")
+               and readBuffItem(items[cooldownID]) or nil,
+      -- The per-frame AURA VERDICT (§3.10) — `auraDataUnit` for presence, `PandemicIcon`
+      -- for the refresh window, both self-clearing where the alert edge cannot.  NOT
+      -- family-gated: measured on the tab-1 Essential row too.
+      auraFrame = readAuraFrame(items[cooldownID]),
       -- mostly-static, OOC-resolved off the BASE id (finding-3)
       keybind = base and ns.HudBinds.Get(base) or nil,
     }
@@ -1501,8 +1629,8 @@ function St.Build(drain)
   -- the viewers are not up (login, CDM disabled, a relayout mid-pulse), not that nothing on
   -- the board can be drawn — filtering on it would empty `abilities` outright, which is the
   -- exact shape of the v0.32.25 total outage.
-  local abilities, dropped, dotEdges = domainView(cooldowns, foldBase, next(items) ~= nil,
-                                                  St.dotEdge)
+  local abilities, dropped, dotEdges, auraFrames =
+    domainView(cooldowns, foldBase, next(items) ~= nil, St.dotEdge)
 
   -- VIRTUAL ROWS — the spec's own rotation buttons the CDM tracks nowhere (see the walk's
   -- header).  Synthesised AFTER the fold, so `abilities` is the real absence test, and
@@ -1562,6 +1690,12 @@ function St.Build(drain)
     -- on a row that is NOT pressable — Immolate's DoT aura sits on the Buff-bar viewer and
     -- never enters `abilities`, yet it raises PandemicTime just like the Essential cast row.
     dotEdges  = dotEdges,
+    -- The PER-FRAME AURA VERDICT, re-keyed cooldownID -> BASE spellID exactly as dotEdges
+    -- is, and for the same reason (an ability's aura signal can live on a row that is not
+    -- pressable).  `{ capable, unit, unitReadable, pandemic }` — see readAuraFrame.  This
+    -- is the only DoT channel that both survives restricted combat AND clears itself; the
+    -- alert latch is the fast path beneath it, not the other way round.
+    auraFrames = auraFrames,
     power  = power,
     -- Every active player buff, spec-agnostically — the Coach's authoritative proc
     -- source, and the diagnostic that reveals a proc's TRUE aura id when a CDM entry's

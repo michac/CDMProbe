@@ -282,19 +282,63 @@ function DL.Render(pulse, guidance, drawList)
   table.sort(bList)
   local bStr = (#bList > 0) and table.concat(bList, " ") or "-"
 
-  -- DOT — the aura-lifecycle latch, and HOW OLD IT IS.  Added 2026-07-30 because a
-  -- `w:Wth:pandemic_refresh` in the field could not be diagnosed from this trace at all:
-  -- the latch is the sole input to L8's refresh half and it was the one thing the log did
-  -- not render, so "the HUD says refresh and the DoT has 17s left" had no evidence either
-  -- way.  `Wth=pandemic@4.2` reads "the pandemic edge for Wither landed 4.2s ago" — an
-  -- edge older than the DoT's own duration is a MISSED CLEAR, and that is now visible.
-  local dotList = {}
+  -- DOT — BOTH of the DoT's observation channels, side by side, as `<code>=<frame>/<edge>`.
+  --
+  -- The edge half arrived 2026-07-30 because a `w:Wth:pandemic_refresh` in the field could
+  -- not be diagnosed from this trace at all: the latch was the sole input to L8's refresh
+  -- half and the one thing the log did not render, so "the HUD says refresh and the DoT has
+  -- 17s left" had no evidence either way.  `pandemic@4.2` reads "the pandemic edge landed
+  -- 4.2s ago" — an edge older than the DoT's own duration is a MISSED CLEAR.
+  --
+  -- The FRAME half arrived with §3.10, and it is why this field is now two-sided: the brain
+  -- consults the per-frame verdict FIRST and the latch only where that has no opinion, so a
+  -- trace showing one channel cannot explain which one decided.  `Imm=tgt+p/pandemic@43.8`
+  -- is the exact shape of the bug this replaced — a live frame reading beside a 43-second-
+  -- old notification.  Frame tokens:
+  --   tgt / plr   an aura is bound, and on which side     (=> dotState "up")
+  --   off         capable and readable, nothing bound     (=> dotState "missing" — the
+  --                                                           `not up` press, and the one
+  --                                                           answer the old pipeline could
+  --                                                           never reach)
+  --   ?           the read refused (secret / threw)       (=> no opinion, hand to the edge)
+  --   X           the writer methods are gone             (=> rule 18's fallback; if this
+  --                                                           appears, Blizzard moved the
+  --                                                           internals — a finding, not a
+  --                                                           bug)
+  --   +p          `PandemicIcon` present: in the refresh window, RIGHT NOW (no TTL — it is
+  --               a poll of a live predicate, not a latch)
+  local function frameTok(f)
+    if type(f) ~= "table" then return nil end
+    if not f.capable then return "X" end
+    if not f.unitReadable then return "?" end
+    local u = "off"
+    if f.unit == "target" then u = "tgt"
+    elseif f.unit == "player" then u = "plr"
+    elseif type(f.unit) == "string" then u = f.unit end
+    return u .. (f.pandemic and "+p" or "")
+  end
+
+  local dotSeen, dotBases = {}, {}
+  local function noteDot(spellID)
+    if not dotSeen[spellID] then dotSeen[spellID] = true; dotBases[#dotBases + 1] = spellID end
+  end
   for spellID, e in pairs(pulse.dotEdges or {}) do
+    if type(e) == "table" and e.state then noteDot(spellID) end
+  end
+  for spellID, f in pairs(pulse.auraFrames or {}) do
+    if frameTok(f) then noteDot(spellID) end
+  end
+  local dotList = {}
+  for _, spellID in ipairs(dotBases) do
+    local e = (pulse.dotEdges or {})[spellID]
+    local edgeTok = "-"
     if type(e) == "table" and e.state then
       local age = (type(e.at) == "number" and type(pulse.at) == "number")
         and string.format("@%.1f", pulse.at - e.at) or ""
-      dotList[#dotList + 1] = codeForSpell(spellID) .. "=" .. tostring(e.state) .. age
+      edgeTok = tostring(e.state) .. age
     end
+    dotList[#dotList + 1] = codeForSpell(spellID) .. "="
+      .. (frameTok((pulse.auraFrames or {})[spellID]) or "-") .. "/" .. edgeTok
   end
   table.sort(dotList)
   local dotStr = (#dotList > 0) and table.concat(dotList, ",") or "-"

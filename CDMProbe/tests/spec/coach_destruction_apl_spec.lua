@@ -92,6 +92,9 @@ end
 --   dotEdge "pandemic"|"fresh"|"absent"  the CDM alert latch (the COMBAT channel), and
 --                       dotEdgeOn / dotEdgesRaw pick which of the DoT's ids carries it;
 --                       dotEdgeAge ages it in seconds (default 1) for the TTL
+--   dotFrame "target"|"player"|"none"|"unreadable"   the PER-FRAME aura verdict (§3.10),
+--                       the channel that outranks the latch; dotFramePandemic is its
+--                       refresh-window half and dotFrameIncapable removes the capability
 --   hellcaller (bool)   swap the tracked maintenance DoT from Immolate to Wither
 --   immolateAsCast      track Immolate on its CAST id 348 (what the live build does)
 --   noWither            a Hellcaller build that does NOT track Wither (the field case)
@@ -172,6 +175,28 @@ local function build(f)
   -- times: { [spellID] = { state, at } }.
   for id, e in pairs(f.dotEdgesRaw or {}) do dotEdges[id] = e end
 
+  -- The PER-FRAME AURA VERDICT (§3.10), base-spellID-keyed exactly as State emits it.  This
+  -- is the channel that OUTRANKS the latch: `auraDataUnit` says whether the aura is up and
+  -- `PandemicIcon` whether it is in the refresh window, and Blizzard recomputes both every
+  -- frame, so unlike an edge they self-clear.
+  --   dotFrame "target"|"player"|"none"|"unreadable"   what the frame says about presence
+  --   dotFramePandemic (bool)                          the refresh-window mirror
+  --   dotFrameIncapable                                the writer methods are gone —
+  --                                                    rule-18's fallback-to-the-latch case
+  --   dotFrameOn                                       which id carries it (default: dotID)
+  local auraFrames = {}
+  if f.dotFrame or f.dotFrameIncapable then
+    local af = { capable = not f.dotFrameIncapable, pandemic = f.dotFramePandemic or false }
+    if f.dotFrame == "unreadable" then
+      af.unitReadable = false
+    else
+      af.unitReadable = true
+      if f.dotFrame == "target" or f.dotFrame == "player" then af.unit = f.dotFrame end
+    end
+    auraFrames[f.dotFrameOn or dotID] = af
+  end
+  for id, a in pairs(f.auraFramesRaw or {}) do auraFrames[id] = a end
+
   local shardBar = { value = f.shards or 0, incoming = f.incoming or 0, max = 5, readable = true }
   return {
     at = NOW, combat = (f.combat ~= false), combatStartedAt = NOW - 60,
@@ -184,6 +209,7 @@ local function build(f)
     history = {},
     abilities = abilities,
     dotEdges = dotEdges,
+    auraFrames = auraFrames,
     target = f.targetHp and { healthPct = f.targetHp } or nil,
   }
 end
@@ -570,6 +596,88 @@ describe("Destruction rotation list (from specs/destruction/rotation.md)", funct
     it("sits BELOW Shadowburn, per the list order", function()
       assert.equals(ID.SBURN, winner({ dot = "missing", shadowburn = cdReady(),
                                        fiendish = true, shards = 1 }).cid)
+    end)
+
+    --------------------------------------------------------------------------
+    -- §3.10 — THE PER-FRAME AURA VERDICT, and why it outranks the latch.
+    --------------------------------------------------------------------------
+    -- The measurement this exists for: across a whole pull, all 169 DoT cues carried
+    -- `pandemic_refresh` and ZERO carried `not_up`.  Two causes, both fixed together —
+    -- §3.1 jammed the presence read to "up" on a tab-1 row whose `IsActive()` is a
+    -- constant, and `PandemicTime` is a one-shot notification that never re-arms, so the
+    -- refresh cue fired for exactly one 5.8s window in the whole fight.  `auraDataUnit`
+    -- and `PandemicIcon` are recomputed every frame, so they answer BOTH halves and they
+    -- clear themselves.
+    describe("the DoT's three channels, in trust order (§3.10)", function()
+      it("a bound aura on the frame reads UP, and does not press", function()
+        assert.equals(ID.INC, winner({ dotFrame = "target", shards = 1 }).cid)
+      end)
+
+      it("NO bound aura on a capable frame is the `not up` press", function()
+        -- THE ANSWER THAT WAS STRUCTURALLY UNREACHABLE.  Nothing else in the pulse can
+        -- produce it in combat: the aura read is secret, tab-1 `IsActive()` is constant,
+        -- and OnAuraRemoved only fires if the DoT actually falls off unrefreshed.
+        local w = winner({ dotFrame = "none", shards = 1 })
+        assert.equals(ID.IMMO, w.cid)
+        assert.equals("not up", w.cue.note)
+      end)
+
+      it("`PandemicIcon` is the refresh window, with no TTL to age out", function()
+        -- It is a POLL of a live predicate, not a latch: it arms on entry and clears on
+        -- the refresh.  So a 60-second-old pulse is as trustworthy as a fresh one.
+        local w = winner({ dotFrame = "target", dotFramePandemic = true, shards = 1 })
+        assert.equals(ID.IMMO, w.cid)
+        assert.equals("pandemic refresh", w.cue.note)
+      end)
+
+      it("a capable frame saying NOT in the window overrides a stale pandemic latch", function()
+        -- The one-shot latch fired at some point and never retracted; the frame is
+        -- answering right now.  This is the whole point of the reordering — the field
+        -- capture showed a `pandemic` claim still driving a cue 13.4s after it fired.
+        local w = winner({ dotFrame = "target", dotFramePandemic = false,
+                           dotEdge = "pandemic", dotEdgeAge = 2, shards = 1 })
+        assert.equals(ID.INC, w.cid)
+      end)
+
+      it("the frame's presence read outranks a stale `absent` latch too", function()
+        local ctx = ns.Specs[267]:Context(
+          build({ dotFrame = "target", dotEdge = "absent", dotEdgeAge = 40, shards = 1 }), Coach)
+        assert.equals("up", ctx.dotState)
+        assert.equals("frame", ctx.dotFrom)
+      end)
+
+      it("an INCAPABLE frame falls back to the latch — rule 18's documented fallback", function()
+        -- The fields are widget internals with no deprecation path.  If Blizzard stops
+        -- writing them the row must carry NO opinion, not a silent negative: a
+        -- silently-absent field reading as "no DoT" is the confident-wrong-answer failure
+        -- that makes this technique a liability.
+        local ctx = ns.Specs[267]:Context(
+          build({ dotFrameIncapable = true, dotEdge = "pandemic", dotEdgeAge = 2,
+                  shards = 1 }), Coach)
+        assert.equals("up", ctx.dotState)
+        assert.equals("edge", ctx.dotFrom)
+        assert.is_true(ctx.dotRefreshable)
+      end)
+
+      it("an UNREADABLE frame read is no opinion — never 'the DoT is gone'", function()
+        -- Secret or throwing.  It must not become the apply press; it hands over to the
+        -- latch, and with no latch either the answer is `unknown` and L8 stays quiet.
+        local ctx = ns.Specs[267]:Context(
+          build({ dotFrame = "unreadable", shards = 1 }), Coach)
+        assert.equals("unknown", ctx.dotState)
+        assert.is_false(ctx.dotRefreshable)
+        assert.are_not.equal(ID.IMMO, winner({ dotFrame = "unreadable", shards = 1 }).cid)
+      end)
+
+      it("reaches the brain from EITHER of Immolate's ids, like the latch", function()
+        -- State keys `auraFrames` by base spellID and the signal can sit on the row that
+        -- is not pressable, so the brain walks the same candidate list it walks for edges.
+        local w = winner({ auraFramesRaw = { [ID.IMMO] = { capable = true,
+                                                           unitReadable = true } },
+                           immolateAsCast = true, shards = 1 })
+        assert.equals(ID.IMMO_CAST, w.cid)
+        assert.equals("not up", w.cue.note)
+      end)
     end)
   end)
 

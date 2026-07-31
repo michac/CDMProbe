@@ -123,10 +123,12 @@
 -- ══════════════════════════════════════════════════════════════════════════════
 -- EXPLICITLY NOT COVERED (stated here so the gap stays visible)
 -- ══════════════════════════════════════════════════════════════════════════════
---   * `item.wasSetFromCharges` / `wasSetFromCooldown` / `wasSetFromAura` — @verify-ingame
---     (cooldown-manager.md §7 Tier 2 / §9); nothing reads them yet.
---   * `item.auraDataUnit` — same, and the only thing that says which side a bound aura is
---     on.  On status.md's backlog.
+--   * `item.wasSetFromCharges` / `wasSetFromCooldown` / `wasSetFromAura` — measured
+--     readable in combat (`[client]` 2026-07-31) but nothing reads them yet: they say
+--     WHICH of four secret sources won this refresh, which is a question State does not
+--     currently ask.  (cooldown-manager.md §7 Tier 2 / §9)
+--   * (`item.auraDataUnit` and `item.PandemicIcon` WERE listed here.  They are now the
+--     §3.10 group in axes D and G — the DoT's presence and refresh-window channels.)
 --   * `C_CooldownViewer.GetValidAlertTypes` — the roster coverage probe, Phase 4.  It
 --     currently lives only in AlertTape.lua, the file scheduled for deletion.
 --   * `item:GetLinkedSpell()` — the ELECTED rung-2 link.  Phase 3, blocked on §9's first
@@ -259,8 +261,8 @@ local A = {
 
   {
     name = "family/tab1-IsActive-is-constant-true-and-must-not-reach-buffs",
-    status = "pinned-defect",
-    fixes = "phase2 §3.1",
+    status = "green",
+    fixed = "phase2 §3.1",
     spec = 3,
     pins = "`CooldownViewerItemMixin:ShouldBeActive()` is `return self.cooldownID ~= nil`, "
         .. "and only the BUFF item mixin overrides it — so on any Essential/Utility row "
@@ -276,6 +278,30 @@ local A = {
     expect = {
       buffs = { [TYRANT] = ABSENT },
       raw   = { [903] = { buff = ABSENT } },
+    },
+  },
+
+  {
+    name = "family/an-abilitys-buff-window-survives-the-gate-via-its-tab2-row",
+    status = "green",
+    spec = 1,
+    pins = "The SAFETY half of the family gate, asserted rather than assumed.  Tyrant is "
+        .. "one Essential row PLUS one TrackedBar row on the same base, and the burst "
+        .. "window is read off `buffs[TYRANT]` — so refusing the tab-1 `IsActive()` must "
+        .. "not take the window with it: the tab-2 twin still answers, and it is the only "
+        .. "one that was ever answering honestly.",
+    ref = "cooldown-manager.md §1.1 (a summon is one tab-1 row + one tab-2 row) + §8 "
+       .. "rule 4; CooldownViewer.lua:1186 (only the buff mixin overrides ShouldBeActive)",
+    rows = {
+      { cid = 903, category = "Essential", frame = { isActive = true },
+        info = { spellID = TYRANT, isKnown = true, selfAura = true } },
+      { cid = 904, category = "TrackedBar", frame = { isActive = true },
+        info = { spellID = TYRANT, isKnown = true, selfAura = true } },
+    },
+    expect = {
+      raw   = { [903] = { buff = ABSENT },
+                [904] = { buff = { isActive = true, isActiveReadable = true } } },
+      buffs = { [TYRANT] = true },
     },
   },
 
@@ -709,8 +735,8 @@ local G = {
 
   {
     name = "draw/an-item-frame-without-the-pandemic-writers-reports-INCAPABLE",
-    status = "pinned-defect",
-    fixes = "phase2 §3.10",
+    status = "green",
+    fixed = "phase2 §3.10",
     spec = 3,
     pins = "THE RULE-18 OBLIGATION, and the only case that can fail loudly on our behalf. "
         .. "A widget internal carries no deprecation and no error: if Blizzard stops "
@@ -735,8 +761,8 @@ local G = {
 
   {
     name = "draw/the-aura-verdict-folds-across-an-abilitys-rows-positive-wins",
-    status = "pinned-defect",
-    fixes = "phase2 §3.10",
+    status = "green",
+    fixed = "phase2 §3.10",
     spec = 3,
     pins = "base spellID -> cooldownID is N:1, and an ability's aura signal need not live "
         .. "on the row that is PRESSABLE — a summon is one Essential row plus one "
@@ -1454,8 +1480,8 @@ local D = {
   -- direction that turns a sealed value into a confident wrong answer.
   {
     name = "read/auraDataUnit-target-is-a-LIVE-dot-and-says-which-side-it-is-on",
-    status = "pinned-defect",
-    fixes = "phase2 §3.10",
+    status = "green",
+    fixed = "phase2 §3.10",
     spec = 3,
     pins = "`auraDataUnit` is a plain \"player\"/\"target\" string naming the side a bound "
         .. "aura is on, written by Blizzard's own untainted code while the whole AuraData "
@@ -1481,8 +1507,8 @@ local D = {
 
   {
     name = "read/a-PandemicIcon-is-the-refresh-window-a-secret-predicate-cannot-answer",
-    status = "pinned-defect",
-    fixes = "phase2 §3.10",
+    status = "green",
+    fixed = "phase2 §3.10",
     spec = 3,
     pins = "`IsInPandemicTime` compares two SECRET numbers, so calling it throws — but "
         .. "Blizzard evaluates it every frame anyway and writes the verdict into ordinary "
@@ -1507,8 +1533,8 @@ local D = {
 
   {
     name = "read/an-absent-auraDataUnit-on-a-CAPABLE-row-is-a-MISSING-dot",
-    status = "pinned-defect",
-    fixes = "phase2 §3.10",
+    status = "green",
+    fixed = "phase2 §3.10",
     spec = 3,
     pins = "THE ANSWER THAT IS STRUCTURALLY UNREACHABLE TODAY.  `auraDataUnit` is nil "
         .. "until an aura binds to the frame and nil again the moment it falls off, so on "
@@ -1532,8 +1558,8 @@ local D = {
 
   {
     name = "read/auraDataUnit-player-names-the-SELF-side",
-    status = "pinned-defect",
-    fixes = "phase2 §3.10",
+    status = "green",
+    fixed = "phase2 §3.10",
     spec = 3,
     pins = "The same field answers for a SELF-buff, which is the whole of Demonology's "
         .. "roster: measured `auraDataUnit = \"player\"` on Backdraft's tab-2 row in "
@@ -1557,8 +1583,8 @@ local D = {
 
   {
     name = "read/a-SECRET-auraDataUnit-is-NO-OPINION-never-a-missing-dot",
-    status = "pinned-defect",
-    fixes = "phase2 §3.10",
+    status = "green",
+    fixed = "phase2 §3.10",
     spec = 3,
     pins = "The failure direction is the whole point.  A refused read of the presence "
         .. "channel must degrade to \"we did not learn whether the aura is up\", never to "
@@ -1581,8 +1607,8 @@ local D = {
 
   {
     name = "read/a-throwing-auraDataUnit-index-is-NO-OPINION-too",
-    status = "pinned-defect",
-    fixes = "phase2 §3.10",
+    status = "green",
+    fixed = "phase2 §3.10",
     spec = 3,
     pins = "The second refusal shape at the same field: a frame that indexes fine for "
         .. "every other key can still raise on this one under the 12.0 restrictions, and "

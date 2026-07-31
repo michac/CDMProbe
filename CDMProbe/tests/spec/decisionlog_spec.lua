@@ -72,6 +72,9 @@ local function build(f)
     buffs = buffs,
     history = f.history or {},
     abilities = abilities,
+    -- The DoT's two observation channels, base-spellID-keyed exactly as State emits them.
+    dotEdges   = f.dotEdges,
+    auraFrames = f.auraFrames,
   }
 end
 
@@ -173,6 +176,59 @@ describe("DecisionLog.Render", function()
     } }
     local s = ns.DecisionLog.Render(pulse, { cues = {} }, { cues = {} })
     assert.truthy(s:find("CS:-", 1, true), s)
+  end)
+
+  ------------------------------------------------------------------------------
+  -- DOT — both of the DoT's observation channels, `<code>=<frame>/<edge>`.
+  --
+  -- This field is two-sided BECAUSE the brain consults the per-frame verdict first and the
+  -- latch only where that has no opinion (§3.10).  A trace showing one channel cannot say
+  -- which one decided, and the field capture that motivated the whole fix is exactly that
+  -- shape: a live frame reading beside a 43-second-old notification.
+  ------------------------------------------------------------------------------
+  describe("the DOT field", function()
+    local function dotOf(pulse)
+      return ns.DecisionLog.Render(pulse, { cues = {} }, { cues = {} }):match("DOT:([^|]*)|")
+    end
+
+    it("no channel at all ⇒ -", function()
+      assert.equals("-", dotOf(build{}):gsub("%s+$", ""))
+    end)
+
+    it("renders the bound-aura side and the pandemic mirror", function()
+      local s = dotOf(build{ auraFrames = { [ID.TYRANT] =
+        { capable = true, unitReadable = true, unit = "target", pandemic = true } } })
+      assert.truthy(s:find("T=tgt+p/-", 1, true), s)
+    end)
+
+    it("`off` is the MISSING answer — capable, readable, nothing bound", function()
+      local s = dotOf(build{ auraFrames = { [ID.TYRANT] =
+        { capable = true, unitReadable = true, pandemic = false } } })
+      assert.truthy(s:find("T=off/-", 1, true), s)
+    end)
+
+    it("a refused read is `?` and a vanished mechanism is `X` — never `off`", function()
+      -- The distinction the whole rule-18 fence exists for: "we could not read it" and
+      -- "Blizzard stopped writing it" must both be visible, and neither may look like the
+      -- positive claim that the DoT is down.
+      assert.truthy(dotOf(build{ auraFrames = { [ID.TYRANT] =
+        { capable = true, unitReadable = false } } }):find("T=?/-", 1, true))
+      assert.truthy(dotOf(build{ auraFrames = { [ID.TYRANT] =
+        { capable = false } } }):find("T=X/-", 1, true))
+    end)
+
+    it("shows a live frame reading BESIDE a stale latch — the field-capture shape", function()
+      local s = dotOf(build{
+        auraFrames = { [ID.TYRANT] = { capable = true, unitReadable = true,
+                                       unit = "target", pandemic = false } },
+        dotEdges   = { [ID.TYRANT] = { state = "pandemic", at = 1000 - 43.8 } } })
+      assert.truthy(s:find("T=tgt/pandemic@43.8", 1, true), s)
+    end)
+
+    it("an edge with no frame still renders, on the other side of the slash", function()
+      local s = dotOf(build{ dotEdges = { [ID.TYRANT] = { state = "absent", at = 998 } } })
+      assert.truthy(s:find("T=-/absent@2.0", 1, true), s)
+    end)
   end)
 
   it("is DETERMINISTIC across pairs() orderings (the dedup guard)", function()
