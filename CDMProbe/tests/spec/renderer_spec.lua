@@ -17,8 +17,9 @@ describe("Renderer", function()
 
   before_each(function()
     local ns = H.fresh()
-    H.load("HudGeometry.lua")        -- Renderer's fixtures + pip layout read it
+    H.load("HudGeometry.lua")        -- the pip layout + the rig's fixtures read it
     H.load("Renderer.lua")
+    H.load("RenderTest.lua")         -- the `/cdmp rt` rig — owns ns.RenderTestFixtures
     Rr = ns.Renderer
     theme = Rr.New().theme          -- the real defaults, so assertions never drift
   end)

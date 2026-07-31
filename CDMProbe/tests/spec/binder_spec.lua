@@ -267,7 +267,7 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
     local Fixtures
 
     before_each(function()
-      H.load("Renderer.lua")           -- defines ns.RenderTestFixtures
+      H.load("Renderer.lua"); H.load("RenderTest.lua")   -- defines ns.RenderTestFixtures
       Fixtures = ns.RenderTestFixtures
     end)
 

@@ -13,9 +13,8 @@ ns.version = (C_AddOns and C_AddOns.GetAddOnMetadata and C_AddOns.GetAddOnMetada
 -- is the addon's only recorder now.  Stale `reports`/`probe`/`logMode`/… keys in an
 -- existing CDMProbeDB are harmless — nothing reads them — so there is no migration.
 local DEFAULTS = {
-  -- `ns.db.hud` is the pipeline HUD's enable BOOL (W4 cutover reclaimed the key from
-  -- the old engine's settings TABLE).  No default entry: absent == off; HudDriver's
-  -- OnLogin drops a stale old-engine TABLE value, and SetHud writes it thereafter.
+  -- `ns.db.hud` is the pipeline HUD's enable BOOL.  No default entry: absent == off;
+  -- HudDriver's OnLogin drops a stale TABLE-shaped value, and SetHud writes it after.
   -- Pipeline decision log — a ring of recent sessions (count: DecisionLog.SESSIONS),
   -- each a list of one-line
   -- `S{…} G{…} B{…}` pipeline traces appended on every DECISION CHANGE (DecisionLog.lua).
@@ -83,16 +82,16 @@ SLASH_CDMPROBE1 = "/cdmp"
 SLASH_CDMPROBE2 = "/cdmprobe"
 SlashCmdList["CDMPROBE"] = dispatch
 
--- W4 Phase 3 — the Renderer test mode.  Registered here (like the other top-level
--- commands) but implemented in Renderer.lua (ns.RenderTest), which owns the
--- placeholder-frame rig + the hand-authored DrawList fixtures.  The thin wrapper
--- guards the load order: Renderer.lua loads after Core, so resolve ns.RenderTest
--- at DISPATCH time, not registration time.
+-- The render test mode.  Registered here (like the other top-level commands) but
+-- implemented in RenderTest.lua (ns.RenderTest), which owns the placeholder-frame rig +
+-- the hand-authored DrawList fixtures.  The thin wrapper guards the load order:
+-- RenderTest.lua loads after Core, so resolve ns.RenderTest at DISPATCH time, not
+-- registration time.
 ns.RegisterCommand("rt",
   "render test: draw a DrawList fixture (states | list | rotate | off)",
   function(rest)
     if ns.RenderTest then ns.RenderTest(rest)
-    else ns.Print("Renderer not loaded") end
+    else ns.Print("RenderTest not loaded") end
   end)
 
 -- Bootstrap -------------------------------------------------------------------

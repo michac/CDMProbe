@@ -21,6 +21,7 @@ Coach.lua
 HudGeometry.lua
 Binder.lua
 Renderer.lua
+RenderTest.lua
 HudLayout.lua
 HudVirtual.lua
 State.lua
