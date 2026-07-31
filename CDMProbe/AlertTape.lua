@@ -103,6 +103,27 @@ local function readIsInPandemic(item)
 end
 
 --------------------------------------------------------------------------------
+-- WHICH BUILD RAISED THIS EDGE?
+--------------------------------------------------------------------------------
+-- ⚠ ADDED 2026-07-31, and it is a CORRECTNESS fix, not a labelling nicety.  Both channels
+-- dedup by a key built from `cid`, and a spec swap WITHOUT a /reload keeps recording into
+-- the same session — so a cooldownID shared between two specs (the class-wide utilities,
+-- the shared summons) had its counts SUMMED ACROSS BUILDS under one row, silently.  "Fired
+-- 14x" would be 9 on Destruction plus 5 on Demonology, and nothing said so.
+--
+-- The build goes INTO the dedup key, so rows from two builds can never merge, and onto the
+-- row, so each one says where it came from.  DecisionLog solves the same problem with its
+-- `# config` re-stamp; this is the same idea keyed rather than stamped, because these rows
+-- are a deduped SET rather than an ordered stream.
+local function buildTag()
+  local spec = ns.detectedSpecName or "?"
+  -- Direct call: State owns the hero read, and since v0.32.43 its cache is invalidated by
+  -- an always-on frame, so this is the live tree even with the HUD off.
+  local name, id = ns.State.ReadHero()
+  return spec .. "/" .. tostring(name or id or "?")
+end
+
+--------------------------------------------------------------------------------
 -- Session handling (mirrors DecisionLog's ring so the extractor shape is familiar).
 --------------------------------------------------------------------------------
 local function ensureSession()
@@ -115,9 +136,10 @@ local function ensureSession()
   local sess = {
     started = date("%Y-%m-%d %H:%M:%S"),
     version = ns.version,
-    events  = {},   -- "cid|event|combat" -> { cid, event, combat, n, first, last }
-    fields  = {},   -- "cid|combat|class" -> { cid, combat, class, n, first, last, sample }
-    elig    = {},   -- cid -> { cid, spellID, name, viewer, types } (the baseline, below)
+    build   = buildTag(),   -- the build at session open; every ROW carries its own too
+    events  = {},   -- "build|cid|event|combat" -> { build, cid, event, combat, n, first, last }
+    fields  = {},   -- "build|cid|combat|class" -> { build, cid, combat, class, n, …, sample }
+    elig    = {},   -- "build|cid" -> { build, cid, spellID, name, viewer, types }
   }
   tape[#tape + 1] = sess
   while #tape > SESSIONS do table.remove(tape, 1) end
@@ -150,14 +172,24 @@ function T.Record(item, event, cid)
   local now = GetTime()
   local combat = InCombatLockdown() and "combat" or "ooc"
   local ename = eventName(event)
+  local build = buildTag()
+
+  -- A BUILD CHANGE MID-SESSION re-takes the eligibility baseline, because the old one
+  -- describes a tracked set that no longer exists — and without a baseline for the new
+  -- build, "PandemicTime never appeared" is unreadable there.  Automatic rather than a
+  -- remembered `/cdmp alerts probe`: the step you have to remember is the step you skip.
+  if sess.lastBuild ~= build then
+    sess.lastBuild = build
+    pcall(T.CaptureEligibility)
+  end
 
   -- Channel 1 — the event tape.  Deduped, but COUNTED: how often matters.
-  local ekey = tostring(cid) .. "|" .. ename .. "|" .. combat
+  local ekey = build .. "|" .. tostring(cid) .. "|" .. ename .. "|" .. combat
   local row = sess.events[ekey]
   if row then
     row.n, row.last = row.n + 1, now
   elseif countOf(sess.events) < CAP then
-    sess.events[ekey] = { cid = cid, event = ename, combat = combat,
+    sess.events[ekey] = { build = build, cid = cid, event = ename, combat = combat,
                           n = 1, first = now, last = now }
   end
 
@@ -169,7 +201,7 @@ function T.Record(item, event, cid)
   local trigC,   trigV   = readField(item, "pandemicAlertTriggerTime")
   local inPC,    inPV    = readIsInPandemic(item)
   local class = string.format("pStart=%s pEnd=%s trig=%s isIn=%s", pStartC, pEndC, trigC, inPC)
-  local fkey = tostring(cid) .. "|" .. combat .. "|" .. class
+  local fkey = build .. "|" .. tostring(cid) .. "|" .. combat .. "|" .. class
   local frow = sess.fields[fkey]
   if frow then
     frow.n, frow.last = frow.n + 1, now
@@ -178,7 +210,7 @@ function T.Record(item, event, cid)
     frow.sample = string.format("pStart=%s pEnd=%s trig=%s isIn=%s", pStartV, pEndV, trigV, inPV)
   elseif countOf(sess.fields) < CAP then
     sess.fields[fkey] = {
-      cid = cid, combat = combat, class = class, event = ename,
+      build = build, cid = cid, combat = combat, class = class, event = ename,
       n = 1, first = now, last = now,
       sample = string.format("pStart=%s pEnd=%s trig=%s isIn=%s", pStartV, pEndV, trigV, inPV),
     }
@@ -215,7 +247,11 @@ function T.CaptureEligibility()
     if viewer then
       for _, item in ipairs(ns.GetItemFrames(viewer)) do
         local cid = ns.ItemCooldownID(item)
-        if cid and not sess.elig[cid] then
+        -- Keyed by BUILD|cid, not cid: after a spec swap the same cooldownID can describe a
+        -- different row, and the old baseline must not shadow the new one.
+        local build = buildTag()
+        local ekey = build .. "|" .. tostring(cid)
+        if cid and not sess.elig[ekey] then
           local base = ns.ItemBaseSpellID(item)
           local ok, types = pcall(C_CooldownViewer.GetValidAlertTypes, cid)
           local list
@@ -229,8 +265,8 @@ function T.CaptureEligibility()
           else
             list = "<unreadable>"
           end
-          sess.elig[cid] = {
-            cid = cid, spellID = base, viewer = v.label, types = list,
+          sess.elig[ekey] = {
+            build = build, cid = cid, spellID = base, viewer = v.label, types = list,
             name = (base and ns.SpellName(base)) or "?",
           }
           n = n + 1
