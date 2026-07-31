@@ -129,6 +129,19 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   is the instrument that CONFIRMS the field-fix C/C2 latches
                                   against their source events, so it survives until that
                                   in-game pass is done. Delete it straight after.
+    Census.lua                    ⚠ TEMPORARY discovery instrument, MEANT TO BE DELETED —
+                                  same model as AlertTape: one question set, one capture
+                                  format, a clear end date. The CDM STRUCT CENSUS: `/cdmp
+                                  census` walks every row of both tabs and dumps the raw
+                                  struct + frame fields, to settle the six roster-state-plan
+                                  Phase-2 questions that were "wrong by construction with an
+                                  UNCONFIRMED TRIGGER". Extracted by `wowkb.cdmp census`.
+                                  ⏳ The 2026-07-31 capture ANSWERED all six (17 tab-1 rows
+                                  carry an aura flag; two rows carry both override fields;
+                                  auraDataUnit + PandemicIcon are readable) and Phase 2
+                                  consumed the answers — so this is now deletable on the
+                                  next pass, along with its .toc line, its command and its
+                                  `census` saved-var.
     Mode.lua                      the single/AoE target-mode toggle (`ns.Mode.aoe`
                                   + `single`/`multi`/`aoe`); State forwards it, the
                                   Coach reads it (extracted from HudCore at the cutover)
@@ -199,8 +212,21 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   charges, DB2 ChargeCategory=0; the exact count is OOC-only,
                                   so in combat it reads State's charge napkin), and a
                                   three-way up/missing/unknown DoT read so an UNREADABLE
-                                  Immolate never becomes "refresh it now" — now fed first by
-                                  the PandemicTime alert latch, the only combat channel.
+                                  Immolate never becomes "refresh it now". That read runs on
+                                  THREE CHANNELS in trust order (reordered 2026-07-31,
+                                  roster-state-plan §3.10): (1) the PER-FRAME AURA VERDICT,
+                                  State's read of `auraDataUnit`/`PandemicIcon` — Blizzard
+                                  recomputes both every frame off secrets we cannot read, so
+                                  unlike an edge they SELF-CLEAR, which is the only channel
+                                  that can ever say "apply it"; (2) the PandemicTime/OnAura*
+                                  alert latch, DEMOTED to a fast path — it is a one-shot
+                                  notification, not a state (41 Immolate casts raised one
+                                  OnAuraApplied, one PandemicTime, zero OnAuraRemoved), and
+                                  it remains the whole answer on a row whose frame fields
+                                  are absent; (3) the buff-item presence read, OOC fallback
+                                  only — on a tab-1 row it no longer exists at all (§3.1),
+                                  since `IsActive()` there is a constant `true`, which is
+                                  what jammed this read to "up" on both hero trees.
                                   Hero tree now arrives ON THE PULSE (`state.hero`, read by
                                   State); the multi-signal tracked-set inference survives
                                   only as the fallback for a refused API read, and the
@@ -257,6 +283,14 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   resolver; H.setSpecIndex(3) + ResolveActiveSpec drives
                                   267), + a fixture-settable ShardCost/BaseCooldown/napkin
                                   surface
+      case_builders.lua           the CDM-case FACTORY, `(H, SECRET) -> {mint, buildItem}`:
+                                  turns a case's declarative `world`/`cdm` tables into the
+                                  faked database + item frames one St.Build pulse reads.
+                                  Lives outside cdm_cases_spec.lua so harness_spec can prove
+                                  it (Phase 2). Frame knobs are `fields` (minted verbatim),
+                                  `methods` (no-op stubs, so ns.HasMethod answers true —
+                                  ABSENT BY DEFAULT, which is what keeps the capability
+                                  check falsifiable) and `raises` (H.poison on named fields).
       spec/coach_apl_spec.lua     the Tier-1 ROTATION gate for DEMONOLOGY: minimal
                                   hand-built State pulses assert winner + fallback + SOON
                                   per BRANCH of the flat list + shard boundaries, authored
@@ -291,24 +325,31 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   round-trip, the default fallback, `reset`, lock/unlock
                                   over mouse+chrome+alpha, and the extents floor
       fixtures/cdm-cases.lua      THE CDM EDGE INVENTORY (pure data, never auto-collected —
-                                  busted's pattern is `_spec.lua`).  87 declarative
+                                  busted's pattern is `_spec.lua`).  96 declarative
                                   (CDM input -> expected State row) cases in 7 axes,
                                   authored from knowledge/addon-dev/cooldown-manager.md
                                   (NOT from State.lua — a suite transcribed from the source
                                   is a change-detector wearing a contract's clothes).
-                                  ⚠ 11 carry `status = "pinned-defect"`: they assert the
-                                  CONTRACT answer, run INVERTED, and FAIL TODAY ON PURPOSE.
-                                  A suite 100 % green against the current code is by
-                                  construction a snapshot.  When a fix lands, its case goes
-                                  RED and the fix commit flips the status in its own diff —
-                                  do NOT "repair" one by weakening the expectation.  Read
-                                  the file header for the schema.
+                                  ⚠ `status = "pinned-defect"` cases assert the CONTRACT
+                                  answer, run INVERTED, and FAIL TODAY ON PURPOSE — a suite
+                                  100 % green against the current code is by construction a
+                                  snapshot.  When the fix lands, the case goes RED and the
+                                  fix commit flips it to green + `fixed = "<phase> <§>"` in
+                                  its own diff; do NOT "repair" one by weakening the
+                                  expectation.  Phase 2 cleared all 11, so the corpus is
+                                  currently **0 pinned-defect / 19 `fixed`** — the `fixed`
+                                  tag is the permanent record that the case once failed, and
+                                  a meta-test floors `#pinned + #fixed` so the history can
+                                  never be quietly deleted.  Read the file header for the
+                                  schema.
       spec/cdm_cases_spec.lua     the parametrised driver for the above: installs each
                                   case's CDM database + client world, runs its ordered
                                   script, diffs every named view off one St.Build pulse.
-                                  Nine meta-tests enforce the corpus's own invariants
+                                  Ten meta-tests enforce the corpus's own invariants
                                   (unique names, a mandatory `ref` that may never point at
-                                  State.lua, a per-axis coverage floor, >= 5 failing today)
+                                  State.lua, a per-axis coverage floor, and a DEFECT-HISTORY
+                                  floor on `#pinned + #fixed` that survived Phase 2 clearing
+                                  every pin — never lower either floor)
       spec/harness_spec.lua       the HARNESS is a collaborator and gets the same treatment:
                                   H.secretTable / H.throws+H.guard / H.poison /
                                   H.installGlobals / the default-inert client fakes.
@@ -344,7 +385,7 @@ put `~/.luarocks/bin` on PATH.
   `SpecDemonology`) + the multi-spec seam (`SpecRegistry`/`ResolveActiveSpec`, the
   resource-array projection) + the **Destruction** rotation gate + **State's domain-view
   fold** + State's hero-tree resolution + the **CDM edge inventory** (see `tests/fixtures/`
-  below). **498 tests / 4 pending.** The harness is
+  below). **567 tests / 4 pending.** The harness is
   **`CDMProbe/tests/mock_ns.lua`**: a chainable `CreateFrame`/FontString/animation
   stub, a **settable `GetTime` fake clock**, global fakes
   (`wipe`/`InCombatLockdown`/`issecretvalue`/`C_Timer`/`Enum`/`GetSpecialization`/…),
@@ -374,12 +415,14 @@ uv run python -m wowkb.cdmp decisionlog   # → raw/cdmp-decision.log
 *(The old `wowkb.cdmp check|show|diff` probe-assertion suite + `probe-baseline.json` were
 retired with the probe on 2026-07-29 — see the Commands note above.)*
 
-**The release flow runs luacheck automatically** (`wowkb.addon release cdmp`), as a
-SOFT gate above luaparser: it fires only for an addon that ships a `.luacheckrc`
-(so bb/ps aren't drowned in false positives) and only if `luacheck` is on PATH
-(absent ⇒ warn + continue, so a bare machine isn't wedged); a non-zero exit aborts
-the cut. `busted` is **not** wired into the release — it's a dev/pre-commit check.
-`--skip-lint` bypasses both.
+**The release flow runs BOTH automatically** (`wowkb.addon release cdmp`), above the
+luaparser syntax gate. Each is opt-in per addon and PATH-conditional — luacheck fires
+only for an addon shipping a `.luacheckrc` (so bb/ps aren't drowned in false positives),
+busted only for one declaring a `test_dir`, and either tool absent from PATH ⇒ warn +
+continue, so a bare machine isn't wedged. **But when the tool IS present, a non-zero
+exit aborts the cut — busted is a HARD release gate, not merely a dev/pre-commit check**
+(`tools/wowkb/addon.py` step 4b). luaparser proves the Lua is well-formed; only busted
+proves it still decides correctly. `--skip-lint` bypasses both.
 
 ## Licensing note
 
