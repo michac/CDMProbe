@@ -24,6 +24,12 @@
 local dir = (debug.getinfo(1, "S").source:match("^@(.*[/\\])")) or "./"
 local H  = dofile(dir .. "../mock_ns.lua")
 local FX = dofile(dir .. "../fixtures/cdm-cases.lua")
+-- `mint` (markers -> secrets/poison) and `buildItem` (a row's `frame` -> a CDM item frame)
+-- live in tests/case_builders.lua so harness_spec can prove them.  See that file's header
+-- for why: buildItem's field list is a WHITELIST, and an unproved whitelist drops a case's
+-- input silently.
+local mk = dofile(dir .. "../case_builders.lua")(H, FX.SECRET)
+local mint, buildItem = mk.mint, mk.buildItem
 local ABSENT = FX.ABSENT
 
 --------------------------------------------------------------------------------
@@ -140,70 +146,6 @@ local function askedView()
     known    = membership(H.asked.known),
     info     = membership(H.asked.info),
   }
-end
-
--- The fixture is PURE DATA, so it cannot mint a secret or a poisoned table itself.  It
--- writes a marker and this turns it into the real thing:
---   FX.SECRET                          -> a secret VALUE (a sentinel table, because
---                                         H.secret is keyed by value and marking a number
---                                         would mark every occurrence of it in the case)
---   { __secretTable = { … } }          -> a table that refuses indexing outright
---   { __poison = { fields = {…}, raises = {"startTime"} } }
---                                      -> a table that indexes fine EXCEPT on those fields
-local function mint(v)
-  if v == FX.SECRET then return H.secretValue() end
-  if type(v) == "table" and v.__secretTable then
-    local t = {}
-    for k, e in pairs(v.__secretTable) do t[k] = mint(e) end
-    return H.markSecretTable(t)
-  end
-  if type(v) == "table" and v.__poison then
-    local t = {}
-    for k, e in pairs(v.__poison.fields or {}) do t[k] = mint(e) end
-    return H.poison(t, v.__poison.raises)
-  end
-  if type(v) == "table" then
-    local t = {}
-    for k, e in pairs(v) do t[k] = mint(e) end
-    return t
-  end
-  return v
-end
-
--- One CDM item frame.  Deliberately a plain table, not H.newStub(): State probes it with
--- ns.HasMethod, so "this row does not expose IsActive at all" has to be expressible.
-local function buildItem(cid, f)
-  local it = {}
-  if f.cooldownIDSecret then it.cooldownID = H.secretValue()
-  elseif f.noCooldownID ~= true then it.cooldownID = cid end
-  if f.getCooldownID ~= false then
-    it.GetCooldownID = function()
-      if f.getCooldownIDThrows then error("mock: GetCooldownID refused", 0) end
-      return cid
-    end
-  end
-  if f.isActive ~= nil then
-    local secret = H.secretValue()
-    it.IsActive = function()
-      if f.isActive == "throws" then error("mock: IsActive refused", 0) end
-      if f.isActive == "secret" then return secret end
-      return f.isActive
-    end
-  end
-  if f.isShown ~= nil then
-    it.IsShown = function()
-      if f.isShown == "throws" then error("mock: IsShown refused", 0) end
-      return f.isShown
-    end
-  end
-  if f.hideWhenInactive ~= nil and f.hideWhenInactive ~= "throws" then
-    it.hideWhenInactive = f.hideWhenInactive
-  end
-  -- The alert choke point.  hooksecurefunc is a no-op off-game, so the hook installs and
-  -- does nothing; the script drives St.OnAlert directly, exactly as the shipped hook does.
-  it.TriggerAlertEvent = function() end
-  if f.hideWhenInactive == "throws" then H.poison(it, { "hideWhenInactive" }) end
-  return it
 end
 
 local function installCase(case)
@@ -480,12 +422,39 @@ describe("cdm-cases corpus", function()
     end
   end)
 
-  it("at least one case FAILS today — a 100%-green corpus is a snapshot", function()
-    local pinned = 0
+  -- ⚠ THIS USED TO BE `pinned >= 5`, and Phase 2 takes the pinned count to ZERO — so the
+  -- old floor would have failed the whole SUITE, which is a hard release gate, exactly
+  -- when the defects it was guarding against were all fixed.  A transient count is the
+  -- wrong invariant.  The DURABLE one is the corpus's history: a case that was pinned and
+  -- has since been fixed keeps a `fixed = "phase2 §3.x"` field recording that it CAUGHT a
+  -- live defect, and the floor is over pinned + fixed.  That preserves the real property —
+  -- "this corpus was written against the contract, not against the code, and it found
+  -- eighteen live defects doing it" — permanently, and it cannot be gamed by flipping a
+  -- status, because flipping is precisely what adds the `fixed`.
+  it("the corpus's DEFECT HISTORY cannot be quietly erased", function()
+    local pinned, fixed = 0, 0
     for _, e in ipairs(all) do
       if e.case.status == "pinned-defect" then pinned = pinned + 1 end
+      if e.case.fixed then fixed = fixed + 1 end
     end
-    assert.is_true(pinned >= 5, "only " .. pinned .. " pinned defects")
+    -- 18 today (11 authored in Phase 1 + 7 for §3.10).  Raise this when the corpus
+    -- genuinely catches more; never lower it to make a red go away.
+    assert.is_true(pinned + fixed >= 11,
+      "only " .. pinned .. " pinned + " .. fixed .. " fixed = " .. (pinned + fixed)
+      .. " defects on record")
+  end)
+
+  it("`fixed` and `pinned-defect` are mutually exclusive on one case", function()
+    -- A case cannot both still reproduce and have been fixed.  Without this, flipping a
+    -- status while leaving `fixes` behind and adding `fixed` would double-count — and,
+    -- worse, a case left `pinned-defect` with a `fixed` stamp reads as "we fixed it" in
+    -- the fixture while the runner is asserting it is still broken.
+    for _, e in ipairs(all) do
+      if e.case.fixed then
+        assert.are_not.equal("pinned-defect", e.case.status,
+          e.case.name .. " is `fixed` but still runs as a pinned-defect")
+      end
+    end
   end)
 end)
 
@@ -513,7 +482,8 @@ for _, group in ipairs(FX.groups) do
           if ok then
             error("\n    PINNED DEFECT PASSED — it no longer reproduces.\n"
               .. "    If " .. case.fixes .. " just landed, flip this case's status to"
-              .. " \"green\" in the same diff.\n"
+              .. " \"green\" in the same diff, and replace `fixes` with"
+              .. " `fixed = \"" .. case.fixes .. "\"` so the corpus keeps the record.\n"
               .. "    Otherwise the defect analysis is wrong and must be re-derived before"
               .. " Phase 2 is written.\n\n"
               .. "    WHY: " .. case.pins .. "\n    REF: " .. case.ref .. "\n", 2)

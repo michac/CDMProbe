@@ -13,6 +13,8 @@
 -- ask (`issecretvalue` / `issecrettable`).
 local dir = (debug.getinfo(1, "S").source:match("^@(.*[/\\])")) or "./"
 local H = dofile(dir .. "../mock_ns.lua")
+local SECRET = setmetatable({}, { __tostring = function() return "<SECRET>" end })
+local mk = dofile(dir .. "../case_builders.lua")(H, SECRET)
 
 describe("mock_ns harness", function()
   local ns, fx
@@ -175,6 +177,52 @@ describe("mock_ns harness", function()
       assert.is_true(#H.asked.cooldown > 0)
       ns, fx = H.fresh()
       assert.are.same({}, H.asked.cooldown)
+    end)
+  end)
+
+  ------------------------------------------------------------------------------
+  -- buildItem's named fields are a WHITELIST, and an unproved whitelist drops a case's
+  -- input SILENTLY — `frame = { PandemicIcon = {} }` used to vanish and the case passed
+  -- for the wrong reason.  `fields` / `methods` / `raises` are the escape hatches, and
+  -- they are exactly what the §3.10 widget-internals reads are expressed with, so they
+  -- get proved here before any case leans on them.
+  describe("case_builders.buildItem — the frame pass-through", function()
+    it("copies `fields` verbatim onto the item", function()
+      local it = mk.buildItem(903, { fields = { auraDataUnit = "target", PandemicIcon = {} } })
+      assert.equals("target", it.auraDataUnit)
+      assert.equals("table", type(it.PandemicIcon))
+    end)
+
+    it("routes `fields` through mint, so SECRET works there too", function()
+      local it = mk.buildItem(903, { fields = { auraDataUnit = SECRET } })
+      assert.is_true(ns.IsSecret(it.auraDataUnit))
+    end)
+
+    it("`methods` is what makes a CAPABILITY CHECK falsifiable — absent by default", function()
+      -- ns.HasMethod is the shipping Util.lua:37 implementation.  The DEFAULT matters more
+      -- than the positive: a bind-time check that cannot be made to fail is not a check.
+      local bare = mk.buildItem(903, {})
+      assert.is_false(ns.HasMethod(bare, "GetAuraDataUnit"))
+      local able = mk.buildItem(903, { methods = { "GetAuraDataUnit", "CheckPandemicTimeDisplay" } })
+      assert.is_true(ns.HasMethod(able, "GetAuraDataUnit"))
+      assert.is_true(ns.HasMethod(able, "CheckPandemicTimeDisplay"))
+    end)
+
+    it("`raises` poisons the named field while the rest of the frame reads fine", function()
+      local it = mk.buildItem(903, { fields = { auraDataUnit = "target", PandemicIcon = {} },
+                                     methods = { "GetAuraDataUnit" },
+                                     raises = { "auraDataUnit" } })
+      assert.is_false((pcall(function() return it.auraDataUnit end)))
+      assert.equals("table", type(it.PandemicIcon))       -- survived the poison
+      assert.is_true(ns.HasMethod(it, "GetAuraDataUnit")) -- ...and so did the method
+      assert.equals(903, it.cooldownID)
+    end)
+
+    it("the pre-existing knobs still work — the whitelist did not regress", function()
+      local it = mk.buildItem(903, { isActive = "throws", hideWhenInactive = "throws" })
+      assert.is_false((pcall(it.IsActive, it)))
+      assert.is_false((pcall(function() return it.hideWhenInactive end)))
+      assert.equals("function", type(it.TriggerAlertEvent))
     end)
   end)
 

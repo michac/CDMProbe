@@ -29,6 +29,11 @@
 --                              under pcall and ERRORS IF IT PASSES.  Requires `fixes`.
 --           "unreachable"    — the input does not exist today; runs as `pending`
 --   fixes   required on pinned-defect: the roster-state-plan.md §3.x that resolves it
+--   fixed   the same §3.x, on a case that WAS pinned and has since gone green.  Mutually
+--           exclusive with `status = "pinned-defect"`, and it is the corpus's permanent
+--           record that this case caught a live defect — a meta-test floors
+--           pinned + fixed, because the pinned count alone goes to ZERO after Phase 2 and
+--           a floor over a transient count would then fail the release gate.
 --   pins    one sentence: what contract this holds
 --   ref     the study section / Blizzard source it is measured against.  MANDATORY.
 --   spec    spec INDEX (1 = Demonology 266, 2 = Affliction/passive, 3 = Destruction 267).
@@ -48,7 +53,20 @@
 --           frame            the live item frame, or `false` for "not drawn".  Fields:
 --                            isActive / isShown (true|false|"throws"|"secret"),
 --                            hideWhenInactive (bool|"throws"), cooldownIDSecret,
---                            noCooldownID, getCooldownID = false, getCooldownIDThrows
+--                            noCooldownID, getCooldownID = false, getCooldownIDThrows,
+--                            fields  = { <k> = <v>, … }  copied VERBATIM onto the item and
+--                                      routed through the SAME marker minting the info
+--                                      struct gets, so SECRET / __poison / plain absence
+--                                      all work.  This is how the §3.10 widget-internals
+--                                      reads (`auraDataUnit`, `PandemicIcon`) are stated.
+--                            methods = { "GetAuraDataUnit", … }  no-op stubs, so
+--                                      `ns.HasMethod` answers TRUE.  ⚠ Their ABSENCE is
+--                                      the default and the point: a bind-time capability
+--                                      check (security-taint-and-restricted-data.md §4.11)
+--                                      must be FALSIFIABLE, so "the mechanism is gone" is
+--                                      a case you can actually write.
+--                            raises  = { "auraDataUnit" }  those fields raise on INDEX
+--                                      (H.poison) while the rest of the frame reads fine
 --
 --   world   the live client, at CLIENT-API level (not at verdict level — the point is to
 --           keep Util.lua's guard ladder, the combat short-circuit and the GCD trap
