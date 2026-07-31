@@ -142,6 +142,34 @@ local function askedView()
   }
 end
 
+-- The fixture is PURE DATA, so it cannot mint a secret or a poisoned table itself.  It
+-- writes a marker and this turns it into the real thing:
+--   FX.SECRET                          -> a secret VALUE (a sentinel table, because
+--                                         H.secret is keyed by value and marking a number
+--                                         would mark every occurrence of it in the case)
+--   { __secretTable = { … } }          -> a table that refuses indexing outright
+--   { __poison = { fields = {…}, raises = {"startTime"} } }
+--                                      -> a table that indexes fine EXCEPT on those fields
+local function mint(v)
+  if v == FX.SECRET then return H.secretValue() end
+  if type(v) == "table" and v.__secretTable then
+    local t = {}
+    for k, e in pairs(v.__secretTable) do t[k] = mint(e) end
+    return H.markSecretTable(t)
+  end
+  if type(v) == "table" and v.__poison then
+    local t = {}
+    for k, e in pairs(v.__poison.fields or {}) do t[k] = mint(e) end
+    return H.poison(t, v.__poison.raises)
+  end
+  if type(v) == "table" then
+    local t = {}
+    for k, e in pairs(v) do t[k] = mint(e) end
+    return t
+  end
+  return v
+end
+
 -- One CDM item frame.  Deliberately a plain table, not H.newStub(): State probes it with
 -- ns.HasMethod, so "this row does not expose IsActive at all" has to be expressible.
 local function buildItem(cid, f)
@@ -198,16 +226,19 @@ local function installCase(case)
   H.setCombat(world.combat)
   for _, name in ipairs(world.throws or {}) do H.throwOn(name) end
   for _, v in ipairs(world.secret or {}) do H.markSecret(v) end
-  for k, v in pairs(world.cd or {})         do fx.cd[k] = v end
-  for k, v in pairs(world.charges or {})    do fx.charges[k] = v end
-  for k, v in pairs(world.auraByID or {})   do fx.auraByID[k] = v end
+  for k, v in pairs(world.cd or {})         do fx.cd[k] = mint(v) end
+  for k, v in pairs(world.charges or {})    do fx.charges[k] = mint(v) end
+  for k, v in pairs(world.auraByID or {})   do fx.auraByID[k] = mint(v) end
   for k, v in pairs(world.auraThrows or {}) do fx.auraThrows[k] = v end
-  for k, v in pairs(world.glow or {})       do fx.glow[k] = v end
+  for k, v in pairs(world.glow or {})       do fx.glow[k] = mint(v) end
   for k, v in pairs(world.known or {})      do fx.known[k] = v end
   for k, v in pairs(world.baseCD or {})     do fx.baseCD[k] = v end
   for k, v in pairs(world.keybind or {})    do fx.keybind[k] = v end
   for k, v in pairs(world.napkin or {})     do fx.remain[k] = v end
-  if world.auras then fx.auras = world.auras end
+  if world.auras then
+    fx.auras = {}
+    for i, a in ipairs(world.auras) do fx.auras[i] = mint(a) end
+  end
 
   _G.Enum.CooldownViewerCategory = CATEGORY_VALUE
 
@@ -220,19 +251,7 @@ local function installCase(case)
     if r.infoThrows then throwCids[r.cid] = true end
     if r.info ~= false then
       local info = {}
-      for k, v in pairs(r.info or {}) do
-        -- The fixture is pure data, so it marks a secret field with a shared sentinel and
-        -- the driver mints the real one here.  (H.secret is keyed BY VALUE, so a per-field
-        -- sentinel table is the only way to mark one field without marking every
-        -- occurrence of some number across the whole case.)
-        if v == FX.SECRET then v = H.secretValue()
-        elseif type(v) == "table" then
-          local copy = {}
-          for i, e in ipairs(v) do copy[i] = (e == FX.SECRET) and H.secretValue() or e end
-          v = copy
-        end
-        info[k] = v
-      end
+      for k, v in pairs(r.info or {}) do info[k] = mint(v) end
       if info.cooldownID == nil then info.cooldownID = r.cid end
       if r.infoSecretTable then H.markSecretTable(info) end
       if r.infoPoison then H.poison(info, r.infoPoison) end
@@ -443,7 +462,7 @@ describe("cdm-cases corpus", function()
   it("each axis meets its coverage floor", function()
     -- The floor exists so a later commit cannot quietly gut an axis.  Raise a number when
     -- an axis genuinely grows; never lower one to make a red go away.
-    local FLOOR = { A = 6, B = 11, G = 5 }
+    local FLOOR = { A = 6, B = 11, C = 9, D = 16, G = 5 }
     local n = {}
     for _, group in ipairs(FX.groups) do
       local axis = string.sub(group.name, 1, 1)
