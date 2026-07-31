@@ -1006,3 +1006,101 @@ describe("State hero tree", function()
     _G.Enum.CooldownViewerCategory = nil
   end)
 end)
+
+--------------------------------------------------------------------------------
+-- READINESS KEYS ON THE DISPLAY IDENTITY, NOT ON A FOREIGN LIVE OVERRIDE.
+--
+-- The field failure (Demonology, 2026-07-30): Grimoire: Imp Lord was ranked as a top
+-- press while sitting on its 2-minute cooldown.  While the summoned imp is out, ITS
+-- dispel takes over the Grimoire button — the client fires
+-- COOLDOWN_VIEWER_SPELL_OVERRIDE_UPDATED with `base=1276452 -> over=132411` — so
+-- `liveSpellID` became Singe Magic.  State then read SINGE MAGIC's cooldown (ready) and
+-- filed it under Imp Lord's key.  The Felhunter's Devour Magic does the same thing to the
+-- Fel Ravager button.  Both are declared `expect = false` in the spec table precisely
+-- because they only ever appear as an override, and ns.DisplayIdentity already refuses
+-- them — the live reads just weren't using it.
+--------------------------------------------------------------------------------
+describe("State readiness vs a foreign live override", function()
+  local ns, St
+  local IMP_LORD, SINGE_MAGIC, TYRANT = 1276452, 132411, 265187
+  local CID = { imp = 801, tyrant = 802 }
+
+  before_each(function()
+    ns = H.fresh()                 -- Demonology (266) is the active spec here
+    H.load("State.lua")
+    St = ns.State
+    _G.Enum.CooldownViewerCategory = { Essential = 0 }
+    _G.C_CooldownViewer = {
+      GetCooldownViewerCategorySet = function(v)
+        if v == 0 then return { CID.imp, CID.tyrant } end
+        return {}
+      end,
+      GetCooldownViewerCooldownInfo = function(cid)
+        if cid == CID.imp    then return { spellID = IMP_LORD, isKnown = true } end
+        if cid == CID.tyrant then return { spellID = TYRANT,   isKnown = true } end
+      end,
+    }
+    ns.VIEWERS = { { frame = "EssentialCooldownViewer" } }
+    ns.GetViewer     = function(name) return name == "EssentialCooldownViewer" and { n = 1 } or nil end
+    ns.GetItemFrames = function() return { { cooldownID = CID.imp }, { cooldownID = CID.tyrant } } end
+    ns.OnLogin()
+  end)
+
+  after_each(function()
+    _G.C_CooldownViewer = nil
+    _G.Enum.CooldownViewerCategory = nil
+  end)
+
+  -- The whole ability set reads READY except Imp Lord, which is genuinely on cooldown.
+  -- Recording which id each read was asked about is the direct assertion.
+  local function stubReads()
+    local asked = {}
+    ns.ReadCooldown = function(id)
+      asked[#asked + 1] = id
+      if id == IMP_LORD then return false, 90, 120, 0 end   -- 90s left on the real ability
+      return true, 0, 0, 0                                  -- everything else: ready
+    end
+    return asked
+  end
+
+  it("reads the BASE's cooldown when a pet spell has taken over the button", function()
+    local asked = stubReads()
+    St.override[IMP_LORD] = SINGE_MAGIC          -- the imp's dispel owns the frame now
+    local pulse = St.Build(false)
+
+    -- The row still SHOWS Singe Magic...
+    assert.equals(SINGE_MAGIC, pulse.cooldowns[CID.imp].liveSpellID)
+    -- ...but readiness is Imp Lord's, because that is what the row IS.
+    assert.equals("on-cooldown", pulse.abilities[IMP_LORD].cd.state)
+    assert.equals(90, pulse.abilities[IMP_LORD].cd.remaining)
+
+    -- And the read was never even asked about the foreign spell.
+    local sawImp, sawSinge = false, false
+    for _, id in ipairs(asked) do
+      if id == IMP_LORD then sawImp = true end
+      if id == SINGE_MAGIC then sawSinge = true end
+    end
+    assert.is_true(sawImp)
+    assert.is_false(sawSinge)
+  end)
+
+  it("does not stash the foreign spell's readiness as the OOC baseline either", function()
+    -- The baseline is what gets projected forward across combat entry, so a wrong OOC
+    -- answer here outlives the override that caused it.
+    stubReads()
+    St.override[IMP_LORD] = SINGE_MAGIC
+    St.Build(false)
+    H.combat = true                              -- the live read now refuses
+    local pulse = St.Build(false)
+    assert.are_not.equal("ready", pulse.abilities[IMP_LORD].cd.state)
+  end)
+
+  it("a row with no override is unaffected — it reads its own id", function()
+    local asked = stubReads()
+    local pulse = St.Build(false)
+    assert.equals("ready", pulse.abilities[TYRANT].cd.state)
+    local sawTyrant = false
+    for _, id in ipairs(asked) do if id == TYRANT then sawTyrant = true end end
+    assert.is_true(sawTyrant)
+  end)
+end)

@@ -46,8 +46,8 @@ local FIXTURES = {
   -- would emit as one frame — a palette:
   --   IDLE      keybind hint only, no dot (the "empty board" — tracked, nothing to do)
   --   SOON      anticipation — yellow circle + spinning/pulsing ring
-  --   FALLBACK  ROTATION_FALLBACK — the runner-up: VIOLET circle + STATIC ring (backup
-  --            reads by BOTH hue and lack of motion)
+  --   FALLBACK  ROTATION_FALLBACK — the runner-up: VIOLET circle + ring.  It reads as the
+  --            backup by HUE; it spins and pulses like every other live cue
   --   ROTATION  press now — green circle + spinning/pulsing ring
   --   LATE      overdue — ROTATION green, ESCALATED ring (bigger, ~2.5x faster)
   --   GLOW      a FALLBACK dot + keybind UNDER Blizzard's NATIVE (gold) spell-
@@ -59,8 +59,8 @@ local FIXTURES = {
   --            could RECOLOR (to a tamer hue) rather than fully replace it.
   --   GLOW·DIM  the native gold overlay DIMMED via frame alpha — proof it can be
   --            de-emphasized by turning it down, the other subdue lever.
-  -- (Every cue now shows its solid circle AND a glow ring; ROTATION/LATE/SOON spin +
-  -- pulse, FALLBACK's ring is static.)  Squares carry real spell-icon ART (buildRig), so the
+  -- (Every cue shows its solid circle AND a spinning, pulsing glow ring; only LATE's ring
+  -- differs, being bigger and ~2.5x faster.)  Squares carry real spell-icon ART, so the
   -- chrome is judged against a busy icon like the live CDM, not a flat fill.
   ["states"] = { icons = 8,
     captions = { "IDLE", "SOON", "FALLBACK", "ROTATION", "LATE", "GLOW", "GLOW·RED", "GLOW·DIM" },
@@ -75,7 +75,7 @@ local FIXTURES = {
       cues = {
         cue("fake1", nil, "Q"),                  -- IDLE: keybind only, no dot
         cue("fake2", "SOON", "E"),               -- anticipation: yellow circle + spinning ring
-        cue("fake3", "ROTATION_FALLBACK", "R"),  -- runner-up: green circle + STATIC ring
+        cue("fake3", "ROTATION_FALLBACK", "R"),  -- runner-up: violet circle + spinning ring
         cue("fake4", "ROTATION", "R"),           -- press now: green circle + spinning ring
         cue("fake5", "LATE", "E"),               -- overdue: amber circle + spinning ring
         cue("fake6", "ROTATION_FALLBACK", "F"),  -- FALLBACK dot + keybind, NATIVE glow on top

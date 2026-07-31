@@ -244,16 +244,17 @@ St.Charges = { Seed = chargeSeed, Read = chargeRead, Spend = chargeSpend, Gain =
 -- same OOC-readable rhythm in readCd.
 local foldBase = {}      -- cooldownID -> base spellID
 
--- The napkin's anticipation for a cd, queried under the live identity first, the
--- base second (a transformed button's cast filed the napkin under whichever id
--- fired SUCCEEDED).  Returns the estimated remaining (may be <= 0 when elapsed),
--- or nil when the napkin has no record.  The napkin supplies only the *remaining*
--- number now — readiness itself comes from the read/baseline/edge.
-local function napkinRemaining(live, base)
+-- The napkin's anticipation for a cd, queried under each id this row can be known by —
+-- the display identity, the live override, the base — because a transformed button's cast
+-- filed the napkin under whichever id fired SUCCEEDED.  Returns the estimated remaining
+-- (may be <= 0 when elapsed), or nil when the napkin has no record.  The napkin supplies
+-- only the *remaining* number — readiness itself comes from the read/baseline/edge.
+local function napkinRemaining(ident, live, base)
   local N = ns.HudNapkin
   if not (N and N.Remaining) then return nil end
-  local rem = N.Remaining(live)
-  if rem == nil and base and base ~= live then rem = N.Remaining(base) end
+  local rem = N.Remaining(ident)
+  if rem == nil and live and live ~= ident then rem = N.Remaining(live) end
+  if rem == nil and base and base ~= ident and base ~= live then rem = N.Remaining(base) end
   return rem
 end
 
@@ -266,8 +267,27 @@ end
 -- supplies only the *remaining* estimate while on cooldown.  `readable` mirrors
 -- `source == "live"` — true when the number is a read/observation, false when it is
 -- an estimate or absent.
-local function readCd(live, base, cooldownID)
-  local isReady, remaining, duration, startTime = ns.ReadCooldown(live)
+--
+-- ⚠ THE READ IS KEYED ON `ident` (the DISPLAY identity), NOT on `live`.  This is
+-- load-bearing and it is a real bug fixed on 2026-07-30.  `live` is "whatever the client
+-- last said is on this frame", and that includes overrides that ARE NOT THIS ABILITY AT
+-- ALL: while Grimoire: Imp Lord is on cooldown, the summoned imp's Singe Magic takes over
+-- the Grimoire button (`base=1276452 -> over=132411`, captured), and the Felhunter's
+-- Devour Magic does the same.  Reading `ns.ReadCooldown(live)` there returns SINGE MAGIC's
+-- cooldown — ready — so the row reported the Grimoire as up on a 2-minute cooldown, and it
+-- won the priority list.  Worse than a one-frame lie: the OOC read also stamps
+-- `cdBaseline`, so the wrong answer is then projected forward across combat entry.
+--
+-- `ident` = ns.DisplayIdentity(base, overrideSpellID, overrideTooltipSpellID), the same id
+-- `abilities` is keyed by.  It is the base unless a STATIC, spec-declared override moved
+-- it, and it refuses exactly this class of foreign takeover (`expect = false`).  Reading
+-- one spell's cooldown and filing it under another spell's key is the defect; keying both
+-- on the same id is the fix.
+--
+-- The GLOW deliberately still reads `live`: Blizzard lands the proc highlight on the
+-- EMPOWERED spell, so there the override is the right id.  Readiness is not.
+local function readCd(ident, live, base, cooldownID)
+  local isReady, remaining, duration, startTime = ns.ReadCooldown(ident)
   if isReady ~= nil then
     -- Readable (OOC): the precise truth, AND the baseline stash that outlives combat.
     -- Remember this cd's base id too — the fold key the domain view falls back to when a
@@ -291,7 +311,7 @@ local function readCd(live, base, cooldownID)
 
   -- Not readable live (combat/secret).  Determine readiness WITHOUT guessing.
   local now = GetTime()
-  local rem = napkinRemaining(live, base)
+  local rem = napkinRemaining(ident, live, base)
 
   -- A live napkin countdown means a cast filed this recently -> ON COOLDOWN NOW,
   -- which OUTRANKS a stale `Available` edge (the just-cast race the doc names).
@@ -353,8 +373,11 @@ end
 -- the extra attempt costs nothing in combat and one guarded call per row out of it.
 -- `charged` is the honest, MEASURED answer to "does this thing have a charge pool" — a live
 -- max > 1 — and it is what the brain keys on, rather than the flag.
-local function readCharge(live, hasCharges, cooldownID)
-  local cur, max = ns.ReadCharges(live)
+-- Keyed on the DISPLAY identity for the same reason readCd is: a foreign live override
+-- (a pet dispel taking over the Grimoire button) would otherwise have its charge count
+-- read and filed under the base ability's key.
+local function readCharge(ident, hasCharges, cooldownID)
+  local cur, max = ns.ReadCharges(ident)
   if cur ~= nil then
     if type(max) == "number" and max > 1 then
       -- The exact read ALWAYS wins, and re-seeds the napkin (the combat-exit correction).
@@ -1320,6 +1343,12 @@ function St.Build(drain)
     local info = cooldownInfo(cooldownID)
     local base = info and readable(info.spellID) and info.spellID or nil
     local live = liveSpellID(info) or base
+    -- The DISPLAY identity, resolved here as well as in the fold, because the LIVE READS
+    -- below (cooldown, charges) must key on it — see readCd's fence.  Same call the domain
+    -- view makes, so the id a row is read under and the id it is filed under agree.
+    local ovID  = info and readable(info.overrideSpellID) and info.overrideSpellID or nil
+    local ovtID = info and readable(info.overrideTooltipSpellID) and info.overrideTooltipSpellID or nil
+    local ident = base ~= nil and ns.DisplayIdentity(base, ovID, ovtID) or base
     local hasAura = info and info.hasAura and true or false
     local selfAura = info and info.selfAura and true or false
     local hasCharges = info and info.charges and true or false
@@ -1349,7 +1378,7 @@ function St.Build(drain)
     -- Charges, and the napkin's base -> cooldownID edge.  The alert and the OOC seed arrive
     -- keyed by cooldownID; a cast arrives keyed by spellID.  Bound off the MEASURED `charged`
     -- (a live max > 1), so a wrong struct flag cannot silently disable the napkin.
-    local charge = readCharge(live, hasCharges, cooldownID)
+    local charge = readCharge(ident, hasCharges, cooldownID)
     if charge.charged and base then chargeCid[base] = cooldownID end
 
     -- The entry's associated aura ids (no nils/holes — ipairs-safe), for the scan match.
@@ -1377,7 +1406,7 @@ function St.Build(drain)
       displayable = items[cooldownID] ~= nil,
       flags      = info and ns.Stash(info.flags) or nil,
       -- live facts (secrecy first-class)
-      cd     = stampCd(cooldownID, readCd(live, base, cooldownID), now),
+      cd     = stampCd(cooldownID, readCd(ident, live, base, cooldownID), now),
       charge = charge,
       aura   = readAura(hasAura, selfAura, activeByID, auraIds, auraSecret),
       glow   = readGlow(live),   -- the combat-readable proc-highlight signal

@@ -83,12 +83,18 @@ local GLOW_SPEC = {
   -- is not a second shade of green, it is the SAME green moving differently.  In play the
   -- amber read as a distinct INSTRUCTION rather than an urgent one, and it collided with
   -- SOON's yellow.  Do not "restore" the amber without re-testing the motion channel first.
+  -- ringScale is RELATIVE to GLOW_SCALE by intent (~1.4x), so it moved with it when the
+  -- base ring shrank to close the dot/ring gap.  Keep that ratio if either is retuned —
+  -- the escalation is "a bigger ring", not "this exact number".
   LATE              = { spin = true,  pulse = true, color = "ROTATION",
-                        ringScale = 5.0, spinSecs = 1.6 },
+                        ringScale = 3.2, spinSecs = 1.6 },
   SOON              = { spin = true,  pulse = true },
-  -- No `color` override: the runner-up now resolves its OWN theme entry (violet) instead
-  -- of borrowing ROTATION's green.  Still static -- motion remains the primary tell.
-  ROTATION_FALLBACK = { spin = false, pulse = false },
+  -- ROTATION_FALLBACK animates like everything else now (2026-07-30 feedback).  History:
+  -- v0.32.17 made the runner-up read by its ring being STATIC, because it was a DIMMER
+  -- GREEN and motion was the only channel left to separate it from ROTATION.  It has its
+  -- own violet since v0.32.36, so HUE carries the distinction and the stillness bought
+  -- nothing — it just made the backup look like a dead cue next to the live ones.
+  ROTATION_FALLBACK = { spin = true,  pulse = true },
 }
 
 -- powerType -> RGBA.  SOUL_SHARDS is the soul-violet — the shard colour by construction.
@@ -329,9 +335,22 @@ end
 -- dot (ARTWORK vs the dot's OVERLAY) so the crisp dot + keybind stay on top.  Pooled
 -- per handle.  Each group is driven independently to match its `spin`/`pulse` flag and
 -- tracked per-glow (g._spinOn / g._pulseOn), so a steady redraw doesn't hitch a running
--- animation and a STATIC ring (both flags false — the runner-up) simply never plays.
+-- animation and a ring with both flags false simply never plays.
+--
+-- ⚠ THE ATLAS HAS A HOLE, AND IT CANNOT BE FILLED.  `services-ring-large-glowspin` is a
+-- RING: its transparent centre is baked into the art, and there is no tint or blend mode
+-- that paints it in (SetVertexColor multiplies — it cannot add alpha where there is none).
+-- The angular detail in that ring is also the only reason the spin READS at all; a
+-- symmetric soft blob would rotate invisibly.  So the hole is not a bug to remove, it is
+-- the cost of the motion channel — the lever is to make the DOT COVER IT by shrinking the
+-- ring until its inner edge sits on the dot's rim.  That is what GLOW_SCALE is:
 local GLOW_ATLAS = "services-ring-large-glowspin"   -- round ring glow, built to spin
-local GLOW_SCALE = 3.6    -- relative to the DOT (the solid box it's centred on)
+-- Ring diameter relative to the DOT.  Dialled BY EYE on `/cdmp rt states` — the number
+-- that matters is not the ring's size but the gap between the dot's rim and the ring's
+-- inner edge, which must be ZERO so the two read as one object.  3.6 left a visible
+-- annulus of empty icon between them (2026-07-30 feedback); 2.3 closes it.  Raise this
+-- and the halo detaches into a separate floating ring again.
+local GLOW_SCALE = 2.3
 local SPIN_SECS  = 4.0    -- one full rotation
 
 function R:setDotGlow(key, holder, dot, col, size, spin, pulse, ringScale, spinSecs)

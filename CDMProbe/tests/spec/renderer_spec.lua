@@ -95,24 +95,25 @@ describe("Renderer", function()
     assert.equals(-28, pt.dy)
   end)
 
-  it("paints a ROTATION_FALLBACK cue in its OWN violet with a STATIC (non-animating) ring", function()
+  it("paints a ROTATION_FALLBACK cue in its OWN violet, animating like every other cue", function()
     local r = rigged(1)
     r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION_FALLBACK" } } })
     local dot = r.cueFrames["fake1"]
     assert.is_not_nil(dot, "fallback fell into the empty-cue path — no theme colour")
     assert.is_true(dot._shown)
-    -- Hue ON TOP OF motion: the runner-up resolves its own violet (it no longer borrows
-    -- ROTATION's green via GLOW_SPEC.color), AND its ring stays static.  Both tells.
+    -- HUE is the tell.  It used to be motion (a STATIC ring), because the runner-up was a
+    -- dimmer GREEN and stillness was the only channel left; it has its own violet now, so
+    -- the stillness bought nothing and only made the backup look like a dead cue.
     local fb = theme.ROTATION_FALLBACK
     assert.is_true(colorEq(dot._color, fb[1], fb[2], fb[3]))
     assert.is_false(colorEq(dot._color, theme.ROTATION[1], theme.ROTATION[2], theme.ROTATION[3]),
       "fallback is still borrowing ROTATION's green")
     local glow = r.cueGlows["fake1"]
-    assert.is_not_nil(glow, "fallback should still show its ring, just not animate it")
+    assert.is_not_nil(glow)
     assert.is_true(glow._shown)
     assert.is_true(colorEq(glow._color, fb[1], fb[2], fb[3]))
-    assert.is_falsy(glow._spinOn)    -- STATIC: neither group is playing
-    assert.is_falsy(glow._pulseOn)
+    assert.is_true(glow._spinOn)
+    assert.is_true(glow._pulseOn)
   end)
 
   -- P5d strata fix: decorations ride a per-icon holder that sits ABOVE the icon (so a
@@ -318,7 +319,7 @@ describe("Renderer", function()
     r:Draw(st.drawList)
     assert.is_nil(r.cueFrames["fake1"])           -- IDLE: keybind only, no dot
     assert.is_true(r.glowing["fake2"])            -- SOON glows (moving = anticipation)
-    assert.is_true(r.glowing["fake3"])            -- FALLBACK rings (statically)
+    assert.is_true(r.glowing["fake3"])            -- FALLBACK rings
     assert.is_true(r.glowing["fake4"])            -- ROTATION glows
     assert.is_true(r.glowing["fake5"])            -- LATE glows
   end)
