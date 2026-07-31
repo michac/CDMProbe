@@ -47,6 +47,24 @@ H.combat = false
 H.secret = {}          -- value -> true means issecretvalue() reports it secret
 H.frames = {}          -- every CreateFrame result, in order (napkin grabs its ev)
 
+-- SECRET TABLES — a DISTINCT verdict from a secret scalar, and the one the addon's
+-- readers ask about separately (Util.lua:76 ns.IsSecretTable).  `issecrettable` used to be
+-- hardcoded `false` here, which made six real refusal branches unreachable in tests:
+-- State.lua:104 (the info struct), :429 (a packed auraData), Util.lua:158 / :179 / :199
+-- (the cooldown + charges tables).  Keyed by table IDENTITY, so a fake that builds a fresh
+-- table per call cannot be marked — memoise one table per fixture (see H.poison's note).
+H.secretTable = {}     -- table -> true means issecrettable() reports it secret
+
+-- "THIS CALL THROWS" — keyed by the DOTTED API name (`"C_Spell.GetSpellCooldown"`), so a
+-- fixture can arm any single guarded call site without replacing the fake.  ~14 pcall'd
+-- sites are reachable from St.Build and none of them had throw coverage before.
+H.throws = {}          -- "dotted.name" -> true means the wrapped call errors
+
+-- WHICH IDS THE CLIENT FAKES WERE ASKED ABOUT.  Several CDM defects are "which id did you
+-- ask about" bugs (the charge ladder, the per-entry GCD read), and asserting the OUTCOME
+-- cannot catch those — only the question can.  Reset by H.fresh().
+H.asked = {}
+
 -- Spec detection (Phase 5).  GetSpecialization returns an INDEX; GetSpecializationInfo
 -- maps that index -> (specID, name).  Default: index 1 = Demonology (266), so the resolver
 -- lands on the shipping spec exactly as the old static activation did.  Tests flip
@@ -67,6 +85,48 @@ function H.advance(dt) H.clock = H.clock + dt end
 function H.setCombat(v) H.combat = v and true or false end
 function H.markSecret(v) H.secret[v] = true end
 function H.lastFrame() return H.frames[#H.frames] end
+
+-- ⚠ H.secret is keyed BY VALUE, so `H.markSecret(1)` marks the number 1 everywhere in the
+-- fixture.  Prefer a sentinel TABLE (`H.secretValue()`) wherever the code under test only
+-- tests readability rather than doing arithmetic — `readable()` is a `type(v) == "number"`
+-- test, so a table is refused for the same reason a secret number is, one branch earlier.
+function H.markSecretTable(t) H.secretTable[t] = true; return t end
+function H.secretValue() local v = {}; H.secret[v] = true; return v end
+
+-- Arm / disarm a guarded call site by its dotted name.
+function H.throwOn(name) H.throws[name] = true end
+
+-- Wrap a fake so `H.throws[name]` makes it raise.  The addon pcalls these sites; a fixture
+-- that cannot make them throw leaves every refusal path untested.  Level 0 so the message
+-- is the message, not a mock_ns.lua line reference.
+function H.guard(name, fn)
+  return function(...)
+    if H.throws[name] then error("mock_ns: " .. name .. " throws (H.throws)", 0) end
+    return fn(...)
+  end
+end
+
+-- A table that INDEXES FINE for most keys and THROWS on named ones.  Distinct from a
+-- secret table, and it is the shape `Util.lua:163` and `State.lua:519` pcall against:
+-- they guard the *index*, not the call, on the documented reasoning that "a table that
+-- passes issecrettable can still throw on access under the 12.0 restrictions".
+--
+-- Mutates `t` in place and returns it, so table IDENTITY is preserved (H.secretTable and
+-- a memoised per-cid info table both key on identity).  Note Lua 5.1 has no `__pairs`, so
+-- a poisoned table does not iterate — nothing in the code under test iterates these.
+function H.poison(t, fields)
+  local store = {}
+  for k, v in pairs(t) do store[k] = v; t[k] = nil end
+  local bad = {}
+  for _, f in ipairs(fields or {}) do bad[f] = true end
+  return setmetatable(t, {
+    __index = function(_, k)
+      if bad[k] then error("mock_ns: poisoned field '" .. tostring(k) .. "'", 0) end
+      return store[k]
+    end,
+    __newindex = function(_, k, v) store[k] = v end,
+  })
+end
 
 --------------------------------------------------------------------------------
 -- The frame / fontstring / animation stub
@@ -152,51 +212,67 @@ end
 H.newStub = newStub
 
 --------------------------------------------------------------------------------
--- Global fakes (installed once; re-installing on a re-dofile is harmless)
+-- Global fakes
 --------------------------------------------------------------------------------
-_G.GetTime          = function() return H.clock end
-_G.wipe             = function(t) for k in pairs(t) do t[k] = nil end return t end
-_G.InCombatLockdown = function() return H.combat end
-_G.issecretvalue    = function(v) return H.secret[v] == true end
-_G.issecrettable    = function(_) return false end
-_G.hooksecurefunc   = function() end
-_G.UnitPower        = function() return 0 end
-_G.UnitPowerMax     = function() return 0 end
-_G.CreateColor      = function(r, g, b, a)
-  return { r = r, g = g, b = b, a = a, GetRGB = function() return r, g, b end }
+-- ⚠ THESE USED TO BE INSTALLED AT FILE SCOPE, once per `dofile`.  Busted loads EVERY spec
+-- file and only THEN runs the tests, so a `_G` mutation made during a test survived into
+-- later files — `state_domainview_spec.lua` nils `_G.C_Spell.GetSpellCharges` in an
+-- after_each, and that deletion outlived the file.  Worse, the closures below capture the
+-- `H` of whichever dofile ran last, so `H.fx`-reading fakes could be looking at a
+-- different file's fixture handle entirely.  Extracted into a function and called from
+-- H.fresh() as well: every test starts from the same globals, bound to ITS OWN H.
+function H.installGlobals()
+  _G.GetTime          = function() return H.clock end
+  _G.wipe             = function(t) for k in pairs(t) do t[k] = nil end return t end
+  _G.InCombatLockdown = function() return H.combat end
+  _G.issecretvalue    = function(v) return H.secret[v] == true end
+  -- Table-driven, exactly like issecretvalue.  ⚠ `ns.IsSecret`/`ns.IsSecretTable` are the
+  -- SHIPPING implementations (Util.lua:62-80) — the harness supplies only the two globals
+  -- they ask, so every refusal path below runs the real code.
+  _G.issecrettable    = function(t) return H.secretTable[t] == true end
+  _G.hooksecurefunc   = function() end
+  _G.UnitPower        = function() return 0 end
+  _G.UnitPowerMax     = function() return 0 end
+  _G.CreateColor      = function(r, g, b, a)
+    return { r = r, g = g, b = b, a = a, GetRGB = function() return r, g, b end }
+  end
+  -- The alert-event enum values are Blizzard's, verbatim (Blizzard_APIDocumentationGenerated/
+  -- CooldownViewerConstantsDocumentation.lua:43-55) — State branches on them by name, but the
+  -- numbers are what a live TriggerAlertEvent carries, so the harness must not invent its own.
+  _G.Enum   = { PowerType = { SoulShards = 7, Mana = 0, Energy = 3 },
+                CooldownViewerAlertEventType = {
+                  Available = 1, PandemicTime = 2, OnCooldown = 3,
+                  ChargeGained = 4, OnAuraApplied = 5, OnAuraRemoved = 6,
+                } }
+  _G.C_Timer = { After = function() end,
+                 NewTimer = function() return { Cancel = function() end } end }
+  _G.C_Spell = { GetSpellName = function(id) return "Spell:" .. tostring(id) end,
+                 GetSpellTexture = function(id) return "Interface\\Icons\\Spell_" .. tostring(id) end }
+  -- Spellbook knownness — the surviving correctness fence of field-fix A, and the one State's
+  -- virtual-row walk reads (an untracked ability has no CDM struct to carry `isKnown`).
+  -- Defaults to NOT known for every id: a spec opts a spellID in with `fx.known[id] = true`, so
+  -- no existing test silently grows a virtual row.  Returns a real boolean, as the API does.
+  _G.C_SpellBook = { IsSpellKnown = function(id)
+    return (H.fx and H.fx.known and H.fx.known[id]) == true
+  end }
+  _G.CreateFrame = function(_, name, _, _)
+    local f = newStub()
+    H.frames[#H.frames + 1] = f
+    if type(name) == "string" then _G[name] = f end
+    return f
+  end
+  _G.GetSpecialization     = function() return H.specIndex end
+  _G.GetSpecializationInfo = function(idx)
+    local s = H.specByIndex[idx]
+    if not s then return nil end
+    return s[1], s[2]   -- specID, name (real API also returns description/icon/role — unused)
+  end
+  _G.UIParent = _G.UIParent or newStub()   -- the Renderer's default root token target
 end
--- The alert-event enum values are Blizzard's, verbatim (Blizzard_APIDocumentationGenerated/
--- CooldownViewerConstantsDocumentation.lua:43-55) — State branches on them by name, but the
--- numbers are what a live TriggerAlertEvent carries, so the harness must not invent its own.
-_G.Enum   = { PowerType = { SoulShards = 7, Mana = 0, Energy = 3 },
-              CooldownViewerAlertEventType = {
-                Available = 1, PandemicTime = 2, OnCooldown = 3,
-                ChargeGained = 4, OnAuraApplied = 5, OnAuraRemoved = 6,
-              } }
-_G.C_Timer = { After = function() end,
-               NewTimer = function() return { Cancel = function() end } end }
-_G.C_Spell = { GetSpellName = function(id) return "Spell:" .. tostring(id) end,
-               GetSpellTexture = function(id) return "Interface\\Icons\\Spell_" .. tostring(id) end }
--- Spellbook knownness — the surviving correctness fence of field-fix A, and the one State's
--- virtual-row walk reads (an untracked ability has no CDM struct to carry `isKnown`).
--- Defaults to NOT known for every id: a spec opts a spellID in with `fx.known[id] = true`, so
--- no existing test silently grows a virtual row.  Returns a real boolean, as the API does.
-_G.C_SpellBook = { IsSpellKnown = function(id)
-  return (H.fx and H.fx.known and H.fx.known[id]) == true
-end }
-_G.CreateFrame = function(_, name, _, _)
-  local f = newStub()
-  H.frames[#H.frames + 1] = f
-  if type(name) == "string" then _G[name] = f end
-  return f
-end
-_G.GetSpecialization     = function() return H.specIndex end
-_G.GetSpecializationInfo = function(idx)
-  local s = H.specByIndex[idx]
-  if not s then return nil end
-  return s[1], s[2]   -- specID, name (real API also returns description/icon/role — unused)
-end
-_G.UIParent = _G.UIParent or newStub()   -- the Renderer's default root token target
+
+-- Installed at load as well as from H.fresh(), so a module dofile'd before any test still
+-- finds the client surface it expects.
+H.installGlobals()
 
 --------------------------------------------------------------------------------
 -- Load a module file into the current namespace through the vararg shim.
@@ -213,7 +289,14 @@ end
 function H.fresh()
   H.frames = {}
   H.clock, H.combat, H.secret = 0, false, {}
+  H.secretTable, H.throws = {}, {}
+  -- Per-case record of which ids each client fake was asked about.  See H.asked's header.
+  H.asked = { cooldown = {}, charges = {}, glow = {}, auraByID = {}, known = {},
+              info = {}, categorySet = {} }
   H.specIndex = 1               -- default to Demonology so the resolver activates 266
+  -- ⚠ RE-INSTALL, do not assume.  A previous test may have deleted or replaced a `_G`
+  -- fake; without this the damage outlives the file that did it (see installGlobals').
+  H.installGlobals()
   local ns = {}
   H.ns = ns
 
