@@ -205,7 +205,14 @@ describe("State domain view — the pressable filter (field-fix A)", function()
   ------------------------------------------------------------------------------
   describe("St.Build charge reads", function()
     local CID_CONF = 910
+    -- ⚠ RESTORE, don't delete.  This block replaces a `_G` fake, and the after_each used to
+    -- set it to nil — which is not "put it back", it is "remove the harness's own client
+    -- surface for whatever runs next".  Globals are installed at file scope AND from
+    -- H.fresh(), but a deletion that outlives its file is exactly the leak
+    -- H.installGlobals() exists to close; don't hand it a fresh one.
+    local realGetSpellCharges
     local function withCharges(cur, max)
+      realGetSpellCharges = _G.C_Spell.GetSpellCharges
       _G.Enum.CooldownViewerCategory = { Essential = 0 }
       _G.C_CooldownViewer = {
         GetCooldownViewerCategorySet = function(v) return v == 0 and { CID_CONF } or {} end,
@@ -226,7 +233,7 @@ describe("State domain view — the pressable filter (field-fix A)", function()
     after_each(function()
       _G.C_CooldownViewer = nil
       _G.Enum.CooldownViewerCategory = nil
-      _G.C_Spell.GetSpellCharges = nil
+      _G.C_Spell.GetSpellCharges = realGetSpellCharges
     end)
 
     it("reports a real charge pool even when the struct flag says otherwise", function()

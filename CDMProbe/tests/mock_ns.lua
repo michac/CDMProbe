@@ -248,13 +248,80 @@ function H.installGlobals()
                  NewTimer = function() return { Cancel = function() end } end }
   _G.C_Spell = { GetSpellName = function(id) return "Spell:" .. tostring(id) end,
                  GetSpellTexture = function(id) return "Interface\\Icons\\Spell_" .. tostring(id) end }
+
+  ------------------------------------------------------------------------------
+  -- THE REAL CLIENT SURFACE (default-INERT).
+  ------------------------------------------------------------------------------
+  -- WHY, when state_domainview_spec already replaces `ns.ReadCooldown` wholesale: that
+  -- replacement is a CALL RECORDER and should stay, but it must not be the only path.
+  -- Replacing the function moves four things outside the code under test — the combat
+  -- short-circuit (Util.lua:217), `rawCooldown`'s six-guard ladder (:154-167), the GCD
+  -- TRAP (:225-239) and the banked-charge short-circuit (:222).  The GCD trap settles it
+  -- on its own: `ns.ReadCooldown` calls `rawCooldown(GCD_SPELLID)` once PER ENTRY, and the
+  -- planned hoist claims "pure win, no behaviour change" — unfalsifiable without a fake.
+  -- With one, `H.asked.cooldown` counts the GCD reads and the entire fix is one number.
+  --
+  -- INERTNESS IS THE SAFETY PROPERTY.  An unregistered id returns `nil`, which every
+  -- guard ladder above already treats identically to "the function does not exist", so
+  -- installing these cannot move an existing result.  A fixture opts in per id via H.fx.
+  --
+  -- ⚠ THE RETURNED TABLES ARE THE FIXTURE'S OWN, handed back by identity rather than
+  -- rebuilt per call — otherwise H.markSecretTable / H.poison could never mark them, and a
+  -- secret-struct case would pass for the wrong reason.  It also matches Blizzard's single
+  -- cached record per cooldownID (cooldown-manager.md §2.5).
+  local function record(bucket, id) bucket[#bucket + 1] = id end
+
+  _G.C_Spell.GetSpellCooldown = H.guard("C_Spell.GetSpellCooldown", function(spellID)
+    record(H.asked.cooldown, spellID)
+    return H.fx and H.fx.cd and H.fx.cd[spellID] or nil
+  end)
+  _G.C_Spell.GetSpellCharges = H.guard("C_Spell.GetSpellCharges", function(spellID)
+    record(H.asked.charges, spellID)
+    return H.fx and H.fx.charges and H.fx.charges[spellID] or nil
+  end)
+
+  -- The full active-buff walk State folds into `activeAuras` / `buffs`.  Entries are the
+  -- PACKED aura tables the real API hands a `usePackedAura = true` callback; a secret one
+  -- is just `H.markSecretTable(entry)`, which is the case State.lua:429 guards.
+  _G.AuraUtil = { ForEachAura = H.guard("AuraUtil.ForEachAura", function(unit, filter, max, cb)
+    local list = H.fx and H.fx.auras
+    if type(list) ~= "table" or type(cb) ~= "function" then return end
+    for _, aura in ipairs(list) do
+      if cb(aura) then return end   -- a truthy return stops the walk, as the real API does
+    end
+  end) }
+
+  -- ⚠ PER-ID throw control, not just the blanket H.throws entry: `readAura` walks the
+  -- row's associated ids and gives up on the FIRST failure, so proving that defect needs
+  -- id 1 to raise while id 2 answers cleanly.
+  _G.C_UnitAuras = { GetPlayerAuraBySpellID =
+    H.guard("C_UnitAuras.GetPlayerAuraBySpellID", function(spellID)
+      record(H.asked.auraByID, spellID)
+      if H.fx and H.fx.auraThrows and H.fx.auraThrows[spellID] then
+        error("mock_ns: aura read refused for " .. tostring(spellID), 0)
+      end
+      return H.fx and H.fx.auraByID and H.fx.auraByID[spellID] or nil
+    end) }
+
+  -- The proc-glow channel — the CDM's only combat-readable proc signal (§6).  Returns a
+  -- real boolean for every id, because that is what the client does: "not overlayed" is an
+  -- answer, not a refusal.  A refusal is H.throws, and a secret answer is fx.glow[id] set
+  -- to a marked sentinel.
+  _G.C_SpellActivationOverlay = { IsSpellOverlayed =
+    H.guard("C_SpellActivationOverlay.IsSpellOverlayed", function(spellID)
+      record(H.asked.glow, spellID)
+      local g = H.fx and H.fx.glow and H.fx.glow[spellID]
+      if g == nil then return false end
+      return g
+    end) }
   -- Spellbook knownness — the surviving correctness fence of field-fix A, and the one State's
   -- virtual-row walk reads (an untracked ability has no CDM struct to carry `isKnown`).
   -- Defaults to NOT known for every id: a spec opts a spellID in with `fx.known[id] = true`, so
   -- no existing test silently grows a virtual row.  Returns a real boolean, as the API does.
-  _G.C_SpellBook = { IsSpellKnown = function(id)
+  _G.C_SpellBook = { IsSpellKnown = H.guard("C_SpellBook.IsSpellKnown", function(id)
+    record(H.asked.known, id)
     return (H.fx and H.fx.known and H.fx.known[id]) == true
-  end }
+  end) }
   _G.CreateFrame = function(_, name, _, _)
     local f = newStub()
     H.frames[#H.frames + 1] = f
@@ -368,6 +435,18 @@ function H.fresh()
     -- `known` drives the fake C_SpellBook.IsSpellKnown above (State's virtual-row fence).
     -- Empty by default, so virtual rows only appear where a spec explicitly asks for them.
     known = {},
+    -- THE LIVE CLIENT, at client-API level (see installGlobals' "real client surface").
+    -- Empty by default = every read refuses, which is what every guard ladder already
+    -- treats as "the function does not exist".  Keyed by spellID:
+    --   cd[id]        = { duration = n, startTime = n }   -- C_Spell.GetSpellCooldown
+    --                   ⚠ include [61304] (the GCD) explicitly in any cd case; its ABSENCE
+    --                     is a distinct branch — Util.lua:235's 1.5s backstop.
+    --   charges[id]   = { currentCharges = n, maxCharges = n }
+    --   auras         = { <packed aura>, … }              -- AuraUtil.ForEachAura
+    --   auraByID[id]  = <aura table>                      -- GetPlayerAuraBySpellID
+    --   auraThrows[id]= true                              -- …and its per-id refusal
+    --   glow[id]      = bool                              -- IsSpellOverlayed
+    cd = {}, charges = {}, auras = {}, auraByID = {}, auraThrows = {}, glow = {},
   }
   H.fx = fx
 
