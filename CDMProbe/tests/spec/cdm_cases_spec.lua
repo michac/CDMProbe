@@ -309,8 +309,14 @@ local function runScript(case, ns, St, eframe)
   local pulse
   for i, s in ipairs(case.script or {}) do
     if s.alert then
-      local event = A[s.alert] or error("cdm-cases: unknown alert '" .. tostring(s.alert) .. "'")
-      St.OnAlert({ cooldownID = s.cid }, event)
+      -- "SECRET" = an unreadable event value, which must be dropped rather than compared
+      -- (comparing a Secret Value taints).  `cid = false` = an item whose cooldownID does
+      -- not read as a usable number and which exposes no GetCooldownID either.
+      local event = (s.alert == "SECRET") and H.secretValue()
+        or A[s.alert] or error("cdm-cases: unknown alert '" .. tostring(s.alert) .. "'")
+      local item = {}
+      if s.cid ~= false then item.cooldownID = s.cid end
+      St.OnAlert(item, event)
     elseif s.advance then
       H.advance(s.advance)
     elseif s.combat ~= nil then
@@ -462,7 +468,7 @@ describe("cdm-cases corpus", function()
   it("each axis meets its coverage floor", function()
     -- The floor exists so a later commit cannot quietly gut an axis.  Raise a number when
     -- an axis genuinely grows; never lower one to make a red go away.
-    local FLOOR = { A = 6, B = 11, C = 9, D = 16, G = 5 }
+    local FLOOR = { A = 6, B = 11, C = 9, D = 16, E = 11, F = 8, G = 5 }
     local n = {}
     for _, group in ipairs(FX.groups) do
       local axis = string.sub(group.name, 1, 1)
@@ -479,7 +485,7 @@ describe("cdm-cases corpus", function()
     for _, e in ipairs(all) do
       if e.case.status == "pinned-defect" then pinned = pinned + 1 end
     end
-    assert.is_true(pinned >= 4, "only " .. pinned .. " pinned defects")
+    assert.is_true(pinned >= 5, "only " .. pinned .. " pinned defects")
   end)
 end)
 

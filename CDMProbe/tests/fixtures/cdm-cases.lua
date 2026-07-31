@@ -263,6 +263,26 @@ local A = {
     world = { cd = { [GCD] = READY_GCD } },
     expect = { asked = { cooldown = { [IMMOLATE_AURA] = false } } },
   },
+
+  {
+    name = "family/a-cid-in-two-categories-resolves-nondeterministically",
+    status = "unreachable",
+    spec = 3,
+    pins = "a LATENT BUG, encoded pending rather than green because green would be a "
+        .. "FLAKY test — and busted is a hard release gate, so one flaky case blocks every "
+        .. "future cut.  `enumerate()` is first-wins over `pairs(CATEGORY_NAME)`, whose "
+        .. "order Lua does not define, so a cooldownID appearing in two category sets gets "
+        .. "whichever name the hash happened to reach first.  That decides `pressableRep` "
+        .. "(Essential outranks Utility, and tab 2 is never a press), so the SAME database "
+        .. "could produce a press on one login and an input on the next.  Whether the "
+        .. "client ever returns one cid from two sets is unmeasured; the study says a row "
+        .. "cannot be dragged across the FAMILY line, but says nothing about a duplicate "
+        .. "within one.  Phase 5's roster anchor inherits this",
+    ref = "cooldown-manager.md §1 — GetValidAssignmentCategories only offers categories "
+       .. "from the open tab (CooldownViewerSettings.lua:1554-1567); §7 Tier 1 "
+       .. "(GetCooldownViewerCategorySet)",
+    rows = {},
+  },
 }
 
 --------------------------------------------------------------------------------
@@ -1331,6 +1351,410 @@ local D = {
 }
 
 --------------------------------------------------------------------------------
+-- E · THE SIX ALERT EDGES — the choke point, and the same-frame tie
+--------------------------------------------------------------------------------
+-- `TriggerAlertEvent` is called from all six alert paths and is invoked UNCONDITIONALLY —
+-- the user's alert configuration is consulted INSIDE the body — so hooking it observes
+-- every edge, even for spells the user configured no alert on.  All six are confirmed
+-- firing in restricted combat, which makes this the single best in-combat signal on either
+-- side of the split: an observation of a choke point rather than a secret-guarded read.
+--------------------------------------------------------------------------------
+local E = {
+  {
+    name = "alert/OnCooldown-latches-on-cooldown-with-no-number",
+    status = "green",
+    spec = 3,
+    pins = "The edge carries the TRANSITION, never the seconds.  So an OnCooldown edge "
+        .. "with no anticipation behind it is \"on cooldown, remaining 0, unconfirmed\" — "
+        .. "the honest shape, not a fabricated countdown.",
+    ref = "cooldown-manager.md §5.1 — CooldownViewer.lua:483-494; OnCooldown = 3",
+    rows = { { cid = 903, category = "Essential", frame = {},
+               info = { spellID = TYRANT, isKnown = true } } },
+    world = { combat = true },
+    script = { { alert = "OnCooldown", cid = 903 }, { build = true } },
+    expect = {
+      abilities = { [TYRANT] = { cd = { state = "on-cooldown", remaining = 0,
+                                        readable = false, source = "napkin" } } },
+    },
+  },
+
+  {
+    name = "alert/PandemicTime-latches-the-refresh-window-as-an-edge",
+    status = "green",
+    spec = 3,
+    pins = "Pandemic's window derives from two SECRET numbers — you get the edge, never "
+        .. "the seconds — and `IsInPandemicTime` throws outright.  So the refresh window "
+        .. "is a latch over observed transitions, never a poll.",
+    ref = "cooldown-manager.md §5.1 (CooldownViewer.lua:511-532) + §7 Tier 2 "
+       .. "(pandemicStartTime/EndTime secret in combat, [client] 2026-07-30)",
+    rows = { { cid = 164597, category = "Essential", frame = {},
+               info = { spellID = IMMOLATE_CAST, isKnown = true } } },
+    world = { combat = true },
+    script = { { alert = "PandemicTime", cid = 164597 }, { build = true } },
+    expect = {
+      edges     = { [164597] = { state = "pandemic" } },
+      dotEdges  = { [IMMOLATE_CAST] = { state = "pandemic" } },
+      abilities = { [IMMOLATE_CAST] = { dot = { state = "pandemic" } } },
+    },
+  },
+
+  {
+    name = "alert/OnAuraApplied-latches-fresh",
+    status = "green",
+    spec = 3,
+    pins = "A NEW application landed — distinct from a stack, which does not raise it.",
+    ref = "cooldown-manager.md §5.1 — OnAuraApplied = 5; api-events-and-discovery.md §2.8",
+    rows = { { cid = 164597, category = "Essential", frame = {},
+               info = { spellID = IMMOLATE_CAST, isKnown = true } } },
+    world = { combat = true },
+    script = { { alert = "PandemicTime", cid = 164597 }, { advance = 1 },
+               { alert = "OnAuraApplied", cid = 164597 }, { build = true } },
+    expect = { dotEdges = { [IMMOLATE_CAST] = { state = "fresh" } } },
+  },
+
+  {
+    name = "alert/OnAuraRemoved-latches-absent",
+    status = "green",
+    spec = 3,
+    pins = "It fell off.  The third of the three transitions the latch is built from; "
+        .. "together they replace a poll that cannot run.",
+    ref = "cooldown-manager.md §5.1 — OnAuraRemoved = 6; api-events-and-discovery.md §2.8",
+    rows = { { cid = 164597, category = "Essential", frame = {},
+               info = { spellID = IMMOLATE_CAST, isKnown = true } } },
+    world = { combat = true },
+    script = { { alert = "PandemicTime", cid = 164597 }, { advance = 1 },
+               { alert = "OnAuraRemoved", cid = 164597 }, { build = true } },
+    expect = { dotEdges = { [IMMOLATE_CAST] = { state = "absent" } } },
+  },
+
+  {
+    name = "alert/ChargeGained-is-the-only-in-combat-charge-information-there-is",
+    status = "green",
+    spec = 3,
+    pins = "GetSpellCharges is secret in combat, so a charged ability's count vanishes "
+        .. "exactly when it matters.  ChargeGained fires on any upward move of Blizzard's "
+        .. "cached count — natural recharge AND reset procs both land here — so the "
+        .. "estimate is credited on an OBSERVATION, and surfaced as source = napkin so "
+        .. "the brain can still tell it from a measurement.",
+    ref = "cooldown-manager.md §5.1 (ChargeGained = 4) + §7 Tier 3 (GetSpellCharges "
+       .. "secret in combat); api-events-and-discovery.md §2.8",
+    rows = { { cid = 903, category = "Essential", frame = {},
+               info = { spellID = CONFLAGRATE, isKnown = true, charges = true } } },
+    world = { charges = { [CONFLAGRATE] = { currentCharges = 0, maxCharges = 2 } } },
+    script = { { build = true }, { combat = true },
+               { alert = "ChargeGained", cid = 903 }, { build = true } },
+    expect = {
+      abilities = { [CONFLAGRATE] = { charge = { readable = false, cur = 1, max = 2,
+                                                 source = "napkin", charged = true } } },
+    },
+  },
+
+  {
+    name = "alert/the-same-frame-refresh-tie-with-applied-LAST",
+    status = "green",
+    spec = 3,
+    pins = "A DoT REFRESH raises OnAuraRemoved AND OnAuraApplied at the IDENTICAL "
+        .. "timestamp (captured: cids 133441 + 164597, both at 131184.611), so a bare "
+        .. "last-write-wins latch is decided by Blizzard's dispatch ORDER rather than by "
+        .. "what happened.  A re-application supersedes the removal it replaces.",
+    ref = "cooldown-manager.md §2.7 [client] — the captured same-frame pandemic tie",
+    rows = { { cid = 164597, category = "Essential", frame = {},
+               info = { spellID = IMMOLATE_CAST, isKnown = true } } },
+    world = { combat = true },
+    script = { { alert = "OnAuraRemoved", cid = 164597 },
+               { alert = "OnAuraApplied", cid = 164597 }, { build = true } },
+    expect = { dotEdges = { [IMMOLATE_CAST] = { state = "fresh" } } },
+  },
+
+  {
+    name = "alert/the-same-frame-refresh-tie-with-applied-FIRST",
+    status = "green",
+    spec = 3,
+    pins = "The half that only ORDERING can express: the removal arrives second, at the "
+        .. "same instant, and must NOT clobber the re-application.  Note the absence of an "
+        .. "`advance` between the two steps IS the assertion.",
+    ref = "cooldown-manager.md §2.7 [client] — the captured same-frame pandemic tie",
+    rows = { { cid = 164597, category = "Essential", frame = {},
+               info = { spellID = IMMOLATE_CAST, isKnown = true } } },
+    world = { combat = true },
+    script = { { alert = "OnAuraApplied", cid = 164597 },
+               { alert = "OnAuraRemoved", cid = 164597 }, { build = true } },
+    expect = { dotEdges = { [IMMOLATE_CAST] = { state = "fresh" } } },
+  },
+
+  {
+    name = "alert/a-removal-in-a-LATER-frame-still-clears-it",
+    status = "green",
+    spec = 3,
+    pins = "The fence on the fence: the tie-break is same-INSTANT only.  A removal a "
+        .. "tenth of a second later means the DoT really did fall off, and suppressing "
+        .. "that would pin the refresh line on forever.",
+    ref = "cooldown-manager.md §5.1 — the edges are transitions, ordered in real time",
+    rows = { { cid = 164597, category = "Essential", frame = {},
+               info = { spellID = IMMOLATE_CAST, isKnown = true } } },
+    world = { combat = true },
+    script = { { alert = "OnAuraApplied", cid = 164597 }, { advance = 0.1 },
+               { alert = "OnAuraRemoved", cid = 164597 }, { build = true } },
+    expect = { dotEdges = { [IMMOLATE_CAST] = { state = "absent" } } },
+  },
+
+  {
+    name = "alert/either-of-an-abilitys-two-rows-can-raise-it-newest-wins",
+    status = "green",
+    spec = 3,
+    pins = "Both of Immolate's cooldownIDs raised PandemicTime in the live capture, so a "
+        .. "base spellID's answer has to be resolved ACROSS its rows — and a stale latch "
+        .. "on one row must not beat a fresh one on the other.",
+    ref = "cooldown-manager.md §2.7 [client] — cid 133441 and 164597, same capture",
+    rows = {
+      { cid = 770, category = "TrackedBuff", frame = {},
+        info = { spellID = CONFLAGRATE, isKnown = true } },
+      { cid = 771, category = "Essential", frame = {},
+        info = { spellID = CONFLAGRATE, isKnown = true } },
+    },
+    world = { combat = true },
+    script = { { alert = "PandemicTime", cid = 770 }, { advance = 5 },
+               { alert = "OnAuraRemoved", cid = 771 }, { build = true } },
+    expect = { dotEdges = { [CONFLAGRATE] = { state = "absent" } } },
+  },
+
+  {
+    name = "alert/Immolates-two-rows-carry-DIFFERENT-bases-so-they-do-not-merge",
+    status = "green",
+    spec = 3,
+    pins = "cid 164597 is the CAST (348) and cid 133441 is the DoT AURA (157736) — two "
+        .. "different base spellIDs for one player-facing ability, which is why the fold "
+        .. "cannot assume one id and the brain resolves its DoT across a candidate list.",
+    ref = "cooldown-manager.md §2.7 — the CooldownSetSpell/CooldownSetLinkedSpell join",
+    rows = {
+      { cid = 133441, category = "TrackedBuff", frame = {},
+        info = { spellID = IMMOLATE_AURA, isKnown = true } },
+      { cid = 164597, category = "Essential", frame = {},
+        info = { spellID = IMMOLATE_CAST, isKnown = true } },
+    },
+    world = { combat = true },
+    script = { { alert = "PandemicTime", cid = 133441 }, { build = true } },
+    expect = {
+      dotEdges = { [IMMOLATE_AURA] = { state = "pandemic" }, [IMMOLATE_CAST] = ABSENT },
+    },
+  },
+
+  {
+    name = "alert/an-edge-with-no-consumer-holding-ingestion-is-dropped",
+    status = "green",
+    spec = 3,
+    pins = "The gate itself, kept under test — because without it this whole axis could "
+        .. "assert absences and pass.  Ingestion is ref-counted and hooksecurefunc can "
+        .. "never be undone, so the callback has to be gated inside rather than unhooked.",
+    ref = "cooldown-manager.md §5.1 — the hook goes on the item INSTANCE and can never be "
+       .. "removed (§8 rule 6)",
+    rows = { { cid = 164597, category = "Essential", frame = {},
+               info = { spellID = IMMOLATE_CAST, isKnown = true } } },
+    world = { combat = true },
+    script = { { release = true }, { alert = "PandemicTime", cid = 164597 },
+               { build = true } },
+    expect = { edges = { [164597] = ABSENT }, dotEdges = { [IMMOLATE_CAST] = ABSENT } },
+  },
+
+  {
+    name = "alert/an-unreadable-event-value-is-dropped-never-compared",
+    status = "green",
+    spec = 3,
+    pins = "The handler branches on the event by equality, and a Secret Value must never "
+        .. "be compared — that taints on the `==` itself, before any decision is reached.",
+    ref = "security-taint-and-restricted-data.md + cooldown-manager.md §5.1",
+    rows = { { cid = 164597, category = "Essential", frame = {},
+               info = { spellID = IMMOLATE_CAST, isKnown = true } } },
+    world = { combat = true },
+    script = { { alert = "SECRET", cid = 164597 }, { build = true } },
+    expect = { edges = { [164597] = ABSENT } },
+  },
+
+  {
+    name = "alert/an-edge-from-an-item-with-no-resolvable-cooldownID-is-dropped",
+    status = "green",
+    spec = 3,
+    pins = "The latch is keyed by cooldownID, and keying a table on an unreadable value "
+        .. "errors.  With neither the field nor the method resolvable the edge is dropped "
+        .. "— an observation we cannot file is not an observation.",
+    ref = "cooldown-manager.md §7 Tier 2 — item.cooldownID can read secret in restricted "
+       .. "combat",
+    rows = { { cid = 164597, category = "Essential", frame = {},
+               info = { spellID = IMMOLATE_CAST, isKnown = true } } },
+    world = { combat = true },
+    script = { { alert = "PandemicTime", cid = false }, { build = true } },
+    expect = { edges = { [164597] = ABSENT }, dotEdges = { [IMMOLATE_CAST] = ABSENT } },
+  },
+}
+
+--------------------------------------------------------------------------------
+-- F · STRUCT FLAGS — hasAura · selfAura · charges · isKnown
+--------------------------------------------------------------------------------
+-- ⚠ §8 rule 8 is the frame for this whole axis: `hasAura` / `selfAura` / `charges` have
+-- ZERO consumers in Blizzard's own Lua — a grep across all of Interface/ finds them only
+-- in the generated documentation table.  They are DB2 hints the C side reads.  So every
+-- case here pins OUR behaviour, and the direction of travel is to depend on them less.
+--------------------------------------------------------------------------------
+local F = {
+  {
+    name = "flags/charges-true-with-no-live-read-reports-unreadable",
+    status = "green",
+    spec = 3,
+    pins = "The flag says there is a pool, the client did not answer, and we have no "
+        .. "estimate — so the honest shape is `readable = false` with no count, not a "
+        .. "fabricated zero.",
+    ref = "cooldown-manager.md §7 Tier 1 (charges is a DB2 hint) + §8 rule 8",
+    rows = { { cid = 903, category = "Essential", frame = {},
+               info = { spellID = CONFLAGRATE, isKnown = true, charges = true } } },
+    expect = { raw = { [903] = { charge = { readable = false, cur = ABSENT,
+                                            max = ABSENT, charged = ABSENT } } } },
+  },
+
+  {
+    name = "flags/charges-false-does-NOT-gate-the-read",
+    status = "green",
+    spec = 3,
+    pins = "Gating the read on the flag made the whole charge napkin depend on one DB2 "
+        .. "hint being right — a single point of silent failure with no symptom, since a "
+        .. "never-seeded napkin looks exactly like an ability with no charges.  `charged` "
+        .. "is the MEASURED answer (a live max > 1) and it is what the brain keys on.",
+    ref = "cooldown-manager.md §8 rule 8 — nothing in Blizzard's Lua reads these flags",
+    rows = { { cid = 903, category = "Essential", frame = {},
+               info = { spellID = CONFLAGRATE, isKnown = true, charges = false } } },
+    world = { charges = { [CONFLAGRATE] = { currentCharges = 1, maxCharges = 2 } } },
+    expect = { raw = { [903] = { charge = { readable = true, cur = 1, max = 2,
+                                            source = "live", charged = true } } } },
+  },
+
+  {
+    name = "flags/a-max-of-1-is-not-a-charge-pool",
+    status = "green",
+    spec = 3,
+    pins = "When maxCharges <= 1 the number Blizzard renders is not charges at all — it "
+        .. "falls back to GetSpellCastCount (\"cast count\", also called \"use count\").  "
+        .. "So a max of 1 must not arm the charge machinery.",
+    ref = "cooldown-manager.md §3.3 — CooldownViewer.lua:997-1013",
+    rows = { { cid = 903, category = "Essential", frame = {},
+               info = { spellID = CONFLAGRATE, isKnown = true, charges = true } } },
+    world = { charges = { [CONFLAGRATE] = { currentCharges = 1, maxCharges = 1 } } },
+    expect = { raw = { [903] = { charge = { readable = true, max = 0, cur = ABSENT,
+                                            charged = ABSENT } } } },
+  },
+
+  {
+    name = "flags/hasAura-alone-arms-the-aura-read",
+    status = "green",
+    spec = 3,
+    pins = "`hasAura` is \"a cast that also applies an aura\" (Healthstone, pet buffs) — "
+        .. "one of the two roles the CDM marks apart, and enough on its own.",
+    ref = "cooldown-manager.md §7 Tier 1 — the struct's hasAura/selfAura pair + §8 rule 8",
+    rows = { { cid = 903, category = "Essential", frame = {},
+               info = { spellID = CHAOS_BOLT, isKnown = true,
+                        hasAura = true, selfAura = false } } },
+    world = { auraByID = { [CHAOS_BOLT] = { spellId = CHAOS_BOLT } } },
+    expect = {
+      raw   = { [903] = { aura = { readable = true, active = true } } },
+      asked = { auraByID = { [CHAOS_BOLT] = true } },
+    },
+  },
+
+  {
+    name = "flags/with-neither-flag-the-row-reads-inactive-while-the-flat-scan-does-not",
+    status = "green",
+    spec = 3,
+    pins = "characterisation, and a divergence worth seeing: with both flags clear the "
+        .. "row's own `aura.active` is FALSE even though the aura is genuinely up, while "
+        .. "the spec-agnostic full-buff scan reports it in `buffs` regardless.  Two "
+        .. "answers to one question, and only the scan asked the client.  §8 rule 8 says "
+        .. "the flag gate is our invention, so this is the cost of it, stated.",
+    ref = "cooldown-manager.md §8 rule 8 + §2.6 (the aura scan, first hit wins)",
+    rows = { { cid = 903, category = "Essential", frame = {},
+               info = { spellID = CHAOS_BOLT, isKnown = true,
+                        hasAura = false, selfAura = false } } },
+    world = { auras = { { spellId = CHAOS_BOLT, name = "Chaos Bolt" } } },
+    expect = {
+      raw   = { [903] = { aura = { readable = true, active = false } } },
+      buffs = { [CHAOS_BOLT] = true },
+    },
+  },
+
+  {
+    name = "flags/a-SECRET-hasAura-is-truthy-and-arms-the-read",
+    status = "green",
+    spec = 3,
+    pins = "characterisation: the SAME and/or trap as isKnown — a secret value is truthy, "
+        .. "so a refused flag reads as set.  Recorded green because the direction is "
+        .. "benign HERE (arming a guarded read costs a pcall and cannot fabricate a "
+        .. "value); it is the identical mechanism that makes the isKnown case a defect, "
+        .. "and it is what §3.1's family gate would make moot.",
+    ref = "cooldown-manager.md §7 Tier 1 + §8 rule 8; security-taint-and-restricted-data.md",
+    rows = { { cid = 903, category = "Essential", frame = {},
+               info = { spellID = CHAOS_BOLT, isKnown = true, hasAura = SECRET } } },
+    world = { auraByID = { [CHAOS_BOLT] = { spellId = CHAOS_BOLT } } },
+    expect = {
+      raw   = { [903] = { hasAura = true, aura = { readable = true, active = true } } },
+      asked = { auraByID = { [CHAOS_BOLT] = true } },
+    },
+  },
+
+  {
+    name = "flags/a-secret-charges-flag-does-not-invent-a-pool",
+    status = "green",
+    spec = 3,
+    pins = "The same truthiness, and here it only arms a read that then refuses — so the "
+        .. "row reports `readable = false` rather than a count it never measured.",
+    ref = "cooldown-manager.md §7 Tier 3 (GetSpellCharges secret in combat) + §8 rule 8",
+    rows = { { cid = 903, category = "Essential", frame = {},
+               info = { spellID = CONFLAGRATE, isKnown = true, charges = SECRET } } },
+    world = { combat = true },
+    expect = { raw = { [903] = { charges = true,
+                                 charge = { readable = false, charged = ABSENT } } } },
+  },
+
+  {
+    name = "flags/the-charge-napkin-binds-off-the-MEASURED-pool-not-the-flag",
+    status = "green",
+    spec = 3,
+    pins = "The seed, the bind and the debit are one loop: an exact OOC read seeds the "
+        .. "estimate AND binds base spellID -> cooldownID (the alert arrives keyed by cid, "
+        .. "a cast arrives keyed by spellID), and a landed cast then debits it.  The bind "
+        .. "is off the measured `charged`, so a wrong struct flag cannot silently disable "
+        .. "the whole napkin.",
+    ref = "cooldown-manager.md §3.3 + §8 rule 8; api-events-and-discovery.md §2.8",
+    rows = { { cid = 903, category = "Essential", frame = {},
+               info = { spellID = CONFLAGRATE, isKnown = true, charges = false } } },
+    world = { charges = { [CONFLAGRATE] = { currentCharges = 2, maxCharges = 2 } } },
+    script = { { build = true }, { cast = CONFLAGRATE, phase = "succeeded" },
+               { combat = true }, { build = true } },
+    expect = {
+      abilities = { [CONFLAGRATE] = { charge = { readable = false, cur = 1, max = 2,
+                                                 source = "napkin", charged = true } } },
+    },
+  },
+
+  {
+    name = "flags/charges-are-read-on-the-DISPLAY-identity",
+    status = "pinned-defect",
+    fixes = "phase2 §3.2",
+    spec = 3,
+    pins = "Blizzard reads charges off `info.overrideSpellID or info.spellID` — rungs 4 "
+        .. "and 5 ONLY — and comments why: \"To ensure that charges work correctly for "
+        .. "cooldown items that are actively cast, apply auras, and have charges only "
+        .. "check the override or base spell ids.\"  State keys the read on the DISPLAY "
+        .. "identity, which can resolve to overrideTooltipSpellID (rung 3) — the very rung "
+        .. "Blizzard excludes.  Two ladders on one row, and we are reading a different "
+        .. "spell than the client is.  (The `ident` keying for the COOLDOWN read stays: "
+        .. "that was the right fix for the foreign-override bug; charges just need the "
+        .. "narrower ladder.)",
+    ref = "cooldown-manager.md §8 rule 3 / §3.3 — ItemData.lua:282-296",
+    rows = { { cid = 66181, category = "Essential", frame = {},
+               info = { spellID = SHADOW_BOLT, isKnown = true,
+                        overrideTooltipSpellID = INCINERATE, charges = true } } },
+    expect = { asked = { charges = { [SHADOW_BOLT] = true, [INCINERATE] = false } } },
+  },
+}
+
+--------------------------------------------------------------------------------
 return {
   ABSENT = ABSENT,
   SECRET = SECRET,
@@ -1339,6 +1763,8 @@ return {
     { name = "B · identity — five rungs, one pool",           cases = B },
     { name = "C · combat + the value cascade",                cases = C },
     { name = "D · per-field readability — value/secret/absent/throws", cases = D },
+    { name = "E · the six alert edges + the same-frame tie",  cases = E },
+    { name = "F · struct flags — hasAura/selfAura/charges",   cases = F },
     { name = "G · drawability + the buff item",               cases = G },
   },
 }
