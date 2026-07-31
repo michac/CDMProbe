@@ -291,13 +291,17 @@ local VIEWS = {
   dropped   = function(p) return p.dropped end,
   buffs     = function(p) return p.buffs end,
   dotEdges  = function(p) return p.dotEdges end,
+  -- The base-keyed fold of the per-frame aura verdict (§3.10), the exact twin of dotEdges:
+  -- an ability's signal can live on a row that is not pressable, so it needs a map of its
+  -- own as well as the field on the row.
+  auraFrames = function(p) return p.auraFrames end,
   virtual   = function(p) return p.virtual end,
   edges     = function(p, St) return St.dotEdge end,   -- the RAW cid-keyed alert latch
   asked     = function() return askedView() end,
   pulse     = function(p) return p end,                -- escape hatch: combat / hero / at
 }
-local VIEW_ORDER = { "raw", "abilities", "dropped", "buffs", "dotEdges", "virtual",
-                     "edges", "asked", "pulse" }
+local VIEW_ORDER = { "raw", "abilities", "dropped", "buffs", "dotEdges", "auraFrames",
+                     "virtual", "edges", "asked", "pulse" }
 
 local function runCase(case)
   local ns, _, St, eframe = installCase(case)

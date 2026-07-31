@@ -93,6 +93,9 @@
 --   expect  a map of VIEWS off one pulse — partial and deep by default:
 --             raw       pulse.cooldowns (cid-keyed)   abilities  pulse.abilities
 --             dropped   buffs   dotEdges   virtual    pulse (escape hatch)
+--             auraFrames  pulse.auraFrames — the BASE-keyed fold of the per-frame aura
+--                       verdict (§3.10), dotEdges' twin.  The row-level copy is
+--                       `raw[cid].auraFrame`.
 --             edges     St.dotEdge — the RAW cid-keyed latch, before the fold
 --             asked     which ids the CLIENT FAKE was called with:
 --                         gcdCount / cooldownCount / chargesCount (numbers)
@@ -146,9 +149,20 @@ local IMP_LORD      = 1276452     -- Demonology; cid 182891 carries tooltip 1288
 local SINGE_MAGIC   = 132411      -- the pet dispel that takes over the Grimoire button
 local TYRANT        = 265187
 local DEMONIC_CORE  = 264173      -- cid 777: selfAura = true, hasAura = FALSE (§7)
+local BACKDRAFT     = 117828      -- cid 18797, TrackedBuff — the measured `auraDataUnit=player`
 local GCD           = 61304
 
 local READY_GCD = { duration = 0, startTime = 0 }   -- the GCD is not running
+
+-- The WRITERS of the two §3.10 widget-internal fields, named as a capability probe.
+-- `GetAuraDataUnit` (CooldownViewerItemDataMixin) reads `self.auraDataUnit`;
+-- `CheckPandemicTimeDisplay` / `ShowPandemicStateFrame` (CooldownViewerItemMixin) are what
+-- set and nil `self.PandemicIcon`.  Every item mixin descends from CooldownViewerItemMixin
+-- = CreateFromMixins(CooldownViewerItemDataMixin, …) (CooldownViewer.lua:87), so all three
+-- are on every row, tab 1 and tab 2 alike.  ⚠ They are probed with ns.HasMethod and NEVER
+-- CALLED: the point is a bind-time existence check, not a read.
+local AURA_FRAME_METHODS = { "GetAuraDataUnit", "CheckPandemicTimeDisplay",
+                             "ShowPandemicStateFrame" }
 
 --------------------------------------------------------------------------------
 -- A · FAMILY — tab 1 answers "can I press this", tab 2 answers "is this running"
@@ -691,6 +705,60 @@ local G = {
     },
     world = { combat = true },
     expect = { raw = { [903] = { charge = { readable = false } } } },
+  },
+
+  {
+    name = "draw/an-item-frame-without-the-pandemic-writers-reports-INCAPABLE",
+    status = "pinned-defect",
+    fixes = "phase2 §3.10",
+    spec = 3,
+    pins = "THE RULE-18 OBLIGATION, and the only case that can fail loudly on our behalf. "
+        .. "A widget internal carries no deprecation and no error: if Blizzard stops "
+        .. "writing `auraDataUnit`, the field reads nil forever, which is "
+        .. "INDISTINGUISHABLE from a legitimate \"no aura\" — a confident wrong answer, "
+        .. "worse than the sealed value we started with.  So the capability check is on "
+        .. "the WRITER METHODS, not on the field, and a row with none of them carries no "
+        .. "opinion at all rather than a silent negative.",
+    ref = "security-taint-and-restricted-data.md §4.11 precondition 4 + the widget-"
+       .. "internals rule (bind-time check, documented fallback); "
+       .. "CooldownViewer.lua:87 (every item mixin descends from the two that define them)",
+    rows = {
+      { cid = 164597, category = "Essential", frame = {},
+        info = { spellID = IMMOLATE_CAST, isKnown = true, hasAura = true } },
+    },
+    world = { combat = true },
+    expect = {
+      raw = { [164597] = { auraFrame = { capable = false, unit = ABSENT } } },
+      auraFrames = { [IMMOLATE_CAST] = { capable = false, unit = ABSENT } },
+    },
+  },
+
+  {
+    name = "draw/the-aura-verdict-folds-across-an-abilitys-rows-positive-wins",
+    status = "pinned-defect",
+    fixes = "phase2 §3.10",
+    spec = 3,
+    pins = "base spellID -> cooldownID is N:1, and an ability's aura signal need not live "
+        .. "on the row that is PRESSABLE — a summon is one Essential row plus one "
+        .. "TrackedBar row on the same base, and only the second is bound to the aura.  "
+        .. "So the verdict folds by base the way `dotEdges` already does, and a positive "
+        .. "reading outranks a blank one rather than losing to `pairs` order.",
+    ref = "cooldown-manager.md §1.1 (tab 2 answers \"is this running\") + §3.2; "
+       .. "security-taint-and-restricted-data.md §4.11",
+    rows = {
+      { cid = 903, category = "Essential",
+        frame = { methods = AURA_FRAME_METHODS },
+        info = { spellID = TYRANT, isKnown = true, selfAura = true } },
+      { cid = 904, category = "TrackedBar",
+        frame = { methods = AURA_FRAME_METHODS, fields = { auraDataUnit = "player" } },
+        info = { spellID = TYRANT, isKnown = true, selfAura = true } },
+    },
+    world = { combat = true },
+    expect = {
+      raw = { [903] = { auraFrame = { capable = true, unit = ABSENT } },
+              [904] = { auraFrame = { capable = true, unit = "player" } } },
+      auraFrames = { [TYRANT] = { capable = true, unit = "player" } },
+    },
   },
 }
 
@@ -1365,6 +1433,174 @@ local D = {
     rows = { { cid = 903, category = "Essential", frame = {}, infoPoison = { "hasAura" },
                info = { spellID = CHAOS_BOLT, isKnown = true, hasAura = true } } },
     expect = { raw = { [903] = { spellID = CHAOS_BOLT, hasAura = ABSENT } } },
+  },
+
+  ------------------------------------------------------------------------------
+  -- §3.10 — THE PER-FRAME AURA VERDICT (`auraDataUnit` / `PandemicIcon`)
+  ------------------------------------------------------------------------------
+  -- These are NEW INPUTS, not a re-reading of an existing one, so they are written rather
+  -- than flipped.  What they buy is the answer the DoT line structurally cannot reach
+  -- today: `PandemicTime` is a ONE-SHOT notification that never re-arms and a
+  -- re-application of a live aura raises nothing at all, so the alert latch sees an aura's
+  -- first application and first pandemic entry and then silence.  Both of these fields are
+  -- recomputed by Blizzard EVERY FRAME off secrets we cannot read (`CheckPandemicTimeDisplay`
+  -- runs from the item's OnUpdate), so both SELF-CLEAR — which is precisely what an edge
+  -- cannot do.
+  --
+  -- ⚠ AND BOTH ARE WIDGET INTERNALS, so the capability check must be METHOD-based, never
+  -- field-based: an absent field and a legitimately-nil field are indistinguishable in Lua,
+  -- so `PandemicIcon == nil` cannot tell "no pandemic window" from "Blizzard removed the
+  -- field".  A silently-absent field must never read as "no DoT" — that is the one failure
+  -- direction that turns a sealed value into a confident wrong answer.
+  {
+    name = "read/auraDataUnit-target-is-a-LIVE-dot-and-says-which-side-it-is-on",
+    status = "pinned-defect",
+    fixes = "phase2 §3.10",
+    spec = 3,
+    pins = "`auraDataUnit` is a plain \"player\"/\"target\" string naming the side a bound "
+        .. "aura is on, written by Blizzard's own untainted code while the whole AuraData "
+        .. "record is sealed.  A non-nil unit on a capable row IS the aura being up — the "
+        .. "one presence channel that survives restricted combat AND clears itself.",
+    ref = "security-taint-and-restricted-data.md §4.11 (the display channel + its four "
+       .. "preconditions); CooldownViewerItemData.lua:401-416 (the per-refresh write and "
+       .. "GetAuraDataUnit); cooldown-manager.md §7 Tier 2",
+    rows = {
+      { cid = 164597, category = "Essential",
+        frame = { methods = AURA_FRAME_METHODS, fields = { auraDataUnit = "target" } },
+        info = { spellID = IMMOLATE_CAST, isKnown = true, hasAura = true } },
+    },
+    world = { combat = true },
+    expect = {
+      raw = { [164597] = { auraFrame = { capable = true, unit = "target",
+                                         unitReadable = true, pandemic = false } } },
+      -- ...and the base-keyed fold, so a consumer that decides in base spellIDs never has
+      -- to know which cooldownID carried the signal.
+      auraFrames = { [IMMOLATE_CAST] = { capable = true, unit = "target" } },
+    },
+  },
+
+  {
+    name = "read/a-PandemicIcon-is-the-refresh-window-a-secret-predicate-cannot-answer",
+    status = "pinned-defect",
+    fixes = "phase2 §3.10",
+    spec = 3,
+    pins = "`IsInPandemicTime` compares two SECRET numbers, so calling it throws — but "
+        .. "Blizzard evaluates it every frame anyway and writes the verdict into ordinary "
+        .. "widget state: `ShowPandemicStateFrame` sets `self.PandemicIcon`, "
+        .. "`HidePandemicStateFrame` nils it.  Presence of that frame is a live mirror of "
+        .. "a predicate we are not allowed to evaluate, and unlike the alert it RE-ARMS.",
+    ref = "security-taint-and-restricted-data.md §4.11 (the worked example); "
+       .. "CooldownViewer.lua:562-585 + :98 (CheckPandemicTimeDisplay from OnUpdate)",
+    rows = {
+      { cid = 164597, category = "Essential",
+        frame = { methods = AURA_FRAME_METHODS,
+                  fields = { auraDataUnit = "target", PandemicIcon = {} } },
+        info = { spellID = IMMOLATE_CAST, isKnown = true, hasAura = true } },
+    },
+    world = { combat = true },
+    expect = {
+      raw = { [164597] = { auraFrame = { capable = true, unit = "target",
+                                         unitReadable = true, pandemic = true } } },
+      auraFrames = { [IMMOLATE_CAST] = { pandemic = true } },
+    },
+  },
+
+  {
+    name = "read/an-absent-auraDataUnit-on-a-CAPABLE-row-is-a-MISSING-dot",
+    status = "pinned-defect",
+    fixes = "phase2 §3.10",
+    spec = 3,
+    pins = "THE ANSWER THAT IS STRUCTURALLY UNREACHABLE TODAY.  `auraDataUnit` is nil "
+        .. "until an aura binds to the frame and nil again the moment it falls off, so on "
+        .. "a row whose writer methods are present a nil unit is positive evidence the "
+        .. "aura is DOWN — the \"apply it\" answer, as opposed to \"refresh it\".  Every "
+        .. "DoT cue in a whole measured pull said pandemic_refresh and none said not_up.",
+    ref = "security-taint-and-restricted-data.md §4.11 precondition 3 (it must "
+       .. "DISCRIMINATE — captured in both states); CooldownViewerItemData.lua:401-406",
+    rows = {
+      { cid = 164597, category = "Essential",
+        frame = { methods = AURA_FRAME_METHODS },
+        info = { spellID = IMMOLATE_CAST, isKnown = true, hasAura = true } },
+    },
+    world = { combat = true },
+    expect = {
+      raw = { [164597] = { auraFrame = { capable = true, unit = ABSENT,
+                                         unitReadable = true, pandemic = false } } },
+      auraFrames = { [IMMOLATE_CAST] = { capable = true, unit = ABSENT, unitReadable = true } },
+    },
+  },
+
+  {
+    name = "read/auraDataUnit-player-names-the-SELF-side",
+    status = "pinned-defect",
+    fixes = "phase2 §3.10",
+    spec = 3,
+    pins = "The same field answers for a SELF-buff, which is the whole of Demonology's "
+        .. "roster: measured `auraDataUnit = \"player\"` on Backdraft's tab-2 row in "
+        .. "combat.  Which side it is on is carried rather than collapsed, because "
+        .. "Blizzard only ever arms the pandemic window for a TARGET aura — so a consumer "
+        .. "has to be able to tell the two apart before it reasons about refreshing.",
+    ref = "CooldownViewer.lua:515 (`GetAuraDataUnit() == \"target\"` gates the pandemic "
+       .. "alert); security-taint-and-restricted-data.md §4.11; `[client]` 2026-07-31",
+    rows = {
+      { cid = 18797, category = "TrackedBuff",
+        frame = { methods = AURA_FRAME_METHODS, fields = { auraDataUnit = "player" } },
+        info = { spellID = BACKDRAFT, isKnown = true, selfAura = true } },
+    },
+    world = { combat = true },
+    expect = {
+      raw = { [18797] = { auraFrame = { capable = true, unit = "player",
+                                        unitReadable = true, pandemic = false } } },
+      auraFrames = { [BACKDRAFT] = { unit = "player" } },
+    },
+  },
+
+  {
+    name = "read/a-SECRET-auraDataUnit-is-NO-OPINION-never-a-missing-dot",
+    status = "pinned-defect",
+    fixes = "phase2 §3.10",
+    spec = 3,
+    pins = "The failure direction is the whole point.  A refused read of the presence "
+        .. "channel must degrade to \"we did not learn whether the aura is up\", never to "
+        .. "the positive claim that it is DOWN — which would spam the apply press every "
+        .. "GCD on a spec whose DoT is its spine.  `unitReadable = false` with no `unit` "
+        .. "at all, exactly as every other guarded read in this file behaves.",
+    ref = "security-taint-and-restricted-data.md §4.11 precondition 4 + rule 13 "
+       .. "(never `type(v) == \"string\"` as the guard); cooldown-manager.md §7 Tier 2",
+    rows = {
+      { cid = 164597, category = "Essential",
+        frame = { methods = AURA_FRAME_METHODS, fields = { auraDataUnit = SECRET } },
+        info = { spellID = IMMOLATE_CAST, isKnown = true, hasAura = true } },
+    },
+    world = { combat = true },
+    expect = {
+      raw = { [164597] = { auraFrame = { capable = true, unit = ABSENT,
+                                         unitReadable = false } } },
+    },
+  },
+
+  {
+    name = "read/a-throwing-auraDataUnit-index-is-NO-OPINION-too",
+    status = "pinned-defect",
+    fixes = "phase2 §3.10",
+    spec = 3,
+    pins = "The second refusal shape at the same field: a frame that indexes fine for "
+        .. "every other key can still raise on this one under the 12.0 restrictions, and "
+        .. "it must be absorbed the way the `hideWhenInactive` index already is — same "
+        .. "verdict as a secret, and never a fabricated \"the DoT is gone\".",
+    ref = "security-taint-and-restricted-data.md §4.11 + rule 14 (no indexing on a value "
+       .. "not proved non-secret); cooldown-manager.md §7 Tier 2",
+    rows = {
+      { cid = 164597, category = "Essential",
+        frame = { methods = AURA_FRAME_METHODS, fields = { auraDataUnit = "target" },
+                  raises = { "auraDataUnit" } },
+        info = { spellID = IMMOLATE_CAST, isKnown = true, hasAura = true } },
+    },
+    world = { combat = true },
+    expect = {
+      raw = { [164597] = { auraFrame = { capable = true, unit = ABSENT,
+                                         unitReadable = false } } },
+    },
   },
 }
 
