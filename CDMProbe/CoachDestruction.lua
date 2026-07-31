@@ -300,13 +300,17 @@ function spec:Context(state, env)
   -- Which ABILITY frame carries an armed Art, and which Art it is.  `artFrame`/`ibFrame`
   -- are BASE spellIDs (the domain-view identity), never cooldownIDs.  The shell relaxed
   -- Classify's `transformed` to the generic live ~= base, so the Demonic-Art filter
-  -- (`spends == "art"`) is re-applied here, and the two Arts are told apart by `abbr`
+  -- (`spends == "art"`) is re-applied here, and the two Arts are told apart by **`art`**
   -- rather than by a fabricated shard yield (SpecDestruction explains why).
+  -- ⚠ This read `abbr` until 2026-07-30.  That pinned every alias ID of one Art to a single
+  -- log code, so the decision log could not say WHICH numeric override surfaced — the exact
+  -- question it was recording for.  `art` is the semantic field; `abbr` is now per-ID and is
+  -- for display only.  Never branch rotation logic on `abbr` again.
   for base, rec in pairs(factsByBase) do
     if rec.transformed and rec.info and rec.info.spends == "art" then
-      if rec.info.abbr == "IB" then
+      if rec.info.art == "infernal" then
         ctx.ibFrame = base           -- Infernal Bolt rides the Incinerate frame
-      elseif rec.info.abbr == "RU" then
+      elseif rec.info.art == "ruination" then
         ctx.ruinationFrame = base    -- Ruination rides the Chaos Bolt frame
       end
     end

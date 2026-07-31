@@ -154,7 +154,12 @@ spec.log = {
   -- render.  Order is burst -> the timed talents -> the charged instants -> the utilities
   -- of the rotation.
   cdOrder   = { "SI", "Mal", "SF", "Cat", "Conf", "SB", "CDF", "Hav" },
-  procOrder = { "art", "BD", "CI", "FC", "IB", "RU" },
+  -- ⚠ A code absent from this list is SILENTLY DROPPED from `PR:`, so every per-id transform
+  -- abbr has to appear here or the split above buys nothing.  The suffixed codes are the
+  -- alias IDs (IB2 = 434506, RU2 = 434635, RU3 = 434636); a bare IB/RU is the
+  -- cooldown-set-residue id (433891 / 433885).  Which one the client actually surfaces is
+  -- the open question this ordering exists to answer — see the transform block below.
+  procOrder = { "art", "BD", "CI", "FC", "IB", "IB2", "RU", "RU2", "RU3" },
   procBuffs = {
     [428514]  = "art",   -- Diabolic Ritual — the Demonic Art container
     [117828]  = "BD",    -- Backdraft (presence only; the stack count is secret)
@@ -285,21 +290,29 @@ spec.Spec = {
   -- OVERRIDES, never separately tracked: Ruination replaces Chaos Bolt, Infernal Bolt
   -- replaces Incinerate.  `expect = false` so an expected-vs-bound diff never reports them
   -- as a missing ability (unbound is their normal state).  `spends = "art"` is what the
-  -- brain's Context filters on to recognise an armed Art, and `abbr` is what tells the two
-  -- apart — deliberately NOT a `generates` number, because Destruction's Infernal Bolt
+  -- brain's Context filters on to recognise an armed Art, and **`art`** is what tells the
+  -- two apart — deliberately NOT a `generates` number, because Destruction's Infernal Bolt
   -- refills in FRAGMENTS and the KB has no clean whole-shard figure for it
   -- (@verify-ingame).  Demonology could key on `generates == 3`; we key on identity.
   -- Both id pairs mapped — see the ID-split note in SpecIDs.
-  [433885] = { kind = "button", spends = "art", cadence = "reactive", expect = false,
-               abbr = "RU", label = "Ruination" },
-  [434635] = { kind = "button", spends = "art", cadence = "reactive", expect = false,
-               abbr = "RU", label = "Ruination (Demo-confirmed ID, alias)" },
-  [434636] = { kind = "button", spends = "art", cadence = "reactive", expect = false,
-               abbr = "RU", label = "Ruination (alt ID, unconfirmed)" },
-  [433891] = { kind = "button", spends = "art", cadence = "reactive", expect = false,
-               abbr = "IB", label = "Infernal Bolt" },
-  [434506] = { kind = "button", spends = "art", cadence = "reactive", expect = false,
-               abbr = "IB", label = "Infernal Bolt (Demo-confirmed ID, alias)" },
+  --
+  -- ⚠ `art` EXISTS SO `abbr` CAN BE PER-ID.  These two fields were one until 2026-07-30:
+  -- the brain branched on `abbr == "IB"`, which forced every Infernal Bolt id to share one
+  -- code — and that made the log unable to answer the open question it was recording for.
+  -- The 2026-07-30 capture shows `IB` on 9 lines and CANNOT say whether 433891 or 434506
+  -- surfaced, which is exactly the unknown (*status.md* Destruction item 4) the pass was
+  -- meant to close.  So semantics moved to `art` (what the brain reads) and `abbr` became
+  -- the per-id DISPLAY code (what the log prints).  Do not re-merge them.
+  [433885] = { kind = "button", spends = "art", art = "ruination", cadence = "reactive",
+               expect = false, abbr = "RU",  label = "Ruination" },
+  [434635] = { kind = "button", spends = "art", art = "ruination", cadence = "reactive",
+               expect = false, abbr = "RU2", label = "Ruination (Demo-confirmed ID, alias)" },
+  [434636] = { kind = "button", spends = "art", art = "ruination", cadence = "reactive",
+               expect = false, abbr = "RU3", label = "Ruination (alt ID, unconfirmed)" },
+  [433891] = { kind = "button", spends = "art", art = "infernal",  cadence = "reactive",
+               expect = false, abbr = "IB",  label = "Infernal Bolt" },
+  [434506] = { kind = "button", spends = "art", art = "infernal",  cadence = "reactive",
+               expect = false, abbr = "IB2", label = "Infernal Bolt (Demo-confirmed ID, alias)" },
 
   -- ── Utility: defensives / CC / mobility ───────────────────────────────────
   -- Class-shared with Demonology, so the same shape.  Utilities are never scored, never

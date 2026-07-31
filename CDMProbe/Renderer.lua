@@ -76,12 +76,22 @@ end
 --   * `color` overrides the colour key for BOTH the circle and the ring (fallback ->
 --     ROTATION green).
 --   * no entry (IDLE / unknown) ⇒ no circle, no ring (keybind-only if it carries one).
+--   * `ringScale` / `spinSecs` => per-emphasis ring SIZE and rotation period (both default
+--     to GLOW_SCALE / SPIN_SECS).  These express DEGREE without spending a hue.
 local GLOW_SPEC = {
   ROTATION          = { spin = true,  pulse = true },
-  LATE              = { spin = true,  pulse = true },
+  -- LATE is not a different KIND of press -- it is the SAME press, overdue.  So it is the
+  -- rotation cue ESCALATED (a bigger ring spinning ~2.5x faster), not a second colour.
+  -- WARNING: this deliberately reverses part of the 2026-07-26 dial-in, which pulled LATE
+  -- onto hot amber because green SHADES were indistinguishable.  That finding stands -- this
+  -- is not a second shade of green, it is the SAME green moving differently.  In play the
+  -- amber read as a distinct INSTRUCTION rather than an urgent one, and it collided with
+  -- SOON's yellow.  Do not "restore" the amber without re-testing the motion channel first.
+  LATE              = { spin = true,  pulse = true, color = "ROTATION",
+                        ringScale = 5.0, spinSecs = 1.6 },
   SOON              = { spin = true,  pulse = true },
-  -- No `color` override: the runner-up now resolves its OWN theme entry (indigo) instead
-  -- of borrowing ROTATION's green.  Still static — motion remains the primary tell.
+  -- No `color` override: the runner-up now resolves its OWN theme entry (violet) instead
+  -- of borrowing ROTATION's green.  Still static -- motion remains the primary tell.
   ROTATION_FALLBACK = { spin = false, pulse = false },
 }
 
@@ -110,11 +120,6 @@ local STATE_TINT = {
 }
 
 local WHITE8 = "Interface\\Buttons\\WHITE8X8"
-
--- The cue dot's disc.  Blizzard's raid-blip circle — a white filled circle authored to be
--- tinted per-unit (UnitPositionFrameTemplates.lua:17, :111-112), which is exactly our use:
--- one small solid disc, recoloured per emphasis token.  Round by asset, so no mask.
-local DOT_ATLAS = "WhiteCircle-RaidBlips"
 
 --------------------------------------------------------------------------------
 -- Factory
@@ -229,22 +234,34 @@ function R:drawCues(cues)
         local dot = self.cueFrames[key]
         if not dot then
           dot = holder:CreateTexture(nil, "OVERLAY")
-          -- A REAL round asset, not a masked square.  The previous cut drew WHITE8X8 and
-          -- clipped it with SetMask(TempPortraitAlphaMask), citing RingedFrameTemplate as
-          -- the "solid-fill->circle idiom" — but that template masks textures set with
-          -- SetAtlas, via a MaskTexture object, and NO file in the 12.0.7 client combines
-          -- SetColorTexture with a mask on one texture.  The idiom was never Blizzard's,
-          -- and in play the dot read square next to its own round glow.
-          -- DOT_ATLAS is Blizzard's raid-blip disc: a white circle built to be TINTED
-          -- (UnitPositionFrameTemplates.lua:17,111 draws it in class colour), so it needs
-          -- no mask and no alpha channel of ours.
-          dot:SetAtlas(DOT_ATLAS)
+          -- A CLEAN disc: a solid fill clipped by a real MaskTexture OBJECT.
+          --
+          -- Two cuts got here.  (1) WHITE8X8 + `SetMask(path)` drew a SQUARE — so that
+          -- combination demonstrably does not clip, which settles the interaction
+          -- addon-dev/frames-textures-animation.md §5.7 flags as uncited: `SetMask(path)`
+          -- does NOT survive/apply alongside `SetColorTexture`.  (2) The raid-blip atlas
+          -- WhiteCircle-RaidBlips is genuinely round, but ships a baked dark outline (blips
+          -- need to read against a map), and that border cannot be tinted away —
+          -- SetVertexColor MULTIPLIES, so black stays black — leaving a hard edge against
+          -- the glow instead of blending into it.
+          --
+          -- This is the idiom RingedFrameTemplate actually uses (:103-117): a MaskTexture
+          -- created on the parent and attached with AddMaskTexture, not the SetMask
+          -- shortcut.  Borderless by construction, since the shape comes from the mask's
+          -- alpha and the colour from our own fill.
+          local mask = holder:CreateMaskTexture()
+          mask:SetTexture("Interface\\CharacterFrame\\TempPortraitAlphaMask",
+                          "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+          dot:AddMaskTexture(mask)
+          dot.mask = mask
           self.cueFrames[key] = dot
         end
-        -- Tint, not fill: with an atlas the colour rides SetVertexColor.  (SetColorTexture
-        -- would REPLACE the atlas with a solid square and put the bug straight back.)
-        dot:SetVertexColor(col[1], col[2], col[3], col[4] or 1)
+        dot:SetColorTexture(col[1], col[2], col[3], col[4] or 1)
         dot:SetSize(sz, sz)
+        -- The mask must track the fill's rect or it clips the wrong region.
+        dot.mask:ClearAllPoints()
+        dot.mask:SetSize(sz, sz)
+        dot.mask:SetPoint("CENTER", dot, "CENTER", 0, 0)
         dot:ClearAllPoints()
         dot:SetPoint(c.point or "CENTER", anchor,
                      c.relPoint or c.point or "CENTER", c.dx or 0, c.dy or 0)
@@ -253,7 +270,8 @@ function R:drawCues(cues)
         dot:SetAlpha(1)
         dot:Show()
         self:setDotGlow(key, holder, dot, gs and col or nil, sz,
-                        gs and gs.spin, gs and gs.pulse)
+                        gs and gs.spin, gs and gs.pulse,
+                        gs and gs.ringScale, gs and gs.spinSecs)
       else
         -- EMPTY CUE (keybind-only): no emphasis the theme knows -> no dot, no glow.
         -- Hide any dot/glow this handle had, but keep the handle ACTIVE so its keybind
@@ -326,7 +344,7 @@ local GLOW_ATLAS = "services-ring-large-glowspin"   -- round ring glow, built to
 local GLOW_SCALE = 3.6    -- relative to the DOT (the solid box it's centred on)
 local SPIN_SECS  = 4.0    -- one full rotation
 
-function R:setDotGlow(key, holder, dot, col, size, spin, pulse)
+function R:setDotGlow(key, holder, dot, col, size, spin, pulse, ringScale, spinSecs)
   local g = self.cueGlows[key]
   if not col then                              -- no glow this frame: hide + park
     if g then
@@ -348,6 +366,7 @@ function R:setDotGlow(key, holder, dot, col, size, spin, pulse)
     rot:SetDuration(SPIN_SECS)
     rot:SetOrigin("CENTER", 0, 0)
     rot:SetOrder(1)
+    g.rot = rot                                 -- kept so the PERIOD can change per emphasis
     spinGroup:SetLooping("REPEAT")
     local pulseGroup = g:CreateAnimationGroup() -- breathe (BOUNCE) — own group
     local a = pulseGroup:CreateAnimation("Alpha")
@@ -363,7 +382,15 @@ function R:setDotGlow(key, holder, dot, col, size, spin, pulse)
   g:ClearAllPoints()
   g:SetPoint("CENTER", dot, "CENTER", 0, 0)
   local d = size or 12
-  g:SetSize(d * GLOW_SCALE, d * GLOW_SCALE)
+  local scale = ringScale or GLOW_SCALE
+  g:SetSize(d * scale, d * scale)
+  -- Re-time the rotation only when it CHANGES: SetDuration on a playing group restarts it,
+  -- which would stutter the ring on every redraw at 10 Hz.
+  local secs = spinSecs or SPIN_SECS
+  if g._spinSecs ~= secs then
+    g._spinSecs = secs
+    g.rot:SetDuration(secs)
+  end
   g:Show()
   -- Drive each group to match its flag, tracked per-glow so a steady redraw doesn't
   -- restart it.  Static FALLBACK (both false) ⇒ the ring is shown but never animates.

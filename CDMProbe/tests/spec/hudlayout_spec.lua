@@ -101,7 +101,7 @@ describe("HudLayout.Scan — the live icon-viewer walk (stubbed accessors)", fun
     ns.GetViewer      = function(name) return viewers[name] and { name = name } or nil end
     ns.GetItemFrames  = function(v) return viewers[v.name] or {} end
     ns.ItemCooldownID = function(it) return it.cd end
-    ns.ItemBaseSpellID = function(it) return it.base end
+    ns.ItemDisplaySpellID = function(it) return it.base end
 
     local layout, registry = L.Scan()
 
@@ -117,7 +117,7 @@ describe("HudLayout.Scan — the live icon-viewer walk (stubbed accessors)", fun
     ns.GetViewer      = function(name) return name == "EssentialCooldownViewer" and {} or nil end
     ns.GetItemFrames  = function() return { { }, { good = true } } end
     ns.ItemCooldownID = function(it) return it.good and 55 or nil end
-    ns.ItemBaseSpellID = function() return 999 end
+    ns.ItemDisplaySpellID = function() return 999 end
 
     local layout = L.Scan()
     assert.is_not_nil(layout[55])

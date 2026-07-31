@@ -110,4 +110,26 @@ describe("Coach.Classify", function()
     assert.is_true(fresh.probablyUp)
     assert.is_false(fresh.overdue)
   end)
+
+  it("keys the record on `identity` when the row DISPLAYS a different spell", function()
+    -- The Diabolist hole.  State stamps `identity` (ns.DisplayIdentity) with the spell the
+    -- row actually shows; the record must key on THAT, because the brain looks its lines up
+    -- as `facts[<ability>]`.  Keying on the raw `spellID` is what made Incinerate
+    -- unreachable on Diabolist -- 0 wins across 225 live decisions (2026-07-30).
+    local SHADOW_BOLT, DEMONBOLT = 686, 264178
+    -- The real shape: the row's own id is 686, but it LIVES and DISPLAYS as the other
+    -- spell while no transform is armed.
+    local row = cd(SHADOW_BOLT, { live = DEMONBOLT })
+    row.identity = DEMONBOLT
+    local rec = classify(row)
+    assert.equals(DEMONBOLT, rec.base)
+    -- ...and `transformed` is judged against that same identity, so a row is no longer
+    -- reported as permanently transformed just for displaying another spell.
+    assert.is_false(rec.transformed)
+  end)
+
+  it("falls back to spellID when no identity is stamped (virtual rows, old fixtures)", function()
+    local rec = classify(cd(104316))
+    assert.equals(104316, rec.base)
+  end)
 end)

@@ -86,7 +86,10 @@ function L.Scan()
         -- genuine bug and must throw rather than quietly empty the Layout.
         entries[#entries + 1] = {
           cooldownID = ns.ItemCooldownID(item),
-          spellID    = ns.ItemBaseSpellID(item),
+          -- DISPLAY identity, not the raw base: the Binder joins cues by this id AND looks
+          -- the keybind up by it, so it must be the spell the icon shows.  See
+          -- ns.DisplayIdentity — a transform still never moves it (static overrides only).
+          spellID    = ns.ItemDisplaySpellID(item),
           frame      = item,
         }
       end

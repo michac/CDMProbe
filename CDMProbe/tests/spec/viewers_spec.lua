@@ -95,6 +95,51 @@ describe("Viewers — item identity resolvers", function()
     end)
   end)
 
+  describe("ns.ItemDisplaySpellID (the display-identity resolver)", function()
+    -- Loaded from the REAL Viewers.lua.  hudlayout_spec STUBS this function, so without a
+    -- test here nothing would prove it ships -- the exact shape of the v0.32.25 outage,
+    -- where a stubbed `ns.ItemCooldownID` kept busted green against a function the addon
+    -- no longer had.  A stub proves the caller works GIVEN the collaborator, never that the
+    -- collaborator EXISTS.
+    local INCINERATE, SHADOW_BOLT = 29722, 686
+
+    -- Incinerate is a DESTRUCTION ability, and the rule only adopts an override the ACTIVE
+    -- spec declares -- so this must run with 267 active, not the harness's default 266.
+    -- (That is itself the guarantee under test: on Demonology the same row keeps its base.)
+    before_each(function()
+      H.setSpecIndex(3)
+      ns.ResolveActiveSpec()
+    end)
+
+    local function withInfo(info)
+      _G.C_CooldownViewer = { GetCooldownViewerCooldownInfo = function(cid)
+        if cid == 66181 then return info end
+      end }
+    end
+
+    after_each(function() _G.C_CooldownViewer = nil end)
+
+    it("adopts a STATIC display override (the Diabolist Incinerate row)", function()
+      withInfo({ spellID = SHADOW_BOLT, overrideSpellID = INCINERATE,
+                 overrideTooltipSpellID = INCINERATE })
+      assert.equals(INCINERATE, ns.ItemDisplaySpellID({ cooldownID = 66181 }))
+    end)
+
+    it("keeps the base when there is no override", function()
+      withInfo({ spellID = SHADOW_BOLT })
+      assert.equals(SHADOW_BOLT, ns.ItemDisplaySpellID({ cooldownID = 66181 }))
+    end)
+
+    it("IGNORES liveSpellID, so an armed Art never moves an icon's identity", function()
+      -- The whole reason the rule reads the STATIC fields: keying on `liveSpellID` would
+      -- re-key the icon to Infernal Bolt mid-combat and the Incinerate cue would vanish
+      -- exactly when the ability is most active.
+      withInfo({ spellID = SHADOW_BOLT, liveSpellID = 433891,
+                 overrideSpellID = INCINERATE, overrideTooltipSpellID = INCINERATE })
+      assert.equals(INCINERATE, ns.ItemDisplaySpellID({ cooldownID = 66181 }))
+    end)
+  end)
+
   ------------------------------------------------------------------------------
   -- THE OUTAGE TEST.  Real resolvers + real HudLayout; only frame DISCOVERY faked.
   ------------------------------------------------------------------------------

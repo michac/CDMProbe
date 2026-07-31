@@ -1035,6 +1035,10 @@ end
 
 local function domainView(cooldowns, fold, filterDisplayable, edges)
   local abilities, dropped, dotEdges = {}, {}, {}
+  -- Display-identity claims, resolved in a SECOND pass.  `pairs(rowsByBase)` order is
+  -- unstable, so deciding a contested identity inline would make the domain view depend on
+  -- table order — the exact class of bug the log's fixed render orders exist to prevent.
+  local claimed = {}
 
   -- Group the raw rows by base spellID (base-spellID -> cooldownID is N:1 — a summon is one
   -- Essential row plus one TrackedBar row; Immolate is one Essential CAST row plus one
@@ -1070,10 +1074,35 @@ local function domainView(cooldowns, fold, filterDisplayable, edges)
     if rep then
       rep.display = { cooldownID = rep.cooldownID, category = rep.category }
       rep.dot = dotEdges[base]        -- the row-level surface the brain reads
-      abilities[base] = rep
+      -- Key by what the row DISPLAYS, not by its own spellID — see ns.DisplayIdentity.
+      -- ⚠ Only for a row that SURVIVED the filter, which is load-bearing: on Hellcaller
+      -- cid 66181 is unlearned, and re-keying that DROP onto Incinerate would make
+      -- `virtualCandidates`' "not dropped-unlearned" fence refuse to synthesise our own
+      -- Incinerate icon — killing the one path that already works.  A drop keeps its raw
+      -- base (`dropped[base]` below is untouched); only a displayed row claims an identity.
+      local ident = ns.DisplayIdentity(base, rep.overrideSpellID, rep.overrideTooltipSpellID)
+      rep.identity = ident
+      claimed[#claimed + 1] = { ident = ident, base = base, rep = rep }
     elseif why and pressableRep(rows) then
       -- It WOULD have been a press; the filter is the only reason it is not.  Say so.
       dropped[base] = why
+    end
+  end
+
+  -- Pass 2 — assign keys.  A row keeps its own base unless it claims a DIFFERENT displayed
+  -- identity that nothing else owns.  Sorted by base so a contested identity always
+  -- resolves the same way regardless of `pairs` order.
+  local owned = {}
+  for _, c in ipairs(claimed) do owned[c.base] = true end
+  table.sort(claimed, function(a, b) return a.base < b.base end)
+  for _, c in ipairs(claimed) do
+    -- Never displace a row that legitimately owns that key as its OWN base, and never let
+    -- two rows claim one identity (first by sorted base wins, deterministically).
+    if c.ident ~= c.base and not owned[c.ident] and abilities[c.ident] == nil then
+      abilities[c.ident] = c.rep
+    else
+      c.rep.identity = c.base
+      abilities[c.base] = c.rep
     end
   end
 

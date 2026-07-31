@@ -144,7 +144,13 @@ end
 --    pressable" semantics).  Auras are inputs, never scored (return nil).
 --------------------------------------------------------------------------------
 function C.Classify(cd, state)
-  local base = num(cd.spellID)
+  -- `identity` is State's display-keyed identity (ns.DisplayIdentity) — the spell the row
+  -- actually SHOWS, which for a display-overridden row is not `spellID`.  The record must
+  -- key on it or the brain's `facts[<ability>]` lookups miss: on Diabolist the Incinerate
+  -- row's own spellID is Shadow Bolt 686, and keying there made the Incinerate line
+  -- unreachable.  Falls back to `spellID` for virtual rows and for every fixture written
+  -- before the field existed.
+  local base = num(cd.identity) or num(cd.spellID)
   local live = num(cd.liveSpellID) or base
   local info = ns.SpecInfo(live)
   if not info or info.kind == "aura" then return nil end

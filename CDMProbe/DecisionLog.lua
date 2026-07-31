@@ -310,6 +310,7 @@ end
 DL.session     = nil   -- in-memory handle; nil ⇒ first Record of this load starts a session
 DL.t0          = nil
 DL.lastContent = nil
+DL.lastConfig  = nil   -- last "<spec> tracked:<codes>" stamped into this session
 
 function DL.Record(pulse, guidance, drawList)
   if not ns.db then return end   -- pre-ADDON_LOADED; nothing to persist to
@@ -326,7 +327,7 @@ function DL.Record(pulse, guidance, drawList)
     }
     log[#log + 1] = sess
     while #log > SESSIONS do table.remove(log, 1) end
-    DL.session, DL.t0, DL.lastContent = sess, GetTime(), nil
+    DL.session, DL.t0, DL.lastContent, DL.lastConfig = sess, GetTime(), nil, nil
   end
 
   -- Change-only: skip a tick whose whole decision is byte-identical to the last logged.
@@ -335,6 +336,22 @@ function DL.Record(pulse, guidance, drawList)
   DL.lastContent = content
 
   local entries = DL.session.entries
+
+  -- CONFIG RE-STAMP.  The session header records the tracked set at the session's FIRST
+  -- record — which is the WRONG moment whenever the configuration changes later in the
+  -- load.  In the 2026-07-30 pass every run was its own login, but the respec happened
+  -- ~15 s AFTER logging in, so each session opened with the hero tree the player was
+  -- LEAVING and the header labelled the whole session with it (a Hellcaller run filed as
+  -- `tracked:Imm`).  The header was accurate for t0.0 and misleading for everything after.
+  -- So stamp the configuration whenever it CHANGES, not once per load: the ability set is
+  -- the one signal that moves on both a spec swap and a hero-tree swap.  Computed only on
+  -- the change-only path, so this costs nothing on a deduped tick.
+  local config = (ns.detectedSpecName or "?") .. " tracked:" .. trackedCodes(pulse)
+  if config ~= DL.lastConfig then
+    DL.lastConfig = config
+    entries[#entries + 1] = string.format("t%.1f # config %s", GetTime() - DL.t0, config)
+  end
+
   entries[#entries + 1] = string.format("t%.1f %s", GetTime() - DL.t0, content)
   while #entries > CAP do table.remove(entries, 1) end
 end

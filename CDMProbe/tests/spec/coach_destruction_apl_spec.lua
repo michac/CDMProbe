@@ -111,8 +111,17 @@ local function build(f)
 
   -- Costless / cooldownless buttons: gated by shards and procs, never by readiness.
   local cbExtra, incExtra = {}, {}
-  if f.art == "ruination" then cbExtra = { override = ID.RUINATION, live = ID.RUINATION, glow = true } end
-  if f.art == "infernal"  then incExtra = { override = ID.INFERNAL_BOLT, live = ID.INFERNAL_BOLT, glow = true } end
+  -- `artID` overrides WHICH numeric override id arms the Art.  SpellName carries several
+  -- ids per Art (see SpecDestruction's ID-split note) and the brain must recognise every
+  -- one of them — it keys on the spec table's `art` field, never on the display `abbr`.
+  if f.art == "ruination" then
+    local id = f.artID or ID.RUINATION
+    cbExtra = { override = id, live = id, glow = true }
+  end
+  if f.art == "infernal" then
+    local id = f.artID or ID.INFERNAL_BOLT
+    incExtra = { override = id, live = id, glow = true }
+  end
   abilities[ID.CB]  = ability(ID.CB, CID.CB, cdUnknown(), cbExtra)
   if f.virtualIncinerate then
     -- The row State SYNTHESISES when the CDM tracks Incinerate nowhere: a negative display
@@ -778,6 +787,36 @@ describe("Destruction rotation list (from specs/destruction/rotation.md)", funct
     it("infers Hellcaller from WITHER alone (no Malevolence)", function()
       assert.equals("hellcaller", contextOf({ hellcaller = true, shards = 1 }).hero)
     end)
+
+    ------------------------------------------------------------------------
+    -- EVERY alias id of an Art must arm it.  The brain used to branch on `abbr`, which
+    -- forced all the Infernal Bolt ids to share one log code and left the decision log
+    -- unable to say which numeric override the client actually surfaced.  Semantics moved
+    -- to `art` so `abbr` could go per-id; these pin that the move is real — an alias id
+    -- resolves to the same ctx frame as the primary, with a DIFFERENT abbr.
+    ------------------------------------------------------------------------
+    for _, case in ipairs({
+      { id = 433891, art = "infernal",  abbr = "IB"  },
+      { id = 434506, art = "infernal",  abbr = "IB2" },
+      { id = 433885, art = "ruination", abbr = "RU"  },
+      { id = 434635, art = "ruination", abbr = "RU2" },
+      { id = 434636, art = "ruination", abbr = "RU3" },
+    }) do
+      it(("arms the %s Art from override id %d (abbr %s)"):format(case.art, case.id, case.abbr),
+      function()
+        local ctx = contextOf({ art = case.art, artID = case.id, shards = 1,
+                                virtualIncinerate = (case.art == "infernal") })
+        if case.art == "infernal" then
+          assert.equals(ID.INC, ctx.ibFrame)
+          assert.is_nil(ctx.ruinationFrame)
+        else
+          assert.equals(ID.CB, ctx.ruinationFrame)
+          assert.is_nil(ctx.ibFrame)
+        end
+        -- The display code stays per-id, which is the whole point of the split.
+        assert.equals(case.abbr, ns.SpecInfo(case.id).abbr)
+      end)
+    end
 
     it("infers Diabolist from an armed Ruination", function()
       assert.equals("diabolist", contextOf({ art = "ruination", shards = 1 }).hero)

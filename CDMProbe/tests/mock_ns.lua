@@ -81,6 +81,8 @@ local function newStub()
     "SetAllPoints", "SetScale",
     "SetJustifyH", "SetJustifyV", "SetBlendMode",
     "SetTexture", "SetMask", "SetDrawLayer", "SetTexCoord",
+    -- Mask OBJECTS (the RingedFrameTemplate idiom the cue dot uses), not the SetMask path.
+    "AddMaskTexture", "RemoveMaskTexture",
     "SetFrameStrata", "SetParent", "SetAtlas",
     -- The moveable-panel surface (HudVirtual Phase 2).  `EnableMouse` is RECORDING (below):
     -- "does the panel eat clicks right now" is the lock state's user-visible half.

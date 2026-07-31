@@ -136,6 +136,30 @@ function ns.ItemBaseSpellID(item)
   return nil
 end
 
+-- The DISPLAY identity of an item: the spell the icon actually SHOWS, which is not always
+-- its base (Destruction's cid 66181 is Shadow Bolt 686 displaying Incinerate 29722).  The
+-- policy lives in ns.DisplayIdentity so State's domain view and the Layout key on the same
+-- vocabulary -- the Binder joins cues via `cues[entry.spellID]`, so if these two disagree
+-- the join silently misses and the icon gets neither a cue nor a keybind.
+--
+-- Still resolves through the BASE first: `liveSpellID` is deliberately not consulted, so a
+-- Demonic Art transform never changes an icon's identity mid-combat (the v0.7.0 finding-3
+-- rule this file documents above is unchanged -- only the STATIC display override is new).
+function ns.ItemDisplaySpellID(item)
+  local base = ns.ItemBaseSpellID(item)
+  if base == nil then return nil end
+  local cdID = ns.ItemCooldownID(item)
+  if cdID and C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo then
+    local ok, info = pcall(C_CooldownViewer.GetCooldownViewerCooldownInfo, cdID)
+    if ok and type(info) == "table" then
+      local ov  = readable(info.overrideSpellID) and info.overrideSpellID or nil
+      local ovt = readable(info.overrideTooltipSpellID) and info.overrideTooltipSpellID or nil
+      return ns.DisplayIdentity(base, ov, ovt)
+    end
+  end
+  return base
+end
+
 -- Was the `/cdmp dump` command; now a SECTION of `/cdmp probe` (2026-07-21).
 -- Owns no capture of its own — the caller decides what report this lands in.
 function ns.DumpViewers()

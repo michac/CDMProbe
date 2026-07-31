@@ -651,9 +651,35 @@ describe("State virtual rows (the untracked floor press)", function()
                  overrideTooltipSpellID = INCINERATE }
       end
       local pulse = St.Build(false)
-      assert.are.same({}, pulse.virtual)
-      assert.is_nil(pulse.abilities[INCINERATE])          -- ours was never synthesised
-      assert.equals(INCINERATE, pulse.abilities[SHADOW_BOLT].liveSpellID)  -- Blizzard draws it
+      assert.are.same({}, pulse.virtual)                  -- ours was never synthesised
+      -- ...and the row is keyed by what it DISPLAYS, not by its own spellID.  Keying it at
+      -- 686 is what made the Coach blind on Diabolist: `facts[29722]` was nil, so the
+      -- Incinerate line could never win (0 wins in 225 live decisions, 2026-07-30) and the
+      -- Binder's `cues[entry.spellID]` join missed, costing the icon its keybind too.
+      assert.is_nil(pulse.abilities[SHADOW_BOLT])
+      local shown = pulse.abilities[INCINERATE]
+      assert.is_not_nil(shown, "the displayed row must be reachable at the id it displays")
+      assert.equals(INCINERATE, shown.liveSpellID)          -- Blizzard draws it
+      assert.equals(INCINERATE, shown.identity)
+      assert.equals(686, shown.spellID)                     -- the raw base is still carried
+    end)
+
+    it("HELLCALLER: an UNLEARNED 686 row keeps its base, so ours still synthesises", function()
+      -- The fence on the fence.  Re-keying a DROPPED row onto Incinerate would make
+      -- `virtualCandidates`' "not dropped-unlearned" test see Incinerate as unlearned and
+      -- refuse to draw ours — silently killing the one path that already works in the field
+      -- (Hellcaller: 0 % w:- , Incinerate cued 10x and drawn 50x, 2026-07-30).  Only a row
+      -- that SURVIVED the filter may claim a display identity.
+      local SHADOW_BOLT = 686
+      _G.C_CooldownViewer.GetCooldownViewerCooldownInfo = function()
+        return { spellID = SHADOW_BOLT, isKnown = false, overrideSpellID = INCINERATE,
+                 overrideTooltipSpellID = INCINERATE }
+      end
+      local pulse = St.Build(false)
+      assert.equals("unlearned", pulse.dropped[SHADOW_BOLT])  -- the DROP keeps the raw base
+      assert.is_nil(pulse.dropped[INCINERATE])
+      assert.is_not_nil(pulse.abilities[INCINERATE])          -- ...so ours is synthesised
+      assert.is_true(pulse.abilities[INCINERATE].virtual)
     end)
 
     it("stops synthesising the moment Blizzard starts tracking it", function()
