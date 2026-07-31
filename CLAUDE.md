@@ -290,6 +290,31 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   cannot collide) + the MOVEABLE panel: the saved-position
                                   round-trip, the default fallback, `reset`, lock/unlock
                                   over mouse+chrome+alpha, and the extents floor
+      fixtures/cdm-cases.lua      THE CDM EDGE INVENTORY (pure data, never auto-collected —
+                                  busted's pattern is `_spec.lua`).  87 declarative
+                                  (CDM input -> expected State row) cases in 7 axes,
+                                  authored from knowledge/addon-dev/cooldown-manager.md
+                                  (NOT from State.lua — a suite transcribed from the source
+                                  is a change-detector wearing a contract's clothes).
+                                  ⚠ 11 carry `status = "pinned-defect"`: they assert the
+                                  CONTRACT answer, run INVERTED, and FAIL TODAY ON PURPOSE.
+                                  A suite 100 % green against the current code is by
+                                  construction a snapshot.  When a fix lands, its case goes
+                                  RED and the fix commit flips the status in its own diff —
+                                  do NOT "repair" one by weakening the expectation.  Read
+                                  the file header for the schema.
+      spec/cdm_cases_spec.lua     the parametrised driver for the above: installs each
+                                  case's CDM database + client world, runs its ordered
+                                  script, diffs every named view off one St.Build pulse.
+                                  Nine meta-tests enforce the corpus's own invariants
+                                  (unique names, a mandatory `ref` that may never point at
+                                  State.lua, a per-axis coverage floor, >= 5 failing today)
+      spec/harness_spec.lua       the HARNESS is a collaborator and gets the same treatment:
+                                  H.secretTable / H.throws+H.guard / H.poison /
+                                  H.installGlobals / the default-inert client fakes.
+                                  `issecrettable` sat hardcoded `false` for the life of the
+                                  addon, making six real refusal branches unreachable while
+                                  every suite stayed green — the v0.32.25 shape exactly
       spec/decisionlog_spec.lua   the decision-log Record/Render split
       spec/hudnapkin_spec.lua     anticipation countdown + honesty rules
       spec/specdelta_spec.lua     SpecDemonology signal-bucket deltas
@@ -318,7 +343,8 @@ put `~/.luarocks/bin` on PATH.
   (`Coach`, `Binder`, `Renderer`, `HudLayout`, `DecisionLog`, `HudNapkin`,
   `SpecDemonology`) + the multi-spec seam (`SpecRegistry`/`ResolveActiveSpec`, the
   resource-array projection) + the **Destruction** rotation gate + **State's domain-view
-  fold** + State's hero-tree resolution. **377 tests.** The harness is
+  fold** + State's hero-tree resolution + the **CDM edge inventory** (see `tests/fixtures/`
+  below). **498 tests / 4 pending.** The harness is
   **`CDMProbe/tests/mock_ns.lua`**: a chainable `CreateFrame`/FontString/animation
   stub, a **settable `GetTime` fake clock**, global fakes
   (`wipe`/`InCombatLockdown`/`issecretvalue`/`C_Timer`/`Enum`/`GetSpecialization`/…),
