@@ -238,6 +238,10 @@ function H.fresh()
 
   -- Real, shipping implementations (data + lookups + Secret-Values-aware helpers).
   H.load("Util.lua")
+  -- Viewers.lua owns the item-identity resolvers, including ns.DisplayIdentity — which
+  -- State.lua calls DIRECTLY (no nil guard) on every fold.  Loaded as the real thing so a
+  -- spec driving State never silently exercises a harness-supplied identity rule.
+  H.load("Viewers.lua")
   H.load("SpecRegistry.lua")    -- registry + SetActiveSpec + ResolveActiveSpec
   H.load("SpecDemonology.lua")  -- self-registers spec 266 (activation is now the resolver's job)
   H.load("CoachDemonology.lua") -- attaches the Demo brain (Context/RankWinner/Escalate) to spec 266

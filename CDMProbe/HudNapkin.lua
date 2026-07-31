@@ -154,42 +154,9 @@ function N.Start()
   ev:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
 end
 
--- Drop every per-spellID estimate.  Public so the spec resolver can wipe the previous
--- spec's estimates on a swap (the napkin keys are base spellIDs, spec-scoped) without
--- tearing down the event listener the way Stop() does.
+-- Drop every per-spellID estimate, keeping the event listener alive.  Public so the
+-- spec resolver can wipe the previous spec's estimates on a swap (the napkin keys are
+-- base spellIDs, spec-scoped).
 function N.Reset()
   wipe(N.casts)
-end
-
-function N.Stop()
-  evStarted = false
-  ev:UnregisterAllEvents()
-  N.Reset()
-end
-
--- Is the whole feature actually live?  Reported rather than assumed — see (3).
-function N.StatusText()
-  if N.readable == true then
-    return string.format("|cff88ff88live|r — %d cast(s) read, %d tracked, %d cleared by a ready edge",
-      N.seen, N.tracked, N.cleared)
-  elseif N.readable == false then
-    return string.format("|cffff4040unavailable|r — SUCCEEDED spellID reads <secret> here (%d event(s)); anticipation is OFF in this context", N.secret)
-  end
-  return "|cff808080not probed|r — cast something to find out"
-end
-
-function N.PrintStatus()
-  ns.Printf("   napkin (anticipation, lead %.1fs): %s", N.SOON_LEAD, N.StatusText())
-  ns.Printf("     countdowns filled from a client READ (M3d seeding): %d", N.seeded)
-  -- NOT gated on N.readable any more.  That flag describes the CAST channel; a
-  -- cold-started board can be fully seeded from reads with `readable == nil`
-  -- (nothing cast yet), and hiding those rows would report the headline feature
-  -- as doing nothing on exactly the login where it did the most.
-  for spellID, c in pairs(N.casts) do
-    local left = math.max(0, c.started + c.length - GetTime())
-    ns.Printf("     %s  %s %.0fs  %s", ns.SpellName(spellID) or tostring(spellID),
-      (c.source == "read") and "|cff88ff88read|r" or "|cff808080est|r", c.length,
-      left > 0 and string.format("~%.1fs", left)
-        or "|cffffd100should be up, unconfirmed|r")
-  end
 end

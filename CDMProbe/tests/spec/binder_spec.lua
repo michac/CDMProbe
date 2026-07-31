@@ -97,7 +97,7 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
       local drawList = b:Bind(
         { cues = {
             [105174] = { draw = true, emphasis = "ROTATION" },   -- HoG, displayed
-            [104316] = { draw = true, emphasis = "JUDGE" },      -- Dreadstalkers, NOT in layout
+            [104316] = { draw = true, emphasis = "SOON" },       -- Dreadstalkers, NOT in layout
           } },
         { ["34991"] = { spellID = 105174 } })
 
@@ -117,12 +117,14 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
       assert.is_nil(drawList.cues[1].keybind)
     end)
 
+    -- Asserted with a token the Renderer has NO entry for: the Binder is a geometry
+    -- merge and must forward whatever emphasis the Guidance carried, uninterpreted.
     it("passes the emphasis token through without resolving colour", function()
       local b = Binder.New({ keybindFor = keybindsFrom({}) })
       local drawList = b:Bind(
-        { cues = { [104316] = { draw = true, emphasis = "JUDGE" } } },
+        { cues = { [104316] = { draw = true, emphasis = "NOT_A_TOKEN" } } },
         { ["671"] = { spellID = 104316 } })
-      assert.are.equal("JUDGE", drawList.cues[1].emphasis)
+      assert.are.equal("NOT_A_TOKEN", drawList.cues[1].emphasis)
       assert.is_nil(drawList.cues[1].color)   -- colour stays the Renderer's job
     end)
 
@@ -276,8 +278,6 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
     -- `keybinds` = spellID -> key (the HudBinds stand-in).  These are Binder INPUTS —
     -- the Binder doesn't judge whether the rotation call is right, only that it maps
     -- Guidance+Layout onto the exact DrawList the Renderer was dialled in against.
-    -- (burst-hold keeps a JUDGE cue on purpose: the token is retired from the Coach but
-    -- still lives in the contract, and the Binder must map it.)
     local SCENARIOS = {
       ["opener-midflight"] = {
         guidance = {
@@ -295,23 +295,6 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
         },
         keybinds = { [265187] = "sQ", [104316] = "E", [1276452] = "sE",
                      [105174] = "R", [686] = "Q", [196277] = "1" },
-      },
-      ["burst-hold"] = {
-        guidance = {
-          resourceBars = { { value = 3, max = 5, incoming = 0, display = "discrete", powerType = "SOUL_SHARDS" } },
-          cues = {   -- keyed by base spellID (104316 = Dreadstalkers, 196277 = Implosion)
-            [104316] = { draw = true, emphasis = "LATE" },
-            [196277] = { draw = true, emphasis = "JUDGE", note = "imps uncertain — your call" },
-          },
-          sequence = { show = false },
-        },
-        layout = {
-          ["2742"] = { spellID = 265187 }, ["671"] = { spellID = 104316 },
-          ["34991"] = { spellID = 105174 }, ["1979"] = { spellID = 264178 },
-          ["34990"] = { spellID = 686 }, ["149122"] = { spellID = 196277 },
-        },
-        keybinds = { [265187] = "sQ", [104316] = "E", [105174] = "R",
-                     [264178] = "F", [686] = "Q", [196277] = "1" },
       },
       ["secrecy-combat"] = {
         guidance = {
@@ -336,7 +319,6 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
     -- fixture author mapped each cue onto an icon; this is the inverse.
     local HANDLE_MAP = {
       ["opener-midflight"] = { fake1 = "34990", fake2 = "2742" },
-      ["burst-hold"]       = { fake1 = "34991", fake2 = "671", fake3 = "149122" },
       ["secrecy-combat"]   = { fake1 = "1979", fake2 = "2742" },
     }
 
@@ -355,7 +337,7 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
       return m
     end
 
-    for _, scenario in ipairs({ "opener-midflight", "burst-hold", "secrecy-combat" }) do
+    for _, scenario in ipairs({ "opener-midflight", "secrecy-combat" }) do
       it(scenario, function()
         local sc = SCENARIOS[scenario]
         local b = Binder.New({ keybindFor = keybindsFrom(sc.keybinds) })

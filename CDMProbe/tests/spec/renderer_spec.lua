@@ -43,7 +43,7 @@ describe("Renderer", function()
     -- ROTATION's own family (subordinate by brightness, not hue); it is now its own violet,
     -- so it must clear the same separation bound as every other token.
     local t = Rr.New().theme
-    local toks = { "ROTATION", "ROTATION_FALLBACK", "LATE", "SOON", "JUDGE", "SEQUENCE" }
+    local toks = { "ROTATION", "ROTATION_FALLBACK", "LATE", "SOON" }
     for i = 1, #toks do
       for j = i + 1, #toks do
         local a, b = t[toks[i]], t[toks[j]]
@@ -136,16 +136,16 @@ describe("Renderer", function()
     assert.equals(newIcon, r.cueHolderAnchor["fake1"])
   end)
 
-  it("colours each cue by its own emphasis token (ROTATION + 2 JUDGE)", function()
+  it("colours each cue by its own emphasis token (ROTATION + 2 SOON)", function()
     local r = rigged(3)
     r:Draw({ cues = {
       { anchorTo = "fake1", emphasis = "ROTATION" },
-      { anchorTo = "fake2", emphasis = "JUDGE" },
-      { anchorTo = "fake3", emphasis = "JUDGE" },
+      { anchorTo = "fake2", emphasis = "SOON" },
+      { anchorTo = "fake3", emphasis = "SOON" },
     } })
     assert.is_true(colorEq(r.cueFrames["fake1"]._color, theme.ROTATION[1], theme.ROTATION[2], theme.ROTATION[3]))
-    assert.is_true(colorEq(r.cueFrames["fake2"]._color, theme.JUDGE[1], theme.JUDGE[2], theme.JUDGE[3]))
-    assert.is_true(colorEq(r.cueFrames["fake3"]._color, theme.JUDGE[1], theme.JUDGE[2], theme.JUDGE[3]))
+    assert.is_true(colorEq(r.cueFrames["fake2"]._color, theme.SOON[1], theme.SOON[2], theme.SOON[3]))
+    assert.is_true(colorEq(r.cueFrames["fake3"]._color, theme.SOON[1], theme.SOON[2], theme.SOON[3]))
   end)
 
   it("defaults size to 12 and point to CENTER when omitted", function()
@@ -159,7 +159,7 @@ describe("Renderer", function()
   it("hides a handle that dropped out of the next DrawList (diff-by-key)", function()
     local r = rigged(2)
     r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" },
-                      { anchorTo = "fake2", emphasis = "JUDGE" } } })
+                      { anchorTo = "fake2", emphasis = "SOON" } } })
     assert.is_true(r.cueFrames["fake1"]._shown)
     r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" } } })
     assert.is_true(r.cueFrames["fake1"]._shown)
@@ -210,7 +210,7 @@ describe("Renderer", function()
   it("hides the keybind hint when its handle drops out", function()
     local r = rigged(2)
     r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION", keybind = "R" },
-                      { anchorTo = "fake2", emphasis = "JUDGE", keybind = "E" } } })
+                      { anchorTo = "fake2", emphasis = "SOON", keybind = "E" } } })
     assert.is_true(r.cueKeys["fake2"]._shown)
     r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION", keybind = "R" } } })
     assert.is_false(r.cueKeys["fake2"]._shown)
@@ -253,11 +253,14 @@ describe("Renderer", function()
     assert.is_true(r.cueFrames["fake1"]._shown)   -- centre dot stays VISIBLE (no longer ring-only)
   end)
 
-  it("draws no ring for an emphasis with no GLOW_SPEC entry (e.g. JUDGE)", function()
+  -- The contract rule, stated against a deliberately UNKNOWN token rather than a
+  -- particular one: an emphasis the theme/GLOW_SPEC has no entry for draws NOTHING —
+  -- no circle, no ring.  We never guess a colour for a token we don't recognise.
+  it("draws neither circle nor ring for an emphasis with no theme/GLOW_SPEC entry", function()
     local r = rigged(1)
-    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "JUDGE" } } })
+    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "NOT_A_TOKEN" } } })
     assert.is_nil(r.glowing["fake1"])
-    assert.is_true(r.cueFrames["fake1"]._shown)   -- still a solid circle, just no ring
+    assert.is_nil(r.cueFrames["fake1"])            -- no dot was ever created
   end)
 
   it("stops the glow when the cue drops out", function()
@@ -274,7 +277,7 @@ describe("Renderer", function()
     local r = rigged(1)
     r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" } } })
     assert.is_not_nil(r.glowing["fake1"])
-    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "JUDGE" } } })   -- ROTATION -> no GLOW_SPEC
+    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "NOT_A_TOKEN" } } })   -- -> no GLOW_SPEC
     assert.is_nil(r.glowing["fake1"])
   end)
 
@@ -288,39 +291,35 @@ describe("Renderer", function()
   ------------------------------------------------------------------------------
   -- the shipped fixtures place the dot in the corner + carry keybinds + glow
   ------------------------------------------------------------------------------
-  it("fixtures ring the press cue (ROTATION/LATE) but not the softer JUDGE cue", function()
+  it("fixtures ring the press cue", function()
     local ns = H.ns
     -- Drawn, not read off a retired field: hand-of-guldan is one ROTATION press.
     local hog = Rr.New()
     hog:Register("fake1", H.newStub())
     hog:Draw(ns.RenderTestFixtures["hand-of-guldan"].drawList)
     assert.is_true(hog.glowing["fake1"])
-    -- burst-hold: LATE rings, JUDGE does not.
-    local bh = Rr.New()
-    for i = 1, 3 do bh:Register("fake" .. i, H.newStub()) end
-    bh:Draw(ns.RenderTestFixtures["burst-hold"].drawList)
-    assert.is_true(bh.glowing["fake2"])   -- LATE
-    assert.is_nil(bh.glowing["fake3"])    -- JUDGE
   end)
 
-  it("the inventory fixture carries one dot of every emphasis token, captioned", function()
-    local inv = H.ns.RenderTestFixtures["inventory"]
-    assert.equals(5, #inv.drawList.cues)
+  -- `states` is the reference card: every VISIBLE cue state the live pipeline can put
+  -- on an icon, in one DrawList.  IDLE (no emphasis) draws a keybind and nothing else;
+  -- every other square carries a live emphasis token that rings.
+  it("the states fixture draws the whole live emphasis set, captioned", function()
+    local st = H.ns.RenderTestFixtures["states"]
+    assert.equals(8, #st.drawList.cues)
+    assert.equals(8, #st.captions)
     local seen = {}
-    for _, c in ipairs(inv.drawList.cues) do seen[c.emphasis] = true end
-    for _, tok in ipairs({ "ROTATION", "LATE", "SOON", "JUDGE", "SEQUENCE" }) do
-      assert.is_true(seen[tok], "inventory missing " .. tok)
+    for _, c in ipairs(st.drawList.cues) do if c.emphasis then seen[c.emphasis] = true end end
+    for _, tok in ipairs({ "ROTATION", "ROTATION_FALLBACK", "LATE", "SOON" }) do
+      assert.is_true(seen[tok], "states missing " .. tok)
     end
-    assert.equals(5, #inv.captions)
-    -- rendered together: ROTATION/LATE/SOON all ring now; JUDGE/SEQUENCE do not
     local r = Rr.New()
-    for i = 1, 5 do r:Register("fake" .. i, H.newStub()) end
-    r:Draw(inv.drawList)
-    assert.is_true(r.cueFrames["fake1"]._shown)   -- ROTATION
-    assert.is_true(r.glowing["fake1"])            -- ROTATION glows
-    assert.is_true(r.glowing["fake2"])            -- LATE glows
-    assert.is_true(r.glowing["fake3"])            -- SOON glows now (moving = anticipation)
-    assert.is_nil(r.glowing["fake4"])             -- JUDGE does not
+    for i = 1, 8 do r:Register("fake" .. i, H.newStub()) end
+    r:Draw(st.drawList)
+    assert.is_nil(r.cueFrames["fake1"])           -- IDLE: keybind only, no dot
+    assert.is_true(r.glowing["fake2"])            -- SOON glows (moving = anticipation)
+    assert.is_true(r.glowing["fake3"])            -- FALLBACK rings (statically)
+    assert.is_true(r.glowing["fake4"])            -- ROTATION glows
+    assert.is_true(r.glowing["fake5"])            -- LATE glows
   end)
   it("fixtures anchor the cue dot to the icon's upper-right corner with a keybind", function()
     local ns = H.ns
@@ -458,15 +457,15 @@ describe("Renderer", function()
   end)
 
   ------------------------------------------------------------------------------
-  -- The whole DrawList together (a burst-hold shape: ROTATION + 2 JUDGE + bar)
+  -- The whole DrawList together (ROTATION + LATE + SOON + bar)
   ------------------------------------------------------------------------------
   it("draws cues + bar from one DrawList without cross-talk", function()
     local r = rigged(3)
     r:Draw({
       cues = {
         { anchorTo = "fake1", emphasis = "ROTATION" },
-        { anchorTo = "fake2", emphasis = "JUDGE" },
-        { anchorTo = "fake3", emphasis = "JUDGE" },
+        { anchorTo = "fake2", emphasis = "LATE" },
+        { anchorTo = "fake3", emphasis = "SOON" },
       },
       resourceBars = { { value = 3, max = 5, powerType = "SOUL_SHARDS" } },
     })

@@ -178,69 +178,6 @@ function B.Get(spellID)
   return (alias and B.map[alias]) or nil
 end
 
--- Resolve for an ITEM rather than a bare spellID — the finding-3 fix (v0.7.0).
--- `item:GetSpellID()` prefers the OVERRIDE spell, so while Demonic Art has HoG
--- transformed into Ruination the item reports `434635`, which is on nobody's
--- action bar, and the keybind blanked out mid-rotation.  The action bar holds
--- the BASE spell, so resolve off that first and only fall back to the reported
--- (possibly overridden) ID for items with no base — never the other way round.
-function B.GetForItem(item, reportedSpellID)
-  local key = B.Get(ns.ItemBaseSpellID(item))
-  if key then return key end
-  return B.Get(reportedSpellID ~= nil and reportedSpellID or ns.ItemSpellID(item))
-end
-
---------------------------------------------------------------------------------
--- Diagnostic: why does this spell show the key it shows?  (§7.2 items 4/5)
---------------------------------------------------------------------------------
--- A remap that "didn't get picked up" is not diagnosable from the resolved map
--- alone, because the map only records the WINNER.  There are three known ways to
--- lose, and all three are invisible in `B.map`:
---
---   1. FIRST BOUND SLOT WINS.  A spell on two bars keeps the LOWEST slot's key.
---      Remap the copy on your right bar and nothing changes, because bar 1 still
---      answers first.  Shows up here as two rows, one marked <-- used.
---   2. NO BINDABLE COMMAND.  Slots 13-24 and 109-180 are action-bar PAGES with no
---      bindings of their own, so they're absent from SLOT_BARS and resolve to
---      nil.  Shows up as a row with cmd=none.
---   3. MACRO SLOTS.  GetMacroSpell returns nil for conditional/modifier macros,
---      so the slot never maps to a spellID at all and the spell appears here with
---      NO rows whatsoever.
---   4. THE SECONDARY BINDING (found in source, M3e).  GetBindingKey(cmd) returns
---      TWO keys — primary AND secondary — and both scan() and this function only
---      ever took the first.  A player who remapped the SECONDARY binding sees no
---      change and, until now, there was NO ROW THAT SHOWED WHY.  Recorded here as
---      `key2`.  ⚠ This deliberately does NOT change which binding wins: making
---      the loser visible is the diagnosis, changing the winner is a decision that
---      needs the evidence first.
---
--- ONE 180-slot pass builds the whole reverse index (per-spell scans would be
--- 20x that).  Manual command only — this never runs on an event path.
-function B.Explain()
-  local bySpell = {}
-  for slot = 1, 180 do
-    local actionType, id = GetActionInfo(slot)
-    local spellID, via
-    if actionType == "spell" then
-      spellID, via = tonumber(id), "spell"
-    elseif actionType == "macro" then
-      spellID, via = (GetMacroSpell and GetMacroSpell(id) or nil), "macro"
-    end
-    if spellID then
-      local key, key2
-      local cmd = bindingCommand(slot)
-      if cmd then key, key2 = GetBindingKey(cmd) end
-      local list = bySpell[spellID]
-      if not list then list = {}; bySpell[spellID] = list end
-      list[#list + 1] = { slot = slot, via = via, cmd = cmd,
-                          key = key, key2 = key2,
-                          short = key and shorten(key) or nil,
-                          short2 = key2 and shorten(key2) or nil }
-    end
-  end
-  return bySpell
-end
-
 local ev = CreateFrame("Frame")
 ev:SetScript("OnEvent", function(_, event)
   -- PLAYER_REGEN_ENABLED is only interesting if a rescan was owed; every other
@@ -259,8 +196,4 @@ function B.Start()
   -- otherwise arm the debounce and let it land out of combat.
   B.dirty = true
   if InCombatLockdown() then invalidate() else scan() end
-end
-
-function B.Stop()
-  ev:UnregisterAllEvents()
 end

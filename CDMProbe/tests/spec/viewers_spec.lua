@@ -35,7 +35,7 @@ describe("Viewers — item identity resolvers", function()
   -- That is exactly how the v0.32.25 outage survived two days of a green suite.
   describe("the shipped-symbol gate", function()
     for _, name in ipairs({ "GetViewer", "GetItemFrames", "ItemCooldownID",
-                            "ItemBaseSpellID", "ItemDisplaySpellID" }) do
+                            "ItemBaseSpellID", "ItemDisplaySpellID", "DisplayIdentity" }) do
       it(("ns.%s is SHIPPED by the addon, not supplied by a test"):format(name), function()
         assert.equals("function", type(ns[name]))
       end)

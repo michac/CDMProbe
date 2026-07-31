@@ -335,48 +335,6 @@ function ns.ShardCost(spellID)
   return raw, raw
 end
 
---------------------------------------------------------------------------------
--- ns.DisplayIdentity — the ONE rule for "which spell is this CDM row actually
--- showing?", shared by every producer that keys on a spell.
---------------------------------------------------------------------------------
--- A Cooldown Manager row's own spellID is not always the spell it DRAWS.  Destruction's
--- cid 66181 is Shadow Bolt 686 with its display overridden to Incinerate 29722, and on
--- DIABOLIST (where 686 reads isKnown) that is the row Blizzard puts on screen.  Every
--- consumer that keyed on the raw base therefore disagreed with what the player saw:
---   * State keyed `abilities[686]`, so the Coach's `facts[29722]` was nil and the
---     Incinerate line could never win  (0 wins in 225 Diabolist decisions, 2026-07-30);
---   * HudLayout published `spellID = 686`, so the Binder's cue join (`cues[entry.spellID]`)
---     missed, AND the keybind was looked up for Shadow Bolt — which is not on the bars.
--- Both symptoms are one cause, so the rule lives in ONE place and both producers call it.
---
--- ⚠ USE THE STATIC OVERRIDES, NEVER `liveSpellID`.  `liveSpellID` moves to Infernal Bolt
--- 433891 while the Demonic Art is armed, so keying on it would make Incinerate's identity
--- VANISH mid-combat — exactly when the ability is most active.  `overrideSpellID` /
--- `overrideTooltipSpellID` carry the displayed id throughout.  (Same reasoning as State's
--- `displayedIdentities` fence, which unions both fields for the same reason.)
---
--- Adopting an override is DELIBERATELY conservative — it must be a real, pressable
--- ability of the active spec:
---   * declared in the spec table   — an id we have no opinion about is not an identity;
---   * `kind == "button"`           — an aura row is an input, never a press;
---   * `expect ~= false`            — the transforms (Ruination / Infernal Bolt) and the
---                                    cast-id aliases declare they never own an icon.  A
---                                    transform must never become the identity of the frame
---                                    it merely rides.
--- Anything short of all three falls back to `base`, which is today's behaviour — so a spec
--- with no display-overridden rows is completely unaffected.
-function ns.DisplayIdentity(base, overrideSpellID, overrideTooltipSpellID)
-  if type(base) ~= "number" then return base end
-  local shown = overrideSpellID
-  if type(shown) ~= "number" or ns.IsSecret(shown) then shown = overrideTooltipSpellID end
-  if type(shown) ~= "number" or ns.IsSecret(shown) or shown == base then return base end
-  -- ⚠ NOT a banned nil guard.  ns.SpecInfo is a REBOUND global — SpecRegistry copies it off
-  -- the active spec and leaves it nil on an unregistered spec (the passive path), so this is
-  -- a STATE test, not a "did someone delete the definition" test.  Passive ⇒ no opinion about
-  -- any id ⇒ the raw base is the honest identity.
-  if type(ns.SpecInfo) ~= "function" then return base end
-  local info, declared = ns.SpecInfo(shown)
-  if not declared or type(info) ~= "table" then return base end
-  if info.kind ~= "button" or info.expect == false then return base end
-  return shown
-end
+-- ns.DisplayIdentity — "which spell is this CDM row actually showing?" — lives in
+-- Viewers.lua with the rest of the item-identity resolvers.  It reads ns.SpecInfo, and
+-- this file is the bottom of the stack (loaded 3rd, before the spec registry exists).

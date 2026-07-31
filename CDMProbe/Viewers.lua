@@ -9,12 +9,6 @@ ns.VIEWERS = {
   { key = "buffbar",   frame = "BuffBarCooldownViewer",   label = "Buff (bar)"  },
 }
 
--- Item frames known to hold these sub-parts (per Blizzard's CooldownViewerItem).
-local ITEM_FIELDS = {
-  "Icon", "IconOverlay", "IconMask", "Cooldown", "Count", "ChargeCount",
-  "CooldownFlash", "OutOfRange", "Name", "Bar", "StatusBar", "isActive",
-}
-
 function ns.GetViewer(frameName)
   return _G[frameName]
 end
@@ -78,41 +72,8 @@ function ns.ItemCooldownID(item)
   return nil
 end
 
--- Returns (spellID, sourceLabel).  Tries several strategies since the exact
--- item->spell accessor is not fully documented for 12.0.
-function ns.ItemSpellID(item)
-  local sawSecret = false
-  if ns.HasMethod(item, "GetSpellID") then
-    local ok, id = pcall(item.GetSpellID, item)
-    if ok then
-      if readable(id) then return id, "item:GetSpellID()" end
-      if ns.IsSecret(id) then sawSecret = true end
-    end
-  end
-  local cdID = item.cooldownID
-  if not readable(cdID) then cdID = nil end
-  if not cdID and ns.HasMethod(item, "GetCooldownID") then
-    local ok, id = pcall(item.GetCooldownID, item)
-    if ok and readable(id) then cdID = id end
-  end
-  if cdID and C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo then
-    local ok, info = pcall(C_CooldownViewer.GetCooldownViewerCooldownInfo, cdID)
-    if ok and type(info) == "table" then
-      if readable(info.spellID) then
-        return info.spellID, "C_CooldownViewer(" .. tostring(cdID) .. ").spellID"
-      end
-      if ns.IsSecret(info.spellID) then sawSecret = true end
-    end
-  end
-  if readable(item.spellID) then return item.spellID, "item.spellID" end
-  if ns.IsSecret(item.spellID) then sawSecret = true end
-  -- The two are reported apart on purpose: "unresolved" is a layout/API question,
-  -- "secret" is the restricted-combat one, and the callers' recovery differs.
-  return nil, sawSecret and "secret" or "unresolved"
-end
-
--- The BASE spell — `cooldownInfo.spellID`, before any override.  Distinct from
--- ns.ItemSpellID: `CooldownViewerItemDataMixin:GetSpellID()` prefers the aura /
+-- The BASE spell — `cooldownInfo.spellID`, before any override.  Deliberately NOT
+-- `item:GetSpellID()`: `CooldownViewerItemDataMixin:GetSpellID()` prefers the aura /
 -- linked / override / overrideTooltip spell (CooldownViewerItemData.lua:174), so
 -- a Demonic Art transform (HoG -> Ruination) silently changes what that returns.
 -- Anything keyed on ability IDENTITY — keybinds, the proc-glow registry — must
@@ -160,51 +121,48 @@ function ns.ItemDisplaySpellID(item)
   return base
 end
 
--- Was the `/cdmp dump` command; now a SECTION of `/cdmp probe` (2026-07-21).
--- Owns no capture of its own — the caller decides what report this lands in.
-function ns.DumpViewers()
-  ns.Heading("Environment")
-  ns.Printf("  in combat: %s   |   Secret Values API (issecretvalue): %s",
-    tostring(InCombatLockdown()), tostring(ns.SecretAPI()))
-  ns.Printf("  canaccessvalue: %s   issecrettable: %s   C_Secrets: %s",
-    tostring(type(canaccessvalue) == "function"),
-    tostring(type(issecrettable) == "function"),
-    tostring(C_Secrets ~= nil))
-
-  ns.Heading("C_CooldownViewer")
-  if C_CooldownViewer then
-    local fns = {}
-    for k, v in pairs(C_CooldownViewer) do if type(v) == "function" then fns[#fns + 1] = k end end
-    table.sort(fns)
-    ns.Printf("  %s", #fns > 0 and table.concat(fns, ", ") or "(present, no functions enumerable)")
-  else
-    ns.Print("  |cffff4040absent|r")
-  end
-
-  for _, vinfo in ipairs(ns.VIEWERS) do
-    local viewer = ns.GetViewer(vinfo.frame)
-    ns.Heading(string.format("%s  (%s)", vinfo.label, vinfo.frame))
-    if not viewer then
-      ns.Print("  |cffff4040frame not found|r (viewer not enabled for this spec/config?)")
-    else
-      local shown = ns.HasMethod(viewer, "IsShown") and viewer:IsShown()
-      ns.Printf("  shown: %s   GetItemFrames(): %s", tostring(shown), tostring(ns.HasMethod(viewer, "GetItemFrames")))
-      local items, how = ns.GetItemFrames(viewer)
-      ns.Printf("  %d item(s) via %s", #items, how)
-      for i, item in ipairs(items) do
-        local ok, err = pcall(function()
-          local id, src = ns.ItemSpellID(item)
-          -- Never format a secret directly — check first, substitute in place.
-          local idStr = ns.Describe(id)
-          local name = ns.IsSecret(id) and "|cffff4040<secret>|r" or ((id and ns.SpellName(id)) or "?")
-          local present = {}
-          for _, f in ipairs(ITEM_FIELDS) do if item[f] ~= nil then present[#present + 1] = f end end
-          local vis = ns.HasMethod(item, "IsShown") and item:IsShown()
-          ns.Printf("   [%d] |cffffffff%s|r  id=%s (%s)  shown=%s  {%s}",
-            i, name, idStr, src, tostring(vis), table.concat(present, ", "))
-        end)
-        if not ok then ns.Printf("   [%d] |cffff4040<unreadable: %s>|r", i, ns.Describe(err)) end
-      end
-    end
-  end
+--------------------------------------------------------------------------------
+-- ns.DisplayIdentity — the ONE rule for "which spell is this CDM row actually
+-- showing?", shared by every producer that keys on a spell.
+--------------------------------------------------------------------------------
+-- A Cooldown Manager row's own spellID is not always the spell it DRAWS.  Destruction's
+-- cid 66181 is Shadow Bolt 686 with its display overridden to Incinerate 29722, and on
+-- DIABOLIST (where 686 reads isKnown) that is the row Blizzard puts on screen.  Every
+-- consumer that keyed on the raw base therefore disagreed with what the player saw:
+--   * State keyed `abilities[686]`, so the Coach's `facts[29722]` was nil and the
+--     Incinerate line could never win  (0 wins in 225 Diabolist decisions, 2026-07-30);
+--   * HudLayout published `spellID = 686`, so the Binder's cue join (`cues[entry.spellID]`)
+--     missed, AND the keybind was looked up for Shadow Bolt — which is not on the bars.
+-- Both symptoms are one cause, so the rule lives in ONE place and both producers call it.
+--
+-- ⚠ USE THE STATIC OVERRIDES, NEVER `liveSpellID`.  `liveSpellID` moves to Infernal Bolt
+-- 433891 while the Demonic Art is armed, so keying on it would make Incinerate's identity
+-- VANISH mid-combat — exactly when the ability is most active.  `overrideSpellID` /
+-- `overrideTooltipSpellID` carry the displayed id throughout.  (Same reasoning as State's
+-- `displayedIdentities` fence, which unions both fields for the same reason.)
+--
+-- Adopting an override is DELIBERATELY conservative — it must be a real, pressable
+-- ability of the active spec:
+--   * declared in the spec table   — an id we have no opinion about is not an identity;
+--   * `kind == "button"`           — an aura row is an input, never a press;
+--   * `expect ~= false`            — the transforms (Ruination / Infernal Bolt) and the
+--                                    cast-id aliases declare they never own an icon.  A
+--                                    transform must never become the identity of the frame
+--                                    it merely rides.
+-- Anything short of all three falls back to `base`, which is today's behaviour — so a spec
+-- with no display-overridden rows is completely unaffected.
+function ns.DisplayIdentity(base, overrideSpellID, overrideTooltipSpellID)
+  if type(base) ~= "number" then return base end
+  local shown = overrideSpellID
+  if type(shown) ~= "number" or ns.IsSecret(shown) then shown = overrideTooltipSpellID end
+  if type(shown) ~= "number" or ns.IsSecret(shown) or shown == base then return base end
+  -- ⚠ NOT a banned nil guard.  ns.SpecInfo is a REBOUND global — SpecRegistry copies it off
+  -- the active spec and leaves it nil on an unregistered spec (the passive path), so this is
+  -- a STATE test, not a "did someone delete the definition" test.  Passive ⇒ no opinion about
+  -- any id ⇒ the raw base is the honest identity.
+  if type(ns.SpecInfo) ~= "function" then return base end
+  local info, declared = ns.SpecInfo(shown)
+  if not declared or type(info) ~= "table" then return base end
+  if info.kind ~= "button" or info.expect == false then return base end
+  return shown
 end

@@ -67,6 +67,15 @@ end
 -- dark isn't silent.  Latched per distinct specID: a Demo->Aff->Demo->Aff swap notices Aff
 -- once until the resolution changes away and back.  Supported specs stay quiet (ActiveSpec
 -- present clears the latch) — Demonology never announces itself.
+-- How many specs actually carry a profile is READ OFF THE REGISTRY, never restated in
+-- prose: this notice claimed "only Demonology is supported" for months after Destruction
+-- registered, because a sentence has no way to notice a new `ns.RegisterSpec` call.
+local function profileCount()
+  local n = 0
+  for _ in pairs(ns.Specs or {}) do n = n + 1 end
+  return n
+end
+
 local function maybeNotifyUnsupported()
   if ns.ActiveSpec ~= nil then
     D.notifiedSpecID = nil   -- supported / unresolved: re-arm for a later swap to passive
@@ -75,9 +84,10 @@ local function maybeNotifyUnsupported()
   local id = ns.detectedSpecID
   if id == nil or id == D.notifiedSpecID then return end
   D.notifiedSpecID = id
-  ns.Printf("HUD |cffff8080passive|r — no profile for %s (spec %d); "
-    .. "only Demonology is supported. |cffffffff/cdmp hud status|r for details.",
-    ns.detectedSpecName or "this spec", id)
+  local n = profileCount()
+  ns.Printf("HUD |cffff8080passive|r — no profile for %s (spec %d); %d spec%s registered. "
+    .. "|cffffffff/cdmp hud status|r for details.",
+    ns.detectedSpecName or "this spec", id, n, n == 1 and " is" or "s are")
 end
 
 local function tick()

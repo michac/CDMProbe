@@ -35,8 +35,9 @@ end
 
 -- Set the active spec and re-bind the legacy globals from it.  An unknown/unsupported
 -- specID leaves ActiveSpec = nil and CLEARS every legacy field to nil — the passive-HUD
--- contract the "no profile for <spec>" UX is built on.  Only Demonology (266) is
--- registered today, so every other spec resolves to this passive state — intended.
+-- contract the "no profile for <spec>" UX is built on.  `ns.Specs` is the only statement
+-- of which specs have a profile; any spec absent from it resolves to this passive state,
+-- by design.
 function ns.SetActiveSpec(specID)
   local spec = ns.Specs[specID]
   ns.ActiveSpec = spec

@@ -79,7 +79,9 @@ function spec:Context(state, env)
 
   local ctx = {
     facts = factsByBase,
-    mode = state.mode,
+    mode = state.mode,   -- carried, but Demo's RankWinner gates NOTHING on it: it is a
+                         -- passive-cleave spec, so single vs AoE changes no press.
+                         -- (Destruction's L10 Rain of Fire does gate on it.)
     shards = shards, incoming = incoming, smax = smax,
     projected = projected,
     atCap = projected and projected >= self.SHARD_CAP or false,

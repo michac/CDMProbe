@@ -39,8 +39,8 @@ R.__index = R
 -- The default theme — emphasis TOKEN -> RGBA.
 --------------------------------------------------------------------------------
 -- Emphasis token -> RGBA.  Tokens must be GLANCEABLE — distinct enough to read apart in
--- the icon corner at a flick of the eye.  2026-07-26: ROTATION/LATE/SEQUENCE were all
--- green-family and read identical in-game, so LATE and SEQUENCE came off green.
+-- the icon corner at a flick of the eye.  2026-07-26: LATE read identical to ROTATION as
+-- another green-family shade, so it came off green.
 -- ⚠ THIS TABLE IS NOT THE LAST WORD ON WHAT A CUE DRAWS.  GLOW_SPEC below may redirect a
 -- token's colour, and it does exactly that for LATE — so LATE renders ROTATION's GREEN, not
 -- the amber below.  Editing the amber here changes nothing on screen; go to GLOW_SPEC.
@@ -51,18 +51,16 @@ local function defaultTheme()
     -- ring being STATIC rather than by a dimmer green ("motion, not colour") — that stands;
     -- this ADDS a hue so the backup is separable at a glance without waiting to see whether
     -- the ring turns.  ⚠ Deliberately NOT the shard violet: SOUL_SHARDS pips are
-    -- {0.690, 0.420, 1.000} and the retired SEQUENCE token was {0.64, 0.42, 1.00} — a cue in
-    -- that hue reads as "resource" next to the bar.  This is pushed bluer and deeper
-    -- (a deep saturated violet), so it separates from BOTH the pips and ROTATION's green.
-    -- The separating channel is GREEN: the pips are a pale lavender (G .42), this is vivid
-    -- (G .16).  A first cut at {0.42, 0.36, 1.00} was rejected — only 0.28 from SEQUENCE
-    -- under the theme's own separation metric, i.e. the pips collision this must avoid.
+    -- {0.690, 0.420, 1.000}, and a cue in that hue reads as "resource" next to the bar.
+    -- This is pushed bluer and deeper (a deep saturated violet), so it separates from BOTH
+    -- the pips and ROTATION's green.  The separating channel is GREEN: the pips are a pale
+    -- lavender (G .42), this is vivid (G .16).  A first cut at {0.42, 0.36, 1.00} was
+    -- rejected — only 0.28 from the pips under the theme's own separation metric, i.e. the
+    -- collision this must avoid.
     ROTATION_FALLBACK = { 0.52, 0.16, 0.98, 1.00 },  -- violet:     the runner-up
     LATE              = { 1.00, 0.42, 0.10, 1.00 },  -- amber:      SUPERSEDED for cues —
                                                      -- GLOW_SPEC redirects LATE to ROTATION
     SOON              = { 1.00, 0.86, 0.15, 1.00 },  -- yellow:     anticipation
-    JUDGE             = { 0.27, 0.88, 1.00, 1.00 },  -- cyan:       your-call (retired)
-    SEQUENCE          = { 0.64, 0.42, 1.00, 1.00 },  -- violet:     look at the panel (retired)
   }
 end
 
@@ -134,7 +132,10 @@ function R.New(cfg)
   self.cueFrames  = {}          -- anchorTo -> dot texture (diff-by-key pool)
   self.cueKeys    = {}          -- anchorTo -> keybind-hint fontstring (diff-by-key)
   self.cueGlows   = {}          -- anchorTo -> the dot's glow-halo texture
-  self.glowing    = {}          -- anchorTo -> true while its dot is glowing
+  self.glowing    = {}          -- anchorTo -> true while its dot is glowing.  Written
+                                -- here, read only by renderer_spec: the one observable
+                                -- proof the glow path ran.  Keep it — it is an
+                                -- assertion surface, not dead state.
   self.pipRows    = {}          -- barIndex -> { 1..N pip textures } (per-bar pool)
   self.panelWidget = nil        -- { frame, title, rows = {} }, built on first panel
   -- UIPARENT is a sanctioned root token (architecture.md :341); pre-register it so
@@ -144,10 +145,9 @@ function R.New(cfg)
 end
 
 -- Populate the registry.  Live mode maps cooldownID -> CDM item frame; test mode
--- maps "fake1" -> a placeholder square.  :Root is the same door, named for intent
--- when the key is a root token rather than an ability handle.
+-- maps "fake1" -> a placeholder square.  Root tokens (UIPARENT) go through the same
+-- door — R.New pre-registers UIPARENT, so nothing else has needed to.
 function R:Register(handle, frame) self.registry[handle] = frame; return self end
-function R:Root(token, frame)      self.registry[token] = frame; return self end
 
 -- The root parents our OWN self-anchored widgets (the panel + the resource pips),
 -- NOT the cue decorations.  It sits at MEDIUM — the action-bar strata — so those
@@ -542,7 +542,7 @@ local G = ns.HudGeometry
 local cue = G.cue          -- cue(handle, emphasis, keybind) -> a positioned cue
 local shards = G.resourceBar  -- shards(value, max) -> the centred discrete-pip bar
 
-local FIXTURE_ORDER = { "states", "inventory", "hand-of-guldan", "burst-hold", "opener-midflight", "secrecy-combat" }
+local FIXTURE_ORDER = { "states", "hand-of-guldan", "opener-midflight", "secrecy-combat" }
 local FIXTURES = {
   -- STATES — the canonical reference card: one simulated CDM square per VISIBLE cue
   -- state the live pipeline can put on an icon, captioned, left→right roughly
@@ -566,9 +566,6 @@ local FIXTURES = {
   -- (Every cue now shows its solid circle AND a glow ring; ROTATION/LATE/SOON spin +
   -- pulse, FALLBACK's ring is static.)  Squares carry real spell-icon ART (buildRig), so the
   -- chrome is judged against a busy icon like the live CDM, not a flat fill.
-  -- (Supersedes `inventory` as the default: that card still lists the RETIRED
-  -- JUDGE/SEQUENCE tokens; this one is the live SOON|ROTATION|ROTATION_FALLBACK|LATE
-  -- set plus the idle + native-glow states.)
   ["states"] = { icons = 8,
     captions = { "IDLE", "SOON", "FALLBACK", "ROTATION", "LATE", "GLOW", "GLOW·RED", "GLOW·DIM" },
     -- Each proc-glow entry is { index, color?, alpha? }: no color = native gold; a
@@ -590,27 +587,9 @@ local FIXTURES = {
         cue("fake8", "ROTATION_FALLBACK", "F"),  -- same, but the glow is DIMMED (alpha)
       },
     } },
-  -- INVENTORY — not a scenario: one dot of EVERY emphasis token side by side, each
-  -- captioned, so the whole palette (and which tokens glow) reads at a glance.  The
-  -- reference card for the visual language, not a state the Coach would produce.
-  ["inventory"] = { icons = 5,
-    captions = { "ROTATION", "LATE", "SOON", "JUDGE", "SEQUENCE" },
-    drawList = {
-      cues = {
-        cue("fake1", "ROTATION", "R"), cue("fake2", "LATE", "R"),
-        cue("fake3", "SOON", "E"),     cue("fake4", "JUDGE", "1"),
-        cue("fake5", "SEQUENCE", "sQ"),
-      },
-    } },
   -- One ROTATION press: HoG is the single call (3 shards, no proc, summons cooling).
   ["hand-of-guldan"] = { icons = 1, drawList = {
     cues = { cue("fake1", "ROTATION", "R") },
-    resourceBars = { shards(3, 5) },
-  } },
-  -- LATE + JUDGE (TCT redesign): not TCT (Tyrant far) so it's STEADY — an overdue
-  -- Dreadstalkers presses (LATE, glows), Implosion is your-call (JUDGE).  No HoG dot.
-  ["burst-hold"] = { icons = 3, drawList = {
-    cues = { cue("fake2", "LATE", "E"), cue("fake3", "JUDGE", "1") },
     resourceBars = { shards(3, 5) },
   } },
   -- ROTATION + SOON, no panel (TCT redesign — the opener panel is retired): mid-opener
@@ -777,8 +756,8 @@ local function startRotate()
   ns._renderTestTicker = C_Timer.NewTicker(ROTATE_INTERVAL, step)
 end
 
--- `/cdmp rt [<name>|inventory|rotate|off|list]` — render a fixture; bare =
--- the first one (the inventory reference card).
+-- `/cdmp rt [<name>|rotate|off|list]` — render a fixture; bare = the first one
+-- (`states`, the reference card).
 function ns.RenderTest(arg)
   arg = (arg or ""):gsub("^%s+", ""):gsub("%s+$", ""):lower()
   if arg == "list" then

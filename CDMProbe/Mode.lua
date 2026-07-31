@@ -2,10 +2,9 @@
 -- (W4 cutover) so the feature survives the old engine's deletion.  A bool + setter +
 -- 3 macro-friendly commands, nothing more.
 --
--- WHO READS IT.  State forwards `ns.Mode.aoe` as its generic `mode` ("st"|"aoe")
--- field; the Coach copies it but does not branch on it yet (Demo is a passive-cleave
--- spec — no dot changes).  The feature is live and ready for a future AoE-aware rule
--- or a second spec; it is deliberately kept vestigial rather than dropped.
+-- WHO READS IT.  State forwards `ns.Mode.aoe` as its generic `mode` ("st"|"aoe") field
+-- and the Coach passes it to the active spec brain as `ctx.mode`.  WHAT a mode gates is
+-- the spec table's business, and it differs per spec — so this file names no spell.
 local ADDON, ns = ...
 
 ns.Mode = ns.Mode or {}
@@ -21,13 +20,13 @@ end
 -- /click macro), and `/cdmp aoe` bare-toggles for a single key.  Setting a flag is
 -- not a protected action, so these run fine mid-combat.
 local function reportAoE()
-  ns.Printf("target mode: %s  |cff808080(no Demo dot changes yet — Demo is a passive-cleave spec; scaffolding for a 2nd spec / talent rule)|r",
+  ns.Printf("target mode: %s  |cff808080(what it gates is per-spec — a spec brain may ignore it entirely)|r",
     M.aoe and "|cffbef264MULTI (AoE)|r" or "|cff88ccffSINGLE|r")
 end
-ns.RegisterCommand("single", "target mode: SINGLE-target (suppresses Implosion). Macro-friendly.", function()
+ns.RegisterCommand("single", "target mode: SINGLE-target. Macro-friendly.", function()
   M.SetAoE(false); reportAoE()
 end)
-ns.RegisterCommand("multi", "target mode: MULTI-target / AoE (offers Implosion). Macro-friendly.", function()
+ns.RegisterCommand("multi", "target mode: MULTI-target / AoE. Macro-friendly.", function()
   M.SetAoE(true); reportAoE()
 end)
 ns.RegisterCommand("aoe", "toggle target mode single<->multi (bare toggle for a one-key macro)", function(rest)
