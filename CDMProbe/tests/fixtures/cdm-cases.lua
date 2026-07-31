@@ -716,8 +716,8 @@ local G = {
 
   {
     name = "draw/a-charge-shape-inferred-from-a-flag-is-not-a-measurement",
-    status = "pinned-defect",
-    fixes = "phase2 §3.7",
+    status = "green",
+    fixed = "phase2 §3.7",
     spec = 3,
     pins = "In combat `C_Spell.GetSpellCharges` is secret, so ns.ReadCharges "
         .. "short-circuits and the `not hasCharges` branch returns the SAME shape a live "
@@ -730,7 +730,8 @@ local G = {
         info = { spellID = CHAOS_BOLT, isKnown = true, charges = false } },
     },
     world = { combat = true },
-    expect = { raw = { [903] = { charge = { readable = false } } } },
+    expect = { raw = { [903] = { charge = { readable = false, max = 0, cur = ABSENT,
+                                            source = "flag" } } } },
   },
 
   {
@@ -1922,8 +1923,11 @@ local F = {
     rows = { { cid = 903, category = "Essential", frame = {},
                info = { spellID = CONFLAGRATE, isKnown = true, charges = true } } },
     world = { charges = { [CONFLAGRATE] = { currentCharges = 1, maxCharges = 1 } } },
+    -- ...and this is the MEASUREMENT half of the §3.7 pair: the client answered, so
+    -- `readable = true` with `source = "live"`.  Its twin — the same `max = 0` INFERRED
+    -- from the struct flag when the read refused — must not be able to wear this shape.
     expect = { raw = { [903] = { charge = { readable = true, max = 0, cur = ABSENT,
-                                            charged = ABSENT } } } },
+                                            charged = ABSENT, source = "live" } } } },
   },
 
   {

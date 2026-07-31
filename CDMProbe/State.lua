@@ -475,13 +475,25 @@ local function readCharge(ident, hasCharges, cooldownID)
       return { readable = true, cur = ns.Stash(cur), max = ns.Stash(max),
                source = "live", charged = true }
     end
-    return { readable = true, cur = nil, max = 0 }   -- read fine; no charge pool to report
+    -- ② A MEASUREMENT: the client answered, and the answer is "no charge pool".
+    return { readable = true, cur = nil, max = 0, source = "live" }
   end
   local ecur, emax = chargeRead(cooldownID)
   if ecur ~= nil then
     return { readable = false, cur = ecur, max = emax, source = "napkin", charged = true }
   end
-  if not hasCharges then return { readable = true, cur = nil, max = 0 } end
+  -- ④ AN INFERENCE, and it must not wear ②'s clothes (§3.7, fixed 2026-07-31).  These two
+  -- shapes were byte-identical — `{ readable = true, cur = nil, max = 0 }` — and ④ is the
+  -- IN-COMBAT COMMON CASE, because `ns.ReadCharges` short-circuits on InCombatLockdown, so
+  -- every non-charged row in combat reported a positive readability it had not measured.
+  -- One is the client answering; the other is a struct flag we chose to believe.  `readable`
+  -- is the one field whose entire job is to say which, and trust and meaning are
+  -- independent axes (cooldown-manager.md §8 rule 5).  Nothing consumes this wrongly today
+  -- — the brain keys on the MEASURED `charged`, which is precisely why `charged` exists —
+  -- so this is contract hygiene, and `source` names the provenance either way.
+  if not hasCharges then
+    return { readable = false, cur = nil, max = 0, source = "flag" }
+  end
   return { readable = false }
 end
 
@@ -1563,7 +1575,13 @@ local function virtualRow(spellID)
     displayable = true,
     virtual     = true,
     cd     = { state = "ready", remaining = 0, readable = true, source = "static" },
-    charge = { readable = true, cur = nil, max = 0 },
+    -- ⚠ DELIBERATELY readCharge's shape ②, the MEASUREMENT shape, not ④'s inference — and
+    -- that is correct here even though nothing was measured.  A virtual row exists only for
+    -- a spell we have DECLARED has no cooldown and no charge pool; `max = 0` is a statement
+    -- about the spell's nature, not a guess at a reading we could not take.  `source` says
+    -- "static" for the same reason `cd.source` does: stating a nature is a fourth kind of
+    -- provenance, and it must not be laundered as "live".
+    charge = { readable = true, cur = nil, max = 0, source = "static" },
     aura   = { readable = true, active = false },
     glow   = readGlow(live),
     display = { cooldownID = -spellID, category = "Virtual" },
