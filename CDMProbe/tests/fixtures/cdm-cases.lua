@@ -2033,8 +2033,8 @@ local F = {
 
   {
     name = "flags/charges-are-read-on-the-DISPLAY-identity",
-    status = "pinned-defect",
-    fixes = "phase2 §3.2",
+    status = "green",
+    fixed = "phase2 §3.2",
     spec = 3,
     pins = "Blizzard reads charges off `info.overrideSpellID or info.spellID` — rungs 4 "
         .. "and 5 ONLY — and comments why: \"To ensure that charges work correctly for "

@@ -463,11 +463,26 @@ end
 -- the extra attempt costs nothing in combat and one guarded call per row out of it.
 -- `charged` is the honest, MEASURED answer to "does this thing have a charge pool" — a live
 -- max > 1 — and it is what the brain keys on, rather than the flag.
--- Keyed on the DISPLAY identity for the same reason readCd is: a foreign live override
--- (a pet dispel taking over the Grimoire button) would otherwise have its charge count
--- read and filed under the base ability's key.
-local function readCharge(ident, hasCharges, cooldownID)
-  local cur, max = ns.ReadCharges(ident)
+-- ⚠ CHARGES HAVE THEIR OWN, NARROWER LADDER (§3.2, fixed 2026-07-31).  `chargeIdent` is
+-- `info.overrideSpellID or info.spellID` — rungs 4 and 5 ONLY — because that is what
+-- Blizzard reads, and it says why:
+--
+--     -- To ensure that charges work correctly for cooldown items that are actively cast,
+--     -- apply auras, and have charges only check the override or base spell ids.
+--     local chargeSpellID = info.overrideSpellID or info.spellID;
+--   `CooldownViewerItemData.lua:283-288`
+--
+-- This used to key on the DISPLAY identity, which can resolve to `overrideTooltipSpellID`
+-- (rung 3) — the very rung Blizzard excludes.  Two ladders on one row, and we were reading
+-- a different spell than the client.  Currently inert (no charged row carries a rung-3
+-- override) but always wrong.
+--
+-- The `ident` keying for the COOLDOWN read stays: that was the right fix for the foreign
+-- live override (a pet dispel taking over the Grimoire button, whose cooldown must not be
+-- read and filed under the base ability's key).  Both ladders exclude the *live* override
+-- for that reason; they differ only on rung 3.
+local function readCharge(chargeIdent, hasCharges, cooldownID)
+  local cur, max = ns.ReadCharges(chargeIdent)
   if cur ~= nil then
     if type(max) == "number" and max > 1 then
       -- The exact read ALWAYS wins, and re-seeds the napkin (the combat-exit correction).
@@ -1665,7 +1680,10 @@ function St.Build(drain)
     -- Charges, and the napkin's base -> cooldownID edge.  The alert and the OOC seed arrive
     -- keyed by cooldownID; a cast arrives keyed by spellID.  Bound off the MEASURED `charged`
     -- (a live max > 1), so a wrong struct flag cannot silently disable the napkin.
-    local charge = readCharge(ident, hasCharges, cooldownID)
+    -- ⚠ NOT `ident` — charges read off `overrideSpellID or spellID`, rungs 4 and 5 only,
+    -- because that is Blizzard's own charge ladder and it excludes rung 3 deliberately
+    -- (§3.2; see readCharge's header for the quoted reason).
+    local charge = readCharge(ovID or base, hasCharges, cooldownID)
     if charge.charged and base then chargeCid[base] = cooldownID end
 
     -- THE COOLDOWN RUNG IS TAB 1's, and only tab 1's (§3.8).  Tab 2's value cascade is
