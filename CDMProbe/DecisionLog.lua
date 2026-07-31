@@ -282,8 +282,25 @@ function DL.Render(pulse, guidance, drawList)
   table.sort(bList)
   local bStr = (#bList > 0) and table.concat(bList, " ") or "-"
 
-  return string.format("S{CD:%s | CH:%s | PR:%s | PW:%s | CS:%s | DR:%s} G{%s} B{%s}",
-    cdStr, chStr, prStr, pwStr, csStr, drStr, gStr, bStr)
+  -- DOT — the aura-lifecycle latch, and HOW OLD IT IS.  Added 2026-07-30 because a
+  -- `w:Wth:pandemic_refresh` in the field could not be diagnosed from this trace at all:
+  -- the latch is the sole input to L8's refresh half and it was the one thing the log did
+  -- not render, so "the HUD says refresh and the DoT has 17s left" had no evidence either
+  -- way.  `Wth=pandemic@4.2` reads "the pandemic edge for Wither landed 4.2s ago" — an
+  -- edge older than the DoT's own duration is a MISSED CLEAR, and that is now visible.
+  local dotList = {}
+  for spellID, e in pairs(pulse.dotEdges or {}) do
+    if type(e) == "table" and e.state then
+      local age = (type(e.at) == "number" and type(pulse.at) == "number")
+        and string.format("@%.1f", pulse.at - e.at) or ""
+      dotList[#dotList + 1] = codeForSpell(spellID) .. "=" .. tostring(e.state) .. age
+    end
+  end
+  table.sort(dotList)
+  local dotStr = (#dotList > 0) and table.concat(dotList, ",") or "-"
+
+  return string.format("S{CD:%s | CH:%s | PR:%s | PW:%s | DOT:%s | CS:%s | DR:%s} G{%s} B{%s}",
+    cdStr, chStr, prStr, pwStr, dotStr, csStr, drStr, gStr, bStr)
 end
 
 --------------------------------------------------------------------------------
