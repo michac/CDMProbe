@@ -74,9 +74,11 @@ Design context + status live in the parent workspace at
   see what you drag; locked = only the icon, and the frame eats no clicks. The position
   saves to `CDMProbeDB.virtualPanel` on drop. Refuses to CREATE the panel in combat (frame
   discipline) — an already-created one unlocks fine.
-- `rt` — render test: draw a hand-authored DrawList fixture (`Renderer.lua`). `states`
+- `rt` — render test: draw a hand-authored DrawList fixture (`RenderTest.lua`). `states`
   (default) is the reference card — every cue state in a row, captioned, over real spell
   art; `list` names the rest, `rotate` hops one cue across 5 panels, `off` clears.
+  (The `inventory` and `burst-hold` fixtures were deleted 2026-07-30 with the retired
+  JUDGE/SEQUENCE tokens — `states` had already superseded `inventory`.)
   ⚠ It exercises `R:Draw` ONLY — the proc-glow squares are applied post-Draw by the test
   rig, and `HudVirtual`'s own panel is not in it at all.
 - `reset` — turn the HUD off.
@@ -101,8 +103,12 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
     Util.lua                      color, spell-name, Secret-Values-aware describe
     Viewers.lua                   locate viewers, enumerate items, and resolve each item's
                                   IDENTITY: ns.GetViewer / ns.GetItemFrames /
-                                  ns.ItemCooldownID / ns.ItemSpellID / ns.ItemBaseSpellID
-                                  (read by HudLayout + State). ⚠ ItemCooldownID is the
+                                  ns.ItemCooldownID / ns.ItemBaseSpellID /
+                                  ns.ItemDisplaySpellID / ns.DisplayIdentity (read by
+                                  HudLayout + State). DisplayIdentity moved here from
+                                  Util.lua on 2026-07-30: it reads ns.SpecInfo, so the
+                                  bottom-of-stack utility file was depending on the spec
+                                  registry six files later. ⚠ ItemCooldownID is the
                                   pipeline's BINDING KEY — it was deleted with HudCore at
                                   the W4 cutover and its nil-guarded call sites turned that
                                   into a silent total HUD outage (fixed v0.32.25). Do not
@@ -166,7 +172,12 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   edges (readiness), the three aura edges (`dotEdge`, the
                                   pandemic latch) and `ChargeGained` (the charge napkin) —
                                   each promoted on measurement, see knowledge/addon-dev/
-                                  api-events-and-discovery.md §2.8.
+                                  api-events-and-discovery.md §2.8. Also owns the ACTIVE
+                                  HERO TREE read (C_ClassTalents, cached, wiped on
+                                  SPELLS_CHANGED) and puts it on the pulse as
+                                  `hero`/`heroSubTreeID` — moved out of CoachDestruction
+                                  2026-07-30 so a captured pulse can reproduce a
+                                  hero-gated decision.
     Coach.lua                     the generic Coach SHELL: Classify / Emit / ResourceBars
                                   / Sequence + a delegating Compute + EmptyGuidance. Reads
                                   ns.ActiveSpec live each tick; returns EmptyGuidance when
@@ -190,8 +201,10 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   three-way up/missing/unknown DoT read so an UNREADABLE
                                   Immolate never becomes "refresh it now" — now fed first by
                                   the PandemicTime alert latch, the only combat channel.
-                                  Hero tree comes from C_ClassTalents, NOT from the tracked
-                                  set (that inference was observed wrong in the field), and
+                                  Hero tree now arrives ON THE PULSE (`state.hero`, read by
+                                  State); the multi-signal tracked-set inference survives
+                                  only as the fallback for a refused API read, and the
+                                  announcement moved to HudDriver's one-shot notice. And
                                   ctx.dotID resolves to whichever Immolate/Wither id the
                                   pulse actually carries. `ART_FROM_RITUAL` is the one
                                   unsettled read, defaulted OFF — see the file header.
@@ -199,7 +212,14 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
     Binder.lua                    Binder:Bind(guidance, layout) -> DrawList: resolves
                                   each spellID cue to a display cooldownID/icon.
     Renderer.lua                  Renderer:Draw(drawList): OUR OWN textures anchored
-                                  to Blizzard's icons; semantic tokens -> pixels.
+                                  to Blizzard's icons; semantic tokens -> pixels. PURE:
+                                  no decisions, no game reads, no timers.
+    RenderTest.lua                the `/cdmp rt` render-test rig — IMPURE by construction
+                                  and deliberately outside the Draw path: placeholder icon
+                                  frames, a C_Timer ticker, the hand-authored DrawList
+                                  fixtures (ns.RenderTestFixtures, consumed by binder_spec)
+                                  and the borrowed ActionButtonSpellAlertManager proc glow.
+                                  Split out of Renderer.lua 2026-07-30.
     HudProcGlow.lua               post-hooks each CDM item's RefreshOverlayGlow and dims
                                   item.SpellActivationAlert (SetAlpha 0.5) while the HUD is
                                   on, so Blizzard's proc glow doesn't drown our chrome;
@@ -241,7 +261,8 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   hand-built State pulses assert winner + fallback + SOON
                                   per BRANCH of the flat list + shard boundaries, authored
                                   from apl-prototype/pseudocode.md (the independent oracle)
-      spec/state_domainview_spec.lua  State's DOMAIN VIEW, loaded from the REAL State.lua
+      spec/state_domainview_spec.lua  State's DOMAIN VIEW + its HERO-TREE read, loaded
+                                  from the REAL State.lua
                                   with only the CDM database + frame discovery faked: the
                                   PRESSABLE filter (an unlearned or undrawable row never
                                   reaches `abilities`, the raw `cooldowns` view keeps both,
@@ -297,12 +318,11 @@ put `~/.luarocks/bin` on PATH.
   (`Coach`, `Binder`, `Renderer`, `HudLayout`, `DecisionLog`, `HudNapkin`,
   `SpecDemonology`) + the multi-spec seam (`SpecRegistry`/`ResolveActiveSpec`, the
   resource-array projection) + the **Destruction** rotation gate + **State's domain-view
-  fold**. **353 tests** (141 pipeline/Demonology + 89 Destruction + 11 viewers_spec +
-  73 state_domainview_spec + 39 hudvirtual_spec). The harness is
+  fold** + State's hero-tree resolution. **377 tests.** The harness is
   **`CDMProbe/tests/mock_ns.lua`**: a chainable `CreateFrame`/FontString/animation
   stub, a **settable `GetTime` fake clock**, global fakes
   (`wipe`/`InCombatLockdown`/`issecretvalue`/`C_Timer`/`Enum`/`GetSpecialization`/…),
-  the **real** `Util.lua` + `SpecRegistry.lua` + `SpecDemonology.lua` +
+  the **real** `Util.lua` + `Viewers.lua` + `SpecRegistry.lua` + `SpecDemonology.lua` +
   `CoachDemonology.lua` + `SpecDestruction.lua` + `CoachDestruction.lua`
   loaded through the `local ADDON, ns = ...` vararg shim (spec
   266 activated via the resolver), and a fixture-settable `ShardCost`/`BaseCooldown`/
