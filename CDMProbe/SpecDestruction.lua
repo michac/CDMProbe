@@ -98,7 +98,14 @@ spec.SpecIDs = {
   BACKDRAFT         = 117828,   -- 2 stacks; PRESENCE readable, COUNT secret
   CHAOTIC_INFERNO   = 1244860,  -- arms the empowered Incinerate (L6)
   FIENDISH_CRUELTY  = 1245664,  -- arms Shadowburn (L7)
-  CRASHING_CHAOS    = 417234,
+  -- ⚠ CRASHING_CHAOS 417234 WAS HERE AND IS DELETED ON PURPOSE (Phase 4, 2026-07-31).
+  -- The CDM tracks it in ZERO rows, so it had no `IsActive()`, no `auraDataUnit`, no
+  -- edges — and in combat there is no fallback channel at all (`C_UnitAuras` is fully
+  -- secret, and `COMBAT_LOG_EVENT_UNFILTERED` errors on registration).  What it would
+  -- have told us is a SHARD-COST change, which the brain already reads live via
+  -- `costOf` -> `ns.ShardCost` -> `C_Spell.GetSpellPowerCost`
+  -- (CoachDestruction.lua).  Redundant, not blind — and it was the only reader of its
+  -- own declaration.  Don't re-add it; add the observation you actually need instead.
   BACKLASH          = 387384,
   FLASHPOINT        = 387263,
   LAKE_OF_FIRE      = 1244918,
@@ -338,7 +345,6 @@ spec.Spec = {
   [S.BACKDRAFT]        = { kind = "aura", label = "Backdraft" },
   [S.CHAOTIC_INFERNO]  = { kind = "aura", label = "Chaotic Inferno" },
   [S.FIENDISH_CRUELTY] = { kind = "aura", label = "Fiendish Cruelty" },
-  [S.CRASHING_CHAOS]   = { kind = "aura", label = "Crashing Chaos" },
   [S.BACKLASH]         = { kind = "aura", label = "Backlash" },
   [S.FLASHPOINT]       = { kind = "aura", label = "Flashpoint" },
   [S.LAKE_OF_FIRE]     = { kind = "aura", label = "Lake of Fire" },
