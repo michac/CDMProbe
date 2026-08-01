@@ -25,6 +25,7 @@ RenderTest.lua
 HudLayout.lua
 HudVirtual.lua
 State.lua
+Coverage.lua
 DecisionLog.lua
 HudProcGlow.lua
 HudDriver.lua
