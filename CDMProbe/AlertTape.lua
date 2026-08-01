@@ -54,21 +54,13 @@ local SESSIONS = 3     -- sessions kept on disk, mirroring the decision log
 T.session = nil        -- in-memory handle; nil => the first Record of this load opens one
 
 --------------------------------------------------------------------------------
--- Enum value -> name, built once (so a row says "PandemicTime", not "2").
+-- Enum value -> name, so a row says "PandemicTime", not "2".
 --------------------------------------------------------------------------------
-local NAMES
-local function eventName(v)
-  if not NAMES then
-    NAMES = {}
-    local A = Enum and Enum.CooldownViewerAlertEventType
-    if type(A) == "table" then
-      for name, value in pairs(A) do
-        if type(value) == "number" and type(name) == "string" then NAMES[value] = name end
-      end
-    end
-  end
-  return NAMES[v] or ("?" .. tostring(v))
-end
+-- PROMOTED to `ns.AlertEventName` (Util.lua) in Phase 4, alongside
+-- `ns.ReadValidAlertTypes` before it: this file is scheduled for deletion and the roster
+-- coverage report needs the same map.  The local alias keeps the two call sites below
+-- unchanged while there is exactly ONE map.
+local eventName = function(v) return ns.AlertEventName(v) end
 
 --------------------------------------------------------------------------------
 -- The three-way read.  classify() names WHAT we got; sample() renders it only when

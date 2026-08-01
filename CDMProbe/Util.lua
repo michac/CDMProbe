@@ -278,6 +278,37 @@ function ns.ReadCooldown(spellID, gcd)
   return false, remaining, duration, startTime
 end
 
+-- ns.AlertEventName(v) -> "PandemicTime" | "?<v>"
+--
+-- The `Enum.CooldownViewerAlertEventType` value -> name map, built LAZILY on first use
+-- (the enum is not populated at file-load time) and cached thereafter.  Exists so a
+-- readout says "PandemicTime" rather than "2".
+--
+-- ⚠ NEVER PASS A SECRET.  `tostring` on a Secret Value taints the string it lands in, and
+-- an alert-type member CAN read secret in combat.  Every caller asks `ns.IsSecret` first
+-- and renders "SECRET" instead — the same rule `ns.ReadValidAlertTypes` states below.
+--
+-- Promoted out of `AlertTape.lua` (Phase 4 housekeeping), for the same reason
+-- `ReadValidAlertTypes` was promoted in Phase 3: that file is a temporary discovery
+-- instrument scheduled for deletion, and the coverage report is built on this.  AlertTape
+-- calls this copy — there is exactly one map.
+local ALERT_EVENT_NAME
+
+function ns.AlertEventName(v)
+  if not ALERT_EVENT_NAME then
+    ALERT_EVENT_NAME = {}
+    local A = Enum and Enum.CooldownViewerAlertEventType
+    if type(A) == "table" then
+      for name, value in pairs(A) do
+        if type(value) == "number" and type(name) == "string" then
+          ALERT_EVENT_NAME[value] = name
+        end
+      end
+    end
+  end
+  return ALERT_EVENT_NAME[v] or ("?" .. tostring(v))
+end
+
 -- ns.ReadValidAlertTypes(cooldownID) -> list | nil, err
 --
 -- Which alert types a tracked cooldown can raise, via the public
