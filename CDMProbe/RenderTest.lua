@@ -289,6 +289,11 @@ local FX = {
   -- further out.  ⚠ Additive light STACKS, so a naive echo just makes it brighter, which is
   -- exactly what was asked against.  The alpha of both the base and the echo is therefore
   -- split (see echoAlpha) so total added light stays roughly flat and only the REACH grows.
+  -- Multipliers on the Renderer's per-emphasis ring size / spin period.  See the long
+  -- note at their use site: LATE already runs 1.4x bigger and 2.5x faster than every other
+  -- emphasis, which is why one sprite can look right there and flat everywhere else.
+  scale     = 1.0,  -- ring diameter multiplier (base GLOW_SCALE is 2.3)
+  spinMul   = 1.0,  -- spin PERIOD multiplier; <1 = faster (base SPIN_SECS is 4.0)
   rays      = 1.0,  -- echo diameter multiplier; 1.0 = no echo
   raysAlpha = 0.55, -- the echo's share of the light
   art       = nil,  -- index into GLOW_ART; nil = whatever Renderer.lua's GLOW_ATLAS is
@@ -680,6 +685,9 @@ local function updatePanel()
   p.bgVal:SetText(FX.bg and string.format("|cff88ff88on|r  a%.2f s%.2f", FX.bgAlpha, FX.bgScale)
                         or "|cff808080off|r")
   p.glowVal:SetText(string.format("|cffffffffx%d|r", FX.stack))
+  p.ringVal:SetText(string.format("size |cffffffff%.2fx|r  spin |cffffffff%.2fx|r%s",
+    FX.scale, FX.spinMul,
+    (FX.scale == 1.0 and FX.spinMul == 1.0) and "  |cff808080(stock)|r" or ""))
   p.raysVal:SetText(FX.rays > 1.0 and string.format("|cffffffff%.2fx|r @%.0f%%",
                       FX.rays, FX.raysAlpha * 100) or "|cff808080off|r")
   local ae = FX.art and GLOW_ART[FX.art]
@@ -709,7 +717,7 @@ end
 local function ensureFxPanel()
   local p = ns._renderTestFxPanel
   if p then return p end
-  local rows = 7
+  local rows = 8
   local f = CreateFrame("Frame", nil, UIParent)
   f:SetSize(PANEL_W, 34 + rows * ROW_H2 + 30)
   f:SetPoint("CENTER", UIParent, "CENTER", 0, -190)
@@ -771,6 +779,14 @@ local function ensureFxPanel()
   btn("-", 24, 40, y, bump(function() FX.stack = math.max(1, FX.stack - 1) end))
   btn("+", 24, 66, y, bump(function() FX.stack = math.min(4, FX.stack + 1) end))
   local glowVal = value(y)
+  -- ring size + spin speed (the LATE-vs-rest lever)
+  y = y - ROW_H2
+  label("ring", y)
+  btn("-", 24, 40, y, bump(function() FX.scale = math.max(0.5, FX.scale - 0.15) end))
+  btn("+", 24, 66, y, bump(function() FX.scale = math.min(3.0, FX.scale + 0.15) end))
+  btn("slow", 40, 96, y, bump(function() FX.spinMul = math.min(3.0, FX.spinMul + 0.25) end))
+  btn("fast", 40, 140, y, bump(function() FX.spinMul = math.max(0.2, FX.spinMul - 0.25) end))
+  local ringVal = value(y)
   -- rays (reach)
   y = y - ROW_H2
   label("rays", y)
@@ -834,12 +850,14 @@ local function ensureFxPanel()
   btn("reset all", 70, 10, y, bump(function()
     FX.bg, FX.bgAlpha, FX.bgScale = false, 0.75, 0.85
     FX.stack, FX.rays, FX.raysAlpha, FX.art = 1, 1.0, 0.55, nil
+    FX.scale, FX.spinMul = 1.0, 1.0
     FX.pop, FX.ghost, FX.peak = false, false, 2.0
     stopSoundLoop(); selectSound(nil, nil, nil, nil)
   end))
   btn("close", 60, 86, y, function() stopSoundLoop(); f:Hide() end)
 
-  p = { frame = f, bgVal = bgVal, glowVal = glowVal, raysVal = raysVal, artVal = artVal,
+  p = { frame = f, bgVal = bgVal, glowVal = glowVal, ringVal = ringVal,
+        raysVal = raysVal, artVal = artVal,
         popVal = popVal, sndVal = sndVal, sweepVal = sweepVal, loopBtn = loopBtn }
   ns._renderTestFxPanel = p
   return p
@@ -902,6 +920,39 @@ local function applyFX(renderer, activeKeys, newOnly)
       local holder = fxHolder(key, anchor)
       local ring   = (glow and glow:GetWidth() or 0)
       if ring <= 0 then ring = dot:GetWidth() * 2.3 end
+      -- RING SIZE + SPIN SPEED, as MULTIPLIERS on whatever the Renderer chose.
+      --
+      -- ⚠ THIS IS WHY ONE ART LOOKS RIGHT ON LATE AND WRONG EVERYWHERE ELSE.  LATE is the
+      -- only emphasis carrying per-token overrides (GLOW_SPEC.LATE: ringScale 3.2 vs the
+      -- base GLOW_SCALE 2.3, spinSecs 1.6 vs SPIN_SECS 4.0) — so it draws every ring ~1.4x
+      -- bigger and spinning 2.5x faster than ROTATION/SOON/FALLBACK do.  Spoked art needs
+      -- BOTH: radius, because a spoke's length is what makes it a ray rather than a bump,
+      -- and angular speed, because spokes are what let rotation read at all.  At the base
+      -- 2.3/4.0 the same sprite is shorter-spoked and turning lazily, and reads as a smudge.
+      --
+      -- MULTIPLIERS, not absolutes, deliberately: LATE's escalation is a RATIO to the base
+      -- (Renderer.lua: "the escalation is 'a bigger ring', not this exact number"), so
+      -- scaling both together preserves it.  Dial the base up until ROTATION reads, then
+      -- promote the number to GLOW_SCALE / SPIN_SECS rather than shipping it from here.
+      --
+      -- And note GLOW_SCALE is ART-SPECIFIC: 2.3 was dialled against
+      -- services-ring-large-glowspin to close the gap between the dot's rim and THAT
+      -- ring's inner edge.  A sprite whose spokes start at a different radius invalidates
+      -- the number, so swapping art and re-dialling scale are one job, not two.
+      if glow and FX.scale ~= 1.0 then
+        ring = ring * FX.scale
+        glow:SetSize(ring, ring)
+      end
+      if glow and glow.rot and glow._spinSecs and FX.spinMul ~= 1.0 then
+        -- Re-time only on CHANGE: SetDuration on a playing group restarts it, which would
+        -- stutter the ring on every redraw.  Tracked against the PRODUCT, so a per-emphasis
+        -- change upstream (LATE's 1.6) re-applies correctly.
+        local want = glow._spinSecs * FX.spinMul
+        if glow._fxSpin ~= want then
+          glow._fxSpin = want
+          glow.rot:SetDuration(want)
+        end
+      end
       local baseA, echoA = echoAlpha()
       local r, g2, b = 1, 1, 1
       if glow then r, g2, b = glow:GetVertexColor() end
@@ -1041,6 +1092,8 @@ local function fxStatus()
     FX.bg and "|cff88ff88on|r" or "off", FX.bgAlpha, FX.bgScale)
   ns.Printf("  glow  |cffffffffx%d|r  (%d additive cop%s — this is the BRIGHTNESS knob)",
     FX.stack, FX.stack - 1, FX.stack == 2 and "y" or "ies")
+  ns.Printf("  ring  |cffffffff%.2fx|r size, spin |cffffffff%.2fx|r period  "
+    .. "(LATE is already 1.4x / 2.5x faster than the rest)", FX.scale, FX.spinMul)
   ns.Printf("  rays  |cffffffff%.2fx|r (%s — this is the REACH knob, light-compensated)",
     FX.rays, FX.rays > 1.0 and string.format("echo at %.0f%% of the light", FX.raysAlpha * 100)
                             or "no echo")
@@ -1117,6 +1170,11 @@ local function fxCommand(words)
     else
       FX.bg = not FX.bg
     end
+  elseif verb == "scale" or verb == "ring" then
+    FX.scale = math.max(0.5, math.min(3.0, tonumber(a1 or "") or (FX.scale + 0.15)))
+    if words[4] then FX.spinMul = tonumber(words[4]) or FX.spinMul end
+  elseif verb == "spin" then
+    FX.spinMul = math.max(0.2, math.min(3.0, tonumber(a1 or "") or (FX.spinMul - 0.25)))
   elseif verb == "rays" then
     -- REACH, not brightness.  `rays 1` turns the echo off.
     FX.rays = math.max(1.0, math.min(4.0, tonumber(a1 or "") or (FX.rays + 0.25)))
@@ -1244,6 +1302,8 @@ local function fxCommand(words)
     ns.Print("  |cff88ff88(bare)|r        open the PANEL — every knob as a button")
     ns.Print("  |cff88ff88bg|r [size <n>|alpha <n>]  black backing disc (contrast)")
     ns.Print("  |cff88ff88glow|r [1-4]     additive ring copies — the BRIGHTNESS knob")
+    ns.Print("  |cff88ff88ring|r [n] / |cff88ff88spin|r [n]  ring SIZE / spin PERIOD, x the Renderer's")
+    ns.Print("         (LATE already runs 1.4x bigger + 2.5x faster than the rest)")
     ns.Print("  |cff88ff88rays|r [n] [a]   outer ring echo — the REACH knob, light-compensated")
     ns.Print("  |cff88ff88art|r [n|reset|list]  swap the ring ART — incl. our CC0 TGAs")
     ns.Print("  |cff88ff88pop|r [peak]     one-shot scale on cue APPLICATION")
