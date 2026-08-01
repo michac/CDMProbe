@@ -291,7 +291,7 @@ local FX = {
   -- split (see echoAlpha) so total added light stays roughly flat and only the REACH grows.
   rays      = 1.0,  -- echo diameter multiplier; 1.0 = no echo
   raysAlpha = 0.55, -- the echo's share of the light
-  atlas     = nil,  -- index into ATLASES; nil = whatever Renderer.lua's GLOW_ATLAS is
+  art       = nil,  -- index into GLOW_ART; nil = whatever Renderer.lua's GLOW_ATLAS is
   stack   = 1,      -- additive glow copies: 1 = stock, 2 = "doubled"
   pop     = false,  -- one-shot scale on application
   ghost   = false,  -- one-shot scale+fade on removal
@@ -373,31 +373,62 @@ end
 -- that does not exist, so `atlas list` validates them in-game and reports each as
 -- present/absent — the same resolve-and-report-absent shape the sound list uses, for the
 -- same reason (a silently-wrong atlas would just show nothing and read as "no improvement").
-local ATLASES = {
-  { "services-ring-large-glowspin", "the current ring (Renderer.lua's GLOW_ATLAS)" },
-  { "services-ring-small-glowspin", "same family, tighter" },
-  { "AzeriteTooltipBackground-CircleGlow", "soft radial, few rays" },
-  { "ChallengeMode-RingGlow", "M+ keystone ring" },
-  { "Artifacts-StarGlow", "star burst — long spokes" },
-  { "loottoast-glow", "loot-toast burst" },
-  { "UI-Frame-Bar-Glow", "generic bar glow (control: no rays at all)" },
+local MEDIA = "Interface\\AddOns\\CDMProbe\\Media\\fx\\"
+
+-- GLOW_ART — every candidate ring, Blizzard's and ours, behind ONE index.  Two kinds:
+--   `atlas`  a Blizzard atlas name  -> SetAtlas.  Free, but we take the art as it is.
+--   `file`   a TGA we ship          -> SetTexture.  See Media/fx/CREDITS.md.
+--
+-- WHY SHIPPING OUR OWN IS THE STRONGER ANSWER, not merely another option.  SetVertexColor
+-- MULTIPLIES, so a tint can only ever remove energy the art already has.  Blizzard's
+-- `services-ring-large-glowspin` is GOLD — mostly red+green — so our violet
+-- ROTATION_FALLBACK (green channel 0.16) multiplies most of it away, which is a real part
+-- of why the fallback reads dim.  The Kenney sprites are WHITE/GREY with the shape carried
+-- in alpha, so every hue tints at full strength.  That is a property no amount of dialling
+-- the Blizzard atlas can buy.
+local GLOW_ART = {
+  -- Blizzard atlases — names written from knowledge of the atlas set, NOT verified against
+  -- this build.  `C_Texture.GetAtlasInfo` validates them, so `art list` reports each
+  -- present/absent rather than letting a typo read as "that one looks bad".
+  { kind = "atlas", id = "services-ring-large-glowspin", label = "Blizz ring (Renderer's stock)" },
+  { kind = "atlas", id = "services-ring-small-glowspin", label = "Blizz ring, tighter" },
+  { kind = "atlas", id = "ChallengeMode-RingGlow",       label = "Blizz M+ keystone ring" },
+  { kind = "atlas", id = "Artifacts-StarGlow",           label = "Blizz star burst" },
+  -- Ours (CC0, Kenney).  These EXIST by construction — they are in the addon folder.
+  { kind = "file",  id = MEDIA .. "glow\\twirl_01.tga",  label = "Kenney twirl 01 — spiral" },
+  { kind = "file",  id = MEDIA .. "glow\\twirl_03.tga",  label = "Kenney twirl 03 — dense spiral" },
+  { kind = "file",  id = MEDIA .. "glow\\star_04.tga",   label = "Kenney star 04 — LONG spokes" },
+  { kind = "file",  id = MEDIA .. "glow\\star_07.tga",   label = "Kenney star 07 — long, sparse" },
+  { kind = "file",  id = MEDIA .. "glow\\star_09.tga",   label = "Kenney star 09 — many spokes" },
+  { kind = "file",  id = MEDIA .. "glow\\flare_01.tga",  label = "Kenney flare 01 — cross flare" },
+  { kind = "file",  id = MEDIA .. "glow\\magic_05.tga",  label = "Kenney magic 05 — ring + rays" },
+  { kind = "file",  id = MEDIA .. "glow\\light_01.tga",  label = "Kenney light 01 — soft (control)" },
 }
 
-local function atlasName(i)
-  local e = ATLASES[i]
-  return e and e[1] or nil
+-- nil = "cannot check" (a file, or no atlas API), true/false for an atlas we probed.
+local function artExists(e)
+  if not e then return nil end
+  if e.kind == "file" then return nil end
+  if not (C_Texture and C_Texture.GetAtlasInfo) then return nil end
+  return C_Texture.GetAtlasInfo(e.id) ~= nil
 end
 
-local function atlasExists(name)
-  if not (name and C_Texture and C_Texture.GetAtlasInfo) then return nil end
-  return C_Texture.GetAtlasInfo(name) ~= nil
+local function applyArt(tex, i)
+  local e = GLOW_ART[i]
+  if not (tex and e) then return false end
+  if e.kind == "file" then tex:SetTexture(e.id) else tex:SetAtlas(e.id) end
+  return true
 end
 
--- The atlas a glow should wear: an explicit override, else whatever the Renderer chose.
-local function wantAtlas(glow)
-  return (FX.atlas and atlasName(FX.atlas))
-      or (glow and glow.GetAtlas and glow:GetAtlas())
-      or nil
+-- Dress a COPY (stack / echo / ghost) in the same art as the base ring.  Handles both
+-- kinds: with no override we mirror whatever the Renderer put there, which may now be a
+-- file — so GetAtlas alone is not enough and GetTexture is the fallback read.
+local function mirrorArt(dst, src)
+  if FX.art then applyArt(dst, FX.art); return end
+  local a = src and src.GetAtlas and src:GetAtlas()
+  if a then dst:SetAtlas(a); return end
+  local t = src and src.GetTexture and src:GetTexture()
+  if t then dst:SetTexture(t) end
 end
 
 -- Split the light between the base ring and its echo so adding REACH does not add
@@ -455,8 +486,7 @@ local function playGhost(key, holder, glow, size)
     t._g = g
     FX.ghosts[key] = t
   end
-  local atlas = glow.GetAtlas and glow:GetAtlas()
-  if atlas then t:SetAtlas(atlas) end
+  mirrorArt(t, glow)
   local r, gg, b = glow:GetVertexColor()
   t:SetVertexColor(r or 1, gg or 1, b or 1, 1)
   t:SetSize(size, size)
@@ -483,21 +513,43 @@ end
 -- directly (SOUNDKIT is just named constants over a small slice of that space), and
 -- `sound file <path>` plays any sound file — including one we ship ourselves, the way
 -- Media/JetBrainsMono.ttf is already shipped.
+-- OUR OWN FILES COME FIRST, deliberately.  They are the answer to "too subtle": Kenney
+-- normalises that pack's volume, and since WoW has NO volume API (below), a file that is
+-- already loud is the only real gain control there is.  They are also the only entries
+-- here that are VERIFIED — a shipped file exists by construction, whereas every SOUNDKIT
+-- name below is a guess that may resolve to nothing.  See Media/fx/CREDITS.md.
 local SOUNDS = {
-  { "UI_POWER_AURA_GENERIC",          "power-aura ping (the classic proc ding)" },
-  { "IG_MAINMENU_OPTION_CHECKBOX_ON", "checkbox tick (dry, very short)" },
-  { "IG_QUEST_LIST_SELECT",           "quest-list select (soft click)" },
-  { "UI_TOYBOX_TAB",                  "toybox tab (woody tap)" },
-  { "UI_TRANSMOG_ITEM_CLICK",         "transmog click (crisp)" },
-  { "UI_AUTO_QUEST_COMPLETE",         "auto-quest complete (chime)" },
-  { "MAP_PING",                       "map ping (locator blip)" },
-  { "GS_TITLE_OPTION_OK",             "title-screen OK (thunk)" },
-  { "UI_RAID_BOSS_WHISPER_WARNING",   "boss whisper (attention-grabber)" },
+  { kind = "file", id = MEDIA .. "sfx\\confirmation_001.ogg", label = "Kenney confirm 01 — the 'activated!' pick" },
+  { kind = "file", id = MEDIA .. "sfx\\confirmation_002.ogg", label = "Kenney confirm 02 — brighter" },
+  { kind = "file", id = MEDIA .. "sfx\\confirmation_003.ogg", label = "Kenney confirm 03 — two-tone" },
+  { kind = "file", id = MEDIA .. "sfx\\confirmation_004.ogg", label = "Kenney confirm 04 — longest" },
+  { kind = "file", id = MEDIA .. "sfx\\bong_001.ogg",         label = "Kenney bong — soft mallet" },
+  { kind = "file", id = MEDIA .. "sfx\\select_001.ogg",       label = "Kenney select 01 — dry blip" },
+  { kind = "file", id = MEDIA .. "sfx\\select_004.ogg",       label = "Kenney select 04 — sharper" },
+  { kind = "file", id = MEDIA .. "sfx\\question_001.ogg",     label = "Kenney question — rising" },
+  { kind = "kit",  id = "UI_POWER_AURA_GENERIC",          label = "power-aura ping (the classic proc ding)" },
+  { kind = "kit",  id = "IG_MAINMENU_OPTION_CHECKBOX_ON", label = "checkbox tick (dry, very short)" },
+  { kind = "kit",  id = "IG_QUEST_LIST_SELECT",           label = "quest-list select (soft click)" },
+  { kind = "kit",  id = "UI_TOYBOX_TAB",                  label = "toybox tab (woody tap)" },
+  { kind = "kit",  id = "UI_TRANSMOG_ITEM_CLICK",         label = "transmog click (crisp)" },
+  { kind = "kit",  id = "UI_AUTO_QUEST_COMPLETE",         label = "auto-quest complete (chime)" },
+  { kind = "kit",  id = "MAP_PING",                       label = "map ping (locator blip)" },
+  { kind = "kit",  id = "GS_TITLE_OPTION_OK",             label = "title-screen OK (thunk)" },
+  { kind = "kit",  id = "UI_RAID_BOSS_WHISPER_WARNING",   label = "boss whisper (attention-grabber)" },
 }
 
-local function soundID(i)
+-- -> (kitID, filePath).  Exactly one is non-nil for a resolvable entry; BOTH nil means a
+-- SOUNDKIT name that is not on this build, which is a reportable state, not a crash.
+local function soundSrc(i)
   local e = SOUNDS[i]
-  return e and SOUNDKIT and SOUNDKIT[e[1]] or nil
+  if not e then return nil, nil end
+  if e.kind == "file" then return nil, e.id end
+  return (SOUNDKIT and SOUNDKIT[e.id]) or nil, nil
+end
+
+local function soundLabel(i)
+  local e = SOUNDS[i]
+  return e and string.format("%d. %s", i, e.label) or "off"
 end
 
 -- ⚠ THERE IS NO VOLUME PARAMETER.  `PlaySound(kitID, channel, forceNoDuplicates,
@@ -611,26 +663,56 @@ end
 -- rather than "does this cut through".  So the pool gets a mouse — prev / replay / next /
 -- loop as buttons, with the id and position on screen.  The slash verbs all still work;
 -- this just makes the common one free.
-local PANEL_W, PANEL_H = 268, 92
-local sweepTo   -- fwd: the buttons drive it, and it refreshes the panel
+-- EVERY knob is a button, not just the sound.  The sound sweep proved the point in the
+-- small — `/cdmp rt fx sound sweep` is 24 characters to advance ONE of 235 candidates, so
+-- the interaction cost swamped the judgement — but the same is true of `bg size 0.7` and
+-- `rays 1.5` and `art 7`.  A visual experiment you drive by typing is one you stop running
+-- before you have found the answer.  So: one draggable panel, a row per knob, live values,
+-- and every click redraws the view immediately.  The slash verbs all still work and both
+-- routes share the SAME setters, so they cannot drift.
+local PANEL_W, ROW_H2, BTN_H = 348, 24, 20
+local sweepTo       -- fwd: buttons drive it
+local drawFxView    -- fwd: every click redraws the view (defined with the fx view below)
 
 local function updatePanel()
-  local p = ns._renderTestSoundPanel
+  local p = ns._renderTestFxPanel
   if not p then return end
-  p.title:SetText(string.format("|cff88ff88%d|r / %d   id |cffffffff%s|r",
-    FX.sweep, #LOUD_UI, tostring(LOUD_UI[FX.sweep] or "-")))
-  p.sub:SetText(string.format("channel |cffffffff%s|r   x%d burst   %s",
-    SOUND_CHANNELS[FX.channel] or "Master", FX.rep,
-    FX.loop and "|cff88ff88LOOPING|r" or "loop off"))
+  p.bgVal:SetText(FX.bg and string.format("|cff88ff88on|r  a%.2f s%.2f", FX.bgAlpha, FX.bgScale)
+                        or "|cff808080off|r")
+  p.glowVal:SetText(string.format("|cffffffffx%d|r", FX.stack))
+  p.raysVal:SetText(FX.rays > 1.0 and string.format("|cffffffff%.2fx|r @%.0f%%",
+                      FX.rays, FX.raysAlpha * 100) or "|cff808080off|r")
+  local ae = FX.art and GLOW_ART[FX.art]
+  p.artVal:SetText(ae and ("|cffffffff" .. FX.art .. ".|r " .. ae.label) or "|cff808080stock|r")
+  p.popVal:SetText(string.format("%s   ghost %s",
+    FX.pop and "|cff88ff88on|r" or "|cff808080off|r",
+    FX.ghost and "|cff88ff88on|r" or "|cff808080off|r"))
+  p.sndVal:SetText(FX.soundLabel and ("|cffffffff" .. FX.soundLabel .. "|r")
+                                  or "|cffff8080off|r")
+  p.sweepVal:SetText(string.format("%s  |cff88ff88%s|r  x%d  %s",
+    SOUND_CHANNELS[FX.channel] or "Master",
+    FX.sweep > 0 and (FX.sweep .. "/" .. #LOUD_UI) or "-", FX.rep,
+    FX.loop and "|cff88ff88LOOP|r" or ""))
   p.loopBtn:SetText(FX.loop and "stop" or "loop")
 end
 
-local function ensureSoundPanel()
-  local p = ns._renderTestSoundPanel
+-- Apply a change, refresh the readout, and REDRAW so the eye sees it at once.  Every
+-- button goes through this; a knob you have to re-render by hand gets dialled by guesswork.
+local function bump(fn)
+  return function()
+    fn()
+    updatePanel()
+    if drawFxView then drawFxView() end
+  end
+end
+
+local function ensureFxPanel()
+  local p = ns._renderTestFxPanel
   if p then return p end
+  local rows = 7
   local f = CreateFrame("Frame", nil, UIParent)
-  f:SetSize(PANEL_W, PANEL_H)
-  f:SetPoint("CENTER", UIParent, "CENTER", 0, -160)
+  f:SetSize(PANEL_W, 34 + rows * ROW_H2 + 30)
+  f:SetPoint("CENTER", UIParent, "CENTER", 0, -190)
   f:SetFrameStrata("DIALOG")
   f:EnableMouse(true)
   f:SetMovable(true)
@@ -639,44 +721,132 @@ local function ensureSoundPanel()
   f:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
   local bg = f:CreateTexture(nil, "BACKGROUND")
   bg:SetAllPoints(f)
-  bg:SetColorTexture(0.04, 0.05, 0.06, 0.92)
+  bg:SetColorTexture(0.04, 0.05, 0.06, 0.93)
   local edge = f:CreateTexture(nil, "BORDER")
   edge:SetPoint("TOPLEFT", f, "TOPLEFT", -1, 1)
   edge:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", 1, -1)
   edge:SetColorTexture(0.30, 1.00, 0.48, 0.55)
 
   local title = f:CreateFontString(nil, "OVERLAY")
-  ns.SetFont(title, 15, "OUTLINE")
-  title:SetPoint("TOP", f, "TOP", 0, -9)
-  local sub = f:CreateFontString(nil, "OVERLAY")
-  ns.SetFont(sub, 11, "")
-  sub:SetPoint("TOP", title, "BOTTOM", 0, -5)
+  ns.SetFont(title, 13, "OUTLINE")
+  title:SetPoint("TOPLEFT", f, "TOPLEFT", 10, -9)
+  title:SetText("|cff88ff88rt fx|r — experiment panel  |cff808080(drag to move)|r")
 
-  local function button(label, w, x, onClick)
+  local function btn(label, w, x, y, onClick)
     local b = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
-    b:SetSize(w, 22)
-    b:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", x, 9)
+    b:SetSize(w, BTN_H)
+    b:SetPoint("TOPLEFT", f, "TOPLEFT", x, y)
     b:SetText(label)
     b:SetScript("OnClick", onClick)
     return b
   end
-  button("<", 34, 10, function() sweepTo(FX.sweep - 1) end)
-  button("replay", 62, 48, function() playCueBurst(); updatePanel() end)
-  button(">", 34, 114, function() sweepTo(FX.sweep + 1) end)
-  local loopBtn = button("loop", 52, 152, function()
+  local function label(text, y)
+    local fs = f:CreateFontString(nil, "OVERLAY")
+    ns.SetFont(fs, 11, "")
+    fs:SetPoint("TOPLEFT", f, "TOPLEFT", 10, y - 4)
+    fs:SetText(text)
+    return fs
+  end
+  local function value(y)
+    local fs = f:CreateFontString(nil, "OVERLAY")
+    ns.SetFont(fs, 11, "")
+    fs:SetPoint("TOPLEFT", f, "TOPLEFT", 196, y - 4)
+    fs:SetWidth(PANEL_W - 204)
+    fs:SetJustifyH("LEFT")
+    return fs
+  end
+
+  local y = -32
+  -- bg
+  label("bg", y); btn("on/off", 46, 40, y, bump(function() FX.bg = not FX.bg end))
+  btn("-", 24, 90, y, bump(function() FX.bgScale = math.max(0.3, FX.bgScale - 0.05); FX.bg = true end))
+  btn("+", 24, 116, y, bump(function() FX.bgScale = math.min(2.5, FX.bgScale + 0.05); FX.bg = true end))
+  btn("a", 24, 146, y, bump(function()
+    FX.bgAlpha = FX.bgAlpha >= 1.0 and 0.25 or math.min(1.0, FX.bgAlpha + 0.25); FX.bg = true
+  end))
+  local bgVal = value(y)
+  -- glow (brightness)
+  y = y - ROW_H2
+  label("glow", y)
+  btn("-", 24, 40, y, bump(function() FX.stack = math.max(1, FX.stack - 1) end))
+  btn("+", 24, 66, y, bump(function() FX.stack = math.min(4, FX.stack + 1) end))
+  local glowVal = value(y)
+  -- rays (reach)
+  y = y - ROW_H2
+  label("rays", y)
+  btn("-", 24, 40, y, bump(function() FX.rays = math.max(1.0, FX.rays - 0.25) end))
+  btn("+", 24, 66, y, bump(function() FX.rays = math.min(4.0, FX.rays + 0.25) end))
+  btn("a", 24, 96, y, bump(function()
+    FX.raysAlpha = FX.raysAlpha >= 0.8 and 0.2 or FX.raysAlpha + 0.15
+  end))
+  local raysVal = value(y)
+  -- art
+  y = y - ROW_H2
+  label("art", y)
+  btn("<", 24, 40, y, bump(function()
+    FX.art = ((FX.art or 1) - 2) % #GLOW_ART + 1
+  end))
+  btn(">", 24, 66, y, bump(function() FX.art = (FX.art or 0) % #GLOW_ART + 1 end))
+  btn("stock", 46, 96, y, bump(function() FX.art = nil end))
+  local artVal = value(y)
+  -- pop / ghost
+  y = y - ROW_H2
+  label("pop", y)
+  btn("pop", 40, 40, y, bump(function() FX.pop = not FX.pop end))
+  btn("ghost", 46, 84, y, bump(function() FX.ghost = not FX.ghost end))
+  btn("peak", 40, 134, y, bump(function()
+    FX.peak = FX.peak >= 3.0 and 1.5 or FX.peak + 0.5; FX.pop = true
+  end))
+  local popVal = value(y)
+  -- sound: the curated list (ours first)
+  y = y - ROW_H2
+  label("sound", y)
+  btn("<", 24, 40, y, function()
+    local i = ((FX.sound or 1) - 2) % #SOUNDS + 1
+    local kit, file = soundSrc(i); selectSound(i, kit, file, soundLabel(i))
+    playCueBurst(); updatePanel()
+  end)
+  btn("play", 40, 66, y, function() playCueBurst(); updatePanel() end)
+  btn(">", 24, 110, y, function()
+    local i = (FX.sound or 0) % #SOUNDS + 1
+    local kit, file = soundSrc(i); selectSound(i, kit, file, soundLabel(i))
+    playCueBurst(); updatePanel()
+  end)
+  local loopBtn = btn("loop", 40, 140, y, function()
     if FX.loop then stopSoundLoop() else startSoundLoop() end
     updatePanel()
   end)
-  button("x", 34, 210, function() stopSoundLoop(); f:Hide() end)
+  local sndVal = value(y)
+  -- sweep the raw loud pool + channel
+  y = y - ROW_H2
+  label("sweep", y)
+  btn("<", 24, 40, y, function() sweepTo(FX.sweep - 1) end)
+  btn(">", 24, 66, y, function() sweepTo(FX.sweep + 1) end)
+  btn("chan", 40, 96, y, function()
+    FX.channel = FX.channel % #SOUND_CHANNELS + 1; playCueBurst(); updatePanel()
+  end)
+  btn("x3", 26, 140, y, function()
+    FX.rep = FX.rep >= 5 and 1 or FX.rep + 2; playCueBurst(); updatePanel()
+  end)
+  local sweepVal = value(y)
+  -- footer
+  y = y - ROW_H2 - 4
+  btn("reset all", 70, 10, y, bump(function()
+    FX.bg, FX.bgAlpha, FX.bgScale = false, 0.75, 0.85
+    FX.stack, FX.rays, FX.raysAlpha, FX.art = 1, 1.0, 0.55, nil
+    FX.pop, FX.ghost, FX.peak = false, false, 2.0
+    stopSoundLoop(); selectSound(nil, nil, nil, nil)
+  end))
+  btn("close", 60, 86, y, function() stopSoundLoop(); f:Hide() end)
 
-  p = { frame = f, title = title, sub = sub, loopBtn = loopBtn }
-  ns._renderTestSoundPanel = p
+  p = { frame = f, bgVal = bgVal, glowVal = glowVal, raysVal = raysVal, artVal = artVal,
+        popVal = popVal, sndVal = sndVal, sweepVal = sweepVal, loopBtn = loopBtn }
+  ns._renderTestFxPanel = p
   return p
 end
 
--- Move to an absolute pool position (wrapping), select it, play it, refresh the panel.
--- THE ONE DOOR for advancing: the slash verb and all three buttons route through it, so
--- they cannot drift apart.
+-- Move to an absolute LOUD_UI position (wrapping), select it, play it, refresh.  THE ONE
+-- DOOR for advancing the raw pool: the slash verb and both buttons route through it.
 sweepTo = function(pos)
   FX.sweep = ((pos - 1) % #LOUD_UI) + 1
   local id = LOUD_UI[FX.sweep]
@@ -700,9 +870,9 @@ local function soundDiagnose()
     return
   end
   ns.Printf("  selection        |cffffffff%s|r", FX.soundLabel or "?")
-  if FX.sound and not FX.soundID then
+  if FX.sound and not (FX.soundID or FX.soundFile) then
     ns.Printf("  resolve          |cffff4040'%s' is NOT in SOUNDKIT on this build|r",
-      SOUNDS[FX.sound][1])
+      SOUNDS[FX.sound].id)
     ns.Print("  |cffffffff=> try another, or /cdmp rt fx sound id <kitID>|r")
     return
   end
@@ -744,8 +914,7 @@ local function applyFX(renderer, activeKeys, newOnly)
       -- the alpha DOES get reset to 1 by the renderer's SetVertexColor, which is why it is
       -- re-applied here on every pass rather than once.
       if glow then
-        local a = wantAtlas(glow)
-        if a and FX.atlas then glow:SetAtlas(a) end
+        if FX.art then applyArt(glow, FX.art) end
         glow:SetVertexColor(r, g2, b, baseA)
       end
       -- 1. BACKING DISC.  Sized off the ring's OUTERMOST drawn extent (the echo, when one
@@ -777,8 +946,7 @@ local function applyFX(renderer, activeKeys, newOnly)
           echo._spin = sg
           FX.echoes[key] = echo
         end
-        local a = wantAtlas(glow)
-        if a then echo:SetAtlas(a) end
+        mirrorArt(echo, glow)
         echo:SetVertexColor(r, g2, b, echoA)
         echo:SetSize(outer, outer)
         echo:ClearAllPoints()
@@ -805,8 +973,7 @@ local function applyFX(renderer, activeKeys, newOnly)
           copies[i] = c
         end
         if glow then
-          local atlas = wantAtlas(glow)
-          if atlas then c:SetAtlas(atlas) end
+          mirrorArt(c, glow)
           -- Full alpha, unlike the echo: `glow <n>` IS the brightness knob, so its copies
           -- are supposed to stack light.  `rays` is the reach knob and compensates.
           c:SetVertexColor(r, g2, b, 1)
@@ -877,8 +1044,9 @@ local function fxStatus()
   ns.Printf("  rays  |cffffffff%.2fx|r (%s — this is the REACH knob, light-compensated)",
     FX.rays, FX.rays > 1.0 and string.format("echo at %.0f%% of the light", FX.raysAlpha * 100)
                             or "no echo")
-  local a = FX.atlas and atlasName(FX.atlas)
-  ns.Printf("  atlas |cffffffff%s|r", a or "(Renderer.lua's GLOW_ATLAS)")
+  local ae = FX.art and GLOW_ART[FX.art]
+  ns.Printf("  art   |cffffffff%s|r", ae and (FX.art .. ". " .. ae.label)
+    or "(Renderer.lua's GLOW_ATLAS)")
   ns.Printf("  pop   |cffffffff%s|r  ghost |cffffffff%s|r  (peak %.1fx over %.2fs)",
     FX.pop and "on" or "off", FX.ghost and "on" or "off", FX.peak, FX.secs)
   ns.Printf("  sound |cffffffff%s|r  (channel %s)%s", FX.soundLabel or "off",
@@ -923,13 +1091,17 @@ end
 -- `/cdmp rt fx <knob> …` — set an experimental knob, then REDRAW the fx view so the
 -- change is on screen immediately (a knob you have to re-render by hand gets dialled by
 -- guesswork).  Returns true if it handled the input.
-local drawFxView   -- forward decl: the knobs redraw, the view applies the knobs
-
 local function fxCommand(words)
   local verb, a1 = words[2], words[3]
   if verb == nil or verb == "status" then
     fxStatus()
-    if verb == nil then drawFxView() end
+    if verb == nil then
+      -- Bare `rt fx` opens the panel AND draws.  The panel is the intended way to run
+      -- this experiment; the verbs are the fallback, not the front door.
+      ensureFxPanel().frame:Show()
+      drawFxView()
+      updatePanel()
+    end
     return true
   end
   if verb == "bg" then
@@ -950,28 +1122,29 @@ local function fxCommand(words)
     FX.rays = math.max(1.0, math.min(4.0, tonumber(a1 or "") or (FX.rays + 0.25)))
     if not a1 and FX.rays >= 4.0 then FX.rays = 1.0 end     -- bare `rays` cycles
     if words[4] then FX.raysAlpha = tonumber(words[4]) or FX.raysAlpha end
-  elseif verb == "atlas" then
+  elseif verb == "atlas" or verb == "art" then
     if a1 == "list" then
-      ns.Heading("rt fx atlas — candidate ring art (validated against THIS build)")
-      for i, e in ipairs(ATLASES) do
-        local ok = atlasExists(e[1])
-        ns.Printf("  %d. |cffffffff%s|r — %s %s", i, e[1], e[2],
-          ok == nil and "|cff808080[cannot check]|r"
-            or (ok and "|cff88ff88[present]|r" or "|cffff4040[absent]|r"))
+      ns.Heading("rt fx art — candidate ring art")
+      for i, e in ipairs(GLOW_ART) do
+        local ok = artExists(e)
+        ns.Printf("  %d. |cffffffff%s|r %s", i, e.label,
+          e.kind == "file" and "|cff88ff88[ours, CC0]|r"
+            or (ok == nil and "|cff808080[cannot check]|r"
+                or (ok and "|cff88ff88[present]|r" or "|cffff4040[absent]|r")))
       end
-      ns.Print("usage: |cffffffff/cdmp rt fx atlas|r (next) | <n> | reset | list")
+      ns.Print("usage: |cffffffff/cdmp rt fx art|r (next) | <n> | reset | list")
       return true
     elseif a1 == "reset" then
-      FX.atlas = nil
+      FX.art = nil
     elseif tonumber(a1) then
-      FX.atlas = math.max(1, math.min(#ATLASES, math.floor(tonumber(a1))))
+      FX.art = math.max(1, math.min(#GLOW_ART, math.floor(tonumber(a1))))
     else
-      FX.atlas = (FX.atlas or 0) % #ATLASES + 1
+      FX.art = (FX.art or 0) % #GLOW_ART + 1
     end
-    local name = FX.atlas and atlasName(FX.atlas)
-    if name and atlasExists(name) == false then
+    local e = FX.art and GLOW_ART[FX.art]
+    if e and artExists(e) == false then
       ns.Printf("|cffff4040'%s' is not an atlas on this build|r — the ring will draw "
-        .. "NOTHING; try another or |cffffffffatlas reset|r", name)
+        .. "NOTHING; try another or |cffffffffart reset|r", e.id)
     end
   elseif verb == "glow" then
     FX.stack = math.max(1, math.min(4, math.floor(tonumber(a1 or "") or (FX.stack + 1))))
@@ -1000,14 +1173,14 @@ local function fxCommand(words)
       -- Walk the verified max-volume UI pool.  Bare = next; a number JUMPS to that
       -- POSITION (not that id), so a promising one can be re-found by index.  Opens the
       -- panel on the way through: the whole point is that step 2 onward is a click.
-      ensureSoundPanel().frame:Show()
+      ensureFxPanel().frame:Show()
       local id, willPlay = sweepTo(tonumber(a2) and math.floor(tonumber(a2)) or (FX.sweep + 1))
       ns.Printf("rt fx sweep |cffffffff%d/%d|r — id |cffffffff%d|r %s  (now use the panel)",
         FX.sweep, #LOUD_UI, id,
         willPlay == false and "|cffff4040[refused]|r" or "|cff88ff88[playing]|r")
       return true
     elseif a1 == "panel" then
-      local p = ensureSoundPanel()
+      local p = ensureFxPanel()
       if p.frame:IsShown() then stopSoundLoop(); p.frame:Hide() else p.frame:Show() end
       updatePanel()
       return true
@@ -1028,9 +1201,11 @@ local function fxCommand(words)
     elseif a1 == "list" then
       ns.Heading("rt fx sound — the audition list (a starting point, NOT a verified set)")
       for i, e in ipairs(SOUNDS) do
-        local id = soundID(i)
-        ns.Printf("  %d. |cffffffff%s|r — %s %s", i, e[1], e[2],
-          id and ("|cff88ff88[" .. id .. "]|r") or "|cffff4040[absent on this build]|r")
+        local kit, file = soundSrc(i)
+        ns.Printf("  %d. |cffffffff%s|r %s", i, e.label,
+          file and "|cff88ff88[ours, CC0 ogg]|r"
+            or (kit and ("|cff88ff88[kit " .. kit .. "]|r")
+                or "|cffff4040[absent on this build]|r"))
       end
       ns.Print("SOUNDKIT is named constants over |cffffffff333,671|r SoundKit ids — the")
       ns.Print("list is a shortcut, not the limit.  Reach the rest directly:")
@@ -1049,14 +1224,16 @@ local function fxCommand(words)
       selectSound(nil, nil, a2, "file " .. a2)
     elseif tonumber(a1) then
       local i = math.max(1, math.min(#SOUNDS, math.floor(tonumber(a1))))
-      selectSound(i, soundID(i), nil, i .. ". " .. SOUNDS[i][1] .. " — " .. SOUNDS[i][2])
+      local kit, file = soundSrc(i)
+      selectSound(i, kit, file, soundLabel(i))
     else
       local i = (FX.sound or 0) % #SOUNDS + 1            -- bare `sound` = audition the next
-      selectSound(i, soundID(i), nil, i .. ". " .. SOUNDS[i][1] .. " — " .. SOUNDS[i][2])
+      local kit, file = soundSrc(i)
+      selectSound(i, kit, file, soundLabel(i))
     end
-    if FX.sound and not FX.soundID then
+    if FX.sound and not (FX.soundID or FX.soundFile) then
       ns.Printf("|cffff4040%s is not in SOUNDKIT on this build|r — try another, or "
-        .. "|cffffffffsound id <kitID>|r", SOUNDS[FX.sound][1])
+        .. "|cffffffffsound id <kitID>|r", SOUNDS[FX.sound].id)
     end
     playCueBurst()                                       -- hear it right now, as a burst
     updatePanel()
@@ -1064,10 +1241,11 @@ local function fxCommand(words)
     return true
   else
     ns.Heading("rt fx — experimental cue treatments")
+    ns.Print("  |cff88ff88(bare)|r        open the PANEL — every knob as a button")
     ns.Print("  |cff88ff88bg|r [size <n>|alpha <n>]  black backing disc (contrast)")
     ns.Print("  |cff88ff88glow|r [1-4]     additive ring copies — the BRIGHTNESS knob")
     ns.Print("  |cff88ff88rays|r [n] [a]   outer ring echo — the REACH knob, light-compensated")
-    ns.Print("  |cff88ff88atlas|r [n|reset|list]  swap the ring ART (rays are baked into it)")
+    ns.Print("  |cff88ff88art|r [n|reset|list]  swap the ring ART — incl. our CC0 TGAs")
     ns.Print("  |cff88ff88pop|r [peak]     one-shot scale on cue APPLICATION")
     ns.Print("  |cff88ff88ghost|r          one-shot scale+fade on cue REMOVAL")
     ns.Print("  |cff88ff88sound|r [n|id|file|sweep|channel|test|off|list]  cue SFX (bare = next)")
