@@ -124,12 +124,13 @@ describe("HudBinds — B.Resolve, the keybind rung ladder", function()
 end)
 
 --------------------------------------------------------------------------------
--- THE LOGIN RACE (v0.32.50).  Field-found: every one of 17 displayed rows read
--- `key=none`, and MOVING THE CDM in Edit Mode fixed them — because that finally raised a
--- binding event.  `B.Start` runs from `St.Acquire`, i.e. when the HUD is enabled, which on
--- a login auto-enable is before the client has populated slots and bindings; the scan
--- cached an empty map, cleared `dirty`, and nothing re-armed it, because the events that
--- would have (UPDATE_BINDINGS / ACTIONBAR_SLOT_CHANGED) had already fired during load.
+-- THE CACHE'S TWO FENCES.  The 2026-07-31 field session ran entirely keyless, and the
+-- cause was the COMBAT GATE (`0 scan(s)` — a target-dummy session is continuous combat, so
+-- the scan never ran once).  The EMPTY-SCAN fence below was written for that report before
+-- the status line pinned it down, and has never been observed firing in the field — it is
+-- kept because caching an empty scan as authoritative is a real hole regardless, and the
+-- cold-cache exemption relies on it to keep retrying.  Both are pinned here; only the
+-- second is a fix for something we measured.
 --
 -- These drive the REAL 180-slot scan through the harness's default-inert action-bar fake.
 -- ⚠ `C_Timer.After` is a no-op in the harness, so the retry does not recurse here — what

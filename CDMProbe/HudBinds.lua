@@ -140,25 +140,22 @@ end
 local DEBOUNCE = 0.5
 local scheduled = false
 
--- ⚠ THE LOGIN RACE (v0.32.50).  An EMPTY scan is not an answer, it is a RACE — and until
--- this fence existed it was cached as authoritative and never re-armed, so the whole HUD
--- ran keyless until something happened to touch a bar.  The mechanism:
+-- An EMPTY scan is not an answer: a scan that resolved ZERO bindings keeps `dirty` and
+-- re-arms, up to a cap.  Without this, `scan()` cleared `dirty` over an empty map and the
+-- only thing that could ever set it again was a bar/binding event — and on a login
+-- auto-enable, `B.Start` (which runs from `St.Acquire`) registers for those events AFTER
+-- the client has already fired them during load.  Capped because "no bindings at all" is a
+-- legitimate state for a fresh character, and an uncapped retry would poll all session.
 --
---   * `B.Start` runs from `St.Acquire`, i.e. the moment the HUD is enabled — which on a
---     login auto-enable is early, before the client has populated action slots and
---     bindings.
---   * The invalidating events that WOULD have healed it (`UPDATE_BINDINGS`,
---     `ACTIONBAR_SLOT_CHANGED`) had already fired during load, BEFORE `Start` registered
---     for them.  So `dirty` was cleared over an empty map and nothing ever set it again.
---
--- Measured in the field 2026-07-31: all 17 displayed rows read `key=none`, and MOVING THE
--- CDM in Edit Mode fixed them — because that finally raised a binding event.  A partial
--- scan (bar 1 up, multibars not yet) is the same race caught mid-flight, and produces the
--- more confusing symptom: SOME icons keyed, some not.
---
--- The fence is deliberately narrow: a scan that resolved ZERO bindings keeps `dirty` and
--- re-arms, up to a cap.  Capped because "no bindings at all" is a legitimate state for a
--- fresh character, and an uncapped retry would poll for the length of the session.
+-- ⚠ PROVENANCE, because the comment here used to overclaim (corrected v0.32.51).  This
+-- fence is REASONED, not field-proven.  It was written for the 2026-07-31 report of
+-- `key=none` on all 17 displayed rows — but that turned out to be the COMBAT GATE below
+-- (`0 scan(s)`: the scan had never run at all, so this fence was never even reached), and
+-- so did the earlier partial-keys report, and so did "moving the CDM in Edit Mode fixed
+-- it" — you cannot open Edit Mode in combat, so that was simply the first out-of-combat
+-- rescan.  Kept anyway because caching an empty scan as authoritative is a real hole on
+-- its own, and because the cold-cache exemption below depends on this to keep retrying.
+-- But do NOT cite it as the cause of a field symptom: it has never been observed firing.
 local EMPTY_RETRIES = 12         -- ~6 s of cover at the debounce interval; then believe it
 local emptyRetries = 0
 
@@ -169,9 +166,13 @@ local emptyRetries = 0
 --
 -- That reasoning does not survive an EMPTY cache.  With nothing cached there is no churn to
 -- prevent, and the fence buys nothing while costing everything: the whole HUD runs keyless.
--- Field-found immediately after the login-race fix — a target-dummy session is CONTINUOUS
--- COMBAT, so `/cdmp hud status` read `0 bound / 0 slot(s), 0 scan(s), deferred 3x`: the
--- scan had never run once, and the combat exit it was waiting for was never going to come.
+-- THIS IS THE ONE THE FIELD ACTUALLY FOUND, and it explains every symptom in the
+-- 2026-07-31 session on its own.  `/cdmp hud status` read `0 bound / 0 slot(s), 0 scan(s),
+-- deferred 3x` — a target-dummy session is CONTINUOUS COMBAT, so the scan had never run
+-- once and the combat exit it was deferring to was never going to come.  The earlier
+-- "only SOME icons have keys" report is the same gate one step milder: a bar or hero-tree
+-- swap in combat leaves the cache STALE for exactly the spells whose bar id moved, and it
+-- cannot refresh until the fight ends.
 --
 -- So: a COLD cache scans in combat, a WARM one still defers.  One 180-slot read beats an
 -- entire session with no key hints, and the retry cap above bounds it either way.
