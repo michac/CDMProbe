@@ -100,7 +100,12 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
   CDMProbe/                       <- the addon folder ghaddons installs
     CDMProbe.toc
     Core.lua                      namespace, saved vars, slash cmds, registry
-    Util.lua                      color, spell-name, Secret-Values-aware describe
+    Util.lua                      color, spell-name, Secret-Values-aware describe, and the
+                                  GUARDED-READ LADDER every game read goes through:
+                                  ns.ReadCooldown / ReadCharges / ReadGCD /
+                                  ns.ReadValidAlertTypes (promoted out of AlertTape.lua in
+                                  Phase 3 — ⚠ that API UNDER-REPORTS, so a consumer says
+                                  "not reported eligible", never "cannot fire")
     Viewers.lua                   locate viewers, enumerate items, and resolve each item's
                                   IDENTITY: ns.GetViewer / ns.GetItemFrames /
                                   ns.ItemCooldownID / ns.ItemBaseSpellID /
@@ -129,19 +134,16 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   is the instrument that CONFIRMS the field-fix C/C2 latches
                                   against their source events, so it survives until that
                                   in-game pass is done. Delete it straight after.
-    Census.lua                    ⚠ TEMPORARY discovery instrument, MEANT TO BE DELETED —
-                                  same model as AlertTape: one question set, one capture
-                                  format, a clear end date. The CDM STRUCT CENSUS: `/cdmp
-                                  census` walks every row of both tabs and dumps the raw
-                                  struct + frame fields, to settle the six roster-state-plan
-                                  Phase-2 questions that were "wrong by construction with an
-                                  UNCONFIRMED TRIGGER". Extracted by `wowkb.cdmp census`.
-                                  ⏳ The 2026-07-31 capture ANSWERED all six (17 tab-1 rows
-                                  carry an aura flag; two rows carry both override fields;
-                                  auraDataUnit + PandemicIcon are readable) and Phase 2
-                                  consumed the answers — so this is now deletable on the
-                                  next pass, along with its .toc line, its command and its
-                                  `census` saved-var.
+                                  ⚠ Its `GetValidAlertTypes` read was PROMOTED out to
+                                  `ns.ReadValidAlertTypes` (Util.lua) in Phase 3, because
+                                  Phase 4's roster coverage probe is built on it and must
+                                  not die with this file. Only the capture bookkeeping +
+                                  formatting stayed here.
+    -- (Census.lua — the temporary CDM STRUCT CENSUS, `/cdmp census` — was DELETED in
+    -- Phase 3 (2026-07-31) along with its .toc line, its `census` saved-var, its spec and
+    -- `wowkb.cdmp census`. It did its job: the 2026-07-31 capture answered all six
+    -- roster-state-plan Phase-2 questions and Phase 2 consumed the answers. Recover from
+    -- git history if a genuinely new struct question ever needs the same instrument.)
     Mode.lua                      the single/AoE target-mode toggle (`ns.Mode.aoe`
                                   + `single`/`multi`/`aoe`); State forwards it, the
                                   Coach reads it (extracted from HudCore at the cutover)
@@ -236,10 +238,21 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   unsettled read, defaulted OFF — see the file header.
                                   Greened against coach_destruction_apl_spec.
     Binder.lua                    Binder:Bind(guidance, layout) -> DrawList: resolves
-                                  each spellID cue to a display cooldownID/icon.
+                                  each spellID cue to a display cooldownID/icon. Emits TWO
+                                  per-icon channels (Phase 3): `cues[]`, one entry per Coach
+                                  DECISION, and `keybinds[]`, one per displayed icon with a
+                                  key — built straight off the Layout with NO Coach
+                                  involvement, because a keybind is identity chrome. Before
+                                  Phase 3 a key hint rode an emphasis-less "empty cue", so a
+                                  display concern travelled the decision channel and
+                                  `#cues` counted chrome as well as decisions.
     Renderer.lua                  Renderer:Draw(drawList): OUR OWN textures anchored
                                   to Blizzard's icons; semantic tokens -> pixels. PURE:
-                                  no decisions, no game reads, no timers.
+                                  no decisions, no game reads, no timers. ⚠ `drawCues` and
+                                  `drawKeybinds` each RETURN their active handle set and
+                                  `Draw` culls the shared `cueHolders` on the UNION — both
+                                  channels ride one holder per icon, so a per-channel cull
+                                  would hide the other channel's decoration every frame.
     RenderTest.lua                the `/cdmp rt` render-test rig — IMPURE by construction
                                   and deliberately outside the Draw path: placeholder icon
                                   frames, a C_Timer ticker, the hand-authored DrawList
@@ -274,6 +287,15 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   up, unconfirmed" rather than claiming ready.
     HudBinds.lua                  action-bar scan -> keybind per spellID (cached,
                                   out-of-combat only); read live off State each tick.
+                                  `B.Resolve(...)` is the RUNG LADDER (Phase 3 §4.1):
+                                  candidate ids in rung order, first one with a real
+                                  binding wins. State passes rung 3 -> 4 -> 5
+                                  (overrideTooltipSpellID / overrideSpellID / base). ⚠ It
+                                  carries NO spec fences — unlike ns.DisplayIdentity it asks
+                                  the action bar, so a wrong candidate simply has no binding
+                                  and falls through. Rungs 1-2 are deliberately out: rung 1
+                                  is the Demonic-Art transform fence, rung 2 was measured
+                                  absent (0 of 72 rows, 2026-07-31).
     tests/                        busted unit tests (M4.5 T2) — NOT in the .toc,
                                   so never loaded in-game / harmless in the zip
       mock_ns.lua                 the harness: CreateFrame stub + fake clock +
@@ -316,7 +338,14 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   presence read, the untracked-Incinerate degradation, and
                                   the ART_FROM_RITUAL switch on both settings
       spec/coach_classify_spec.lua Classify in isolation (probably-up, transforms)
-      spec/binder_spec.lua        spellID cue -> display cooldownID/icon resolution
+      spec/binder_spec.lua        spellID cue -> display cooldownID/icon resolution, and
+                                  the SECOND channel: cues carry decisions only, keybinds[]
+                                  carries the key hint for every displayed icon (Phase 3)
+      spec/hudbinds_spec.lua      B.Resolve's RUNG LADDER off the REAL module: order (3>4>5),
+                                  fall-through on an unbound rung, the secret/non-number
+                                  refusals, nil rather than a placeholder, the alias fallback
+                                  surviving on a rung.  Also the shipped-symbol gate for
+                                  Resolve — State calls it unguarded
       spec/renderer_spec.lua      DrawList -> texture/token treatment
       spec/hudlayout_spec.lua     the CDM viewer walk -> Layout
       spec/hudvirtual_spec.lua    the virtual-icon fragments (shape agrees with
@@ -325,7 +354,7 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   round-trip, the default fallback, `reset`, lock/unlock
                                   over mouse+chrome+alpha, and the extents floor
       fixtures/cdm-cases.lua      THE CDM EDGE INVENTORY (pure data, never auto-collected —
-                                  busted's pattern is `_spec.lua`).  96 declarative
+                                  busted's pattern is `_spec.lua`).  99 declarative
                                   (CDM input -> expected State row) cases in 7 axes,
                                   authored from knowledge/addon-dev/cooldown-manager.md
                                   (NOT from State.lua — a suite transcribed from the source
@@ -337,7 +366,7 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   fix commit flips it to green + `fixed = "<phase> <§>"` in
                                   its own diff; do NOT "repair" one by weakening the
                                   expectation.  Phase 2 cleared all 11, so the corpus is
-                                  currently **0 pinned-defect / 19 `fixed`** — the `fixed`
+                                  currently **0 pinned-defect / 21 `fixed`** — the `fixed`
                                   tag is the permanent record that the case once failed, and
                                   a meta-test floors `#pinned + #fixed` so the history can
                                   never be quietly deleted.  Read the file header for the
@@ -385,15 +414,18 @@ put `~/.luarocks/bin` on PATH.
   `SpecDemonology`) + the multi-spec seam (`SpecRegistry`/`ResolveActiveSpec`, the
   resource-array projection) + the **Destruction** rotation gate + **State's domain-view
   fold** + State's hero-tree resolution + the **CDM edge inventory** (see `tests/fixtures/`
-  below). **567 tests / 4 pending.** The harness is
+  below). **562 tests / 4 pending.** The harness is
   **`CDMProbe/tests/mock_ns.lua`**: a chainable `CreateFrame`/FontString/animation
   stub, a **settable `GetTime` fake clock**, global fakes
   (`wipe`/`InCombatLockdown`/`issecretvalue`/`C_Timer`/`Enum`/`GetSpecialization`/…),
   the **real** `Util.lua` + `Viewers.lua` + `SpecRegistry.lua` + `SpecDemonology.lua` +
-  `CoachDemonology.lua` + `SpecDestruction.lua` + `CoachDestruction.lua`
+  `CoachDemonology.lua` + `SpecDestruction.lua` + `CoachDestruction.lua` + `HudBinds.lua`
   loaded through the `local ADDON, ns = ...` vararg shim (spec
   266 activated via the resolver), and a fixture-settable `ShardCost`/`BaseCooldown`/
-  napkin surface. Specs load the module under test into that same `ns`. Run from this
+  napkin surface. ⚠ `HudBinds` is the REAL module with `B.map` pointed at `fx.keybind` —
+  the fixture supplies the action-bar cache and the rung ladder above it is shipping code
+  (a stub would have had to duplicate the ladder these cases are about); only `Start` is
+  stubbed, since the real one scans 180 slots through `GetActionInfo`. Specs load the module under test into that same `ns`. Run from this
   repo root:
 
   ```bash
