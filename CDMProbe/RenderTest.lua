@@ -35,7 +35,10 @@ local R = ns.Renderer
 -- in the SHARED ns.HudGeometry table — the Binder stamps the exact same shapes in
 -- Phase 4, so these fixtures and the live producer agree by construction, not copy.
 local G = ns.HudGeometry
-local cue = G.cue          -- cue(handle, emphasis, keybind) -> a positioned cue
+local cue = G.cue          -- cue(handle, emphasis) -> a positioned cue.  ⚠ NO keybind arg:
+                           -- Phase 3 gave keybinds their own channel, so a cue is a decision
+                           -- and nothing else.
+local kb  = G.keybind      -- kb(handle, key) -> a positioned key hint (the other channel)
 local shards = G.resourceBar  -- shards(value, max) -> the centred discrete-pip bar
 
 local FIXTURE_ORDER = { "states", "hand-of-guldan", "opener-midflight", "secrecy-combat" }
@@ -72,27 +75,35 @@ local FIXTURES = {
       { index = 8, alpha = 0.35 },
     },
     drawList = {
+      -- IDLE (fake1) is the channel separation made visible: it appears in `keybinds` and
+      -- NOT in `cues`.  Every other square is in both.
       cues = {
-        cue("fake1", nil, "Q"),                  -- IDLE: keybind only, no dot
-        cue("fake2", "SOON", "E"),               -- anticipation: yellow circle + spinning ring
-        cue("fake3", "ROTATION_FALLBACK", "R"),  -- runner-up: violet circle + spinning ring
-        cue("fake4", "ROTATION", "R"),           -- press now: green circle + spinning ring
-        cue("fake5", "LATE", "E"),               -- overdue: amber circle + spinning ring
-        cue("fake6", "ROTATION_FALLBACK", "F"),  -- FALLBACK dot + keybind, NATIVE glow on top
-        cue("fake7", "ROTATION_FALLBACK", "F"),  -- same, but the glow is RECOLORED (red)
-        cue("fake8", "ROTATION_FALLBACK", "F"),  -- same, but the glow is DIMMED (alpha)
+        cue("fake2", "SOON"),               -- anticipation: yellow circle + spinning ring
+        cue("fake3", "ROTATION_FALLBACK"),  -- runner-up: violet circle + spinning ring
+        cue("fake4", "ROTATION"),           -- press now: green circle + spinning ring
+        cue("fake5", "LATE"),               -- overdue: amber circle + spinning ring
+        cue("fake6", "ROTATION_FALLBACK"),  -- FALLBACK dot + keybind, NATIVE glow on top
+        cue("fake7", "ROTATION_FALLBACK"),  -- same, but the glow is RECOLORED (red)
+        cue("fake8", "ROTATION_FALLBACK"),  -- same, but the glow is DIMMED (alpha)
+      },
+      keybinds = {
+        kb("fake1", "Q"),                   -- IDLE: key hint only, no dot
+        kb("fake2", "E"), kb("fake3", "R"), kb("fake4", "R"), kb("fake5", "E"),
+        kb("fake6", "F"), kb("fake7", "F"), kb("fake8", "F"),
       },
     } },
   -- One ROTATION press: HoG is the single call (3 shards, no proc, summons cooling).
   ["hand-of-guldan"] = { icons = 1, drawList = {
-    cues = { cue("fake1", "ROTATION", "R") },
+    cues = { cue("fake1", "ROTATION") },
+    keybinds = { kb("fake1", "R") },
     resourceBars = { shards(3, 5) },
   } },
   -- ROTATION + SOON, no panel (TCT redesign — the opener panel is retired): mid-opener
   -- the burst walk still owes a shard, so Shadow Bolt caps (ROTATION) while Tyrant rides
   -- the SOON anchor.  The one-press cue walk replaced the sequence panel.
   ["opener-midflight"] = { icons = 2, drawList = {
-    cues = { cue("fake1", "ROTATION", "Q"), cue("fake2", "SOON", "sQ") },
+    cues = { cue("fake1", "ROTATION"), cue("fake2", "SOON") },
+    keybinds = { kb("fake1", "Q"), kb("fake2", "sQ") },
     resourceBars = { shards(3, 5) },
   } },
   -- ROTATION + SOON with every cd unreadable: Demonbolt presses (Core up via a
@@ -100,7 +111,8 @@ local FIXTURES = {
   -- fake1 = Demonbolt (its key is "F" in the golden state — matched here so the
   -- fixture equals what the Binder emits from that golden).
   ["secrecy-combat"] = { icons = 2, drawList = {
-    cues = { cue("fake1", "ROTATION", "F"), cue("fake2", "SOON", "sQ") },
+    cues = { cue("fake1", "ROTATION"), cue("fake2", "SOON") },
+    keybinds = { kb("fake1", "F"), kb("fake2", "sQ") },
     resourceBars = { shards(2, 5) },
   } },
 }

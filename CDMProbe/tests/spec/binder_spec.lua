@@ -1,9 +1,12 @@
 -- binder_spec.lua — the W4 Phase-4 arbiter for the Binder (Guidance + Layout ->
 -- DrawList).  Three families:
 --
---   * cues (4b)         — the layout-gated geometry/keybind merge: corner geometry,
---                         emphasis pass-through, keybind-by-spellID, glow rule, and
---                         the DROP of a cue whose cooldownID isn't displayed.
+--   * cues (4b)         — the layout-gated geometry merge: corner geometry, emphasis
+--                         pass-through, and the DROP of a cue whose cooldownID isn't
+--                         displayed.  ONE ENTRY PER DECISION (Phase 3) — a cue never
+--                         carries a keybind and an uncued icon emits none.
+--   * keybinds (Phase 3) — the SECOND per-icon channel, built off the Layout with no
+--                         Guidance at all: one entry per displayed icon that has a key.
 --   * panel/bar (4c)    — sequence -> panel rows, resourceBars -> centred pip bars.
 --   * close-the-loop (4d) — the payoff: feed each golden's guidance.json + a Layout
 --                         and keybind map DERIVED FROM the same golden's state.json
@@ -78,7 +81,7 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
   -- 4b — cues
   ------------------------------------------------------------------------------
   describe("cues", function()
-    it("stamps corner geometry + emphasis + keybind for a displayed cue", function()
+    it("stamps corner geometry + emphasis for a displayed cue", function()
       local b = Binder.New({ keybindFor = keybindsFrom({ [105174] = "R" }) })
       local drawList = b:Bind(
         { cues = { [105174] = { draw = true, emphasis = "ROTATION" } } },   -- keyed by spellID
@@ -86,10 +89,24 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
 
       assert.are.equal(1, #drawList.cues)
       -- No `glow` bool any more — ring behaviour is emphasis-derived in the Renderer.
+      -- And NO `keybind`: whole-shape equality, so the key riding a cue would fail here.
       assertEqual({
         anchorTo = "34991", point = "TOPRIGHT", relPoint = "TOPRIGHT",
-        dx = -3, dy = -3, size = 12, emphasis = "ROTATION", keybind = "R",
+        dx = -3, dy = -3, size = 12, emphasis = "ROTATION",
       }, drawList.cues[1], "cue")
+    end)
+
+    -- The phase's central invariant, stated where it is cheapest to break: the cue channel
+    -- is DECISIONS.  A key on a cue would be the empty-cue design creeping back in.
+    it("never puts a keybind on a cue, from either keybind source", function()
+      local b = Binder.New({ keybindFor = keybindsFrom({ [105174] = "R", [686] = "Q" }) })
+      local drawList = b:Bind(
+        { cues = { [105174] = { draw = true, emphasis = "ROTATION" },
+                   [686]    = { draw = true, emphasis = "SOON" } } },
+        { ["34991"] = { spellID = 105174 },                     -- key via the cfg seam
+          ["34990"] = { spellID = 686, keybind = "Q" } })       -- key via the layout
+      assert.are.equal(2, #drawList.cues)
+      for _, c in ipairs(drawList.cues) do assert.is_nil(c.keybind) end
     end)
 
     it("drops a cue whose cooldownID is not in the layout", function()
@@ -109,14 +126,6 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
     -- (The old "glows only ROTATION/LATE" test is retired: the `glow` bool is gone and
     -- ring behaviour is now emphasis-derived in the Renderer — covered by renderer_spec.)
 
-    it("carries no keybind when the spell is unbound (never a placeholder)", function()
-      local b = Binder.New({ keybindFor = keybindsFrom({}) })   -- nothing bound
-      local drawList = b:Bind(
-        { cues = { [105174] = { draw = true, emphasis = "ROTATION" } } },
-        { ["34991"] = { spellID = 105174 } })
-      assert.is_nil(drawList.cues[1].keybind)
-    end)
-
     -- Asserted with a token the Renderer has NO entry for: the Binder is a geometry
     -- merge and must forward whatever emphasis the Guidance carried, uninterpreted.
     it("passes the emphasis token through without resolving colour", function()
@@ -133,59 +142,91 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
       local drawList = b:Bind(
         { cues = { [105174] = { draw = false, emphasis = "ROTATION" } } },
         { ["34991"] = { spellID = 105174 } })
-      assert.are.equal(0, #drawList.cues)   -- no emphasis, no keybind -> nothing
+      assert.are.equal(0, #drawList.cues)   -- demoted to no emphasis -> no cue
     end)
 
-    -- P5d — empty cues: a keybind rides EVERY displayed icon, cued or not.
-    it("emits a keybind-only (empty) cue for a displayed icon the Coach didn't signal", function()
-      local b = Binder.New({ keybindFor = keybindsFrom({ [686] = "Q", [105174] = "R" }) })
-      local drawList = b:Bind(
-        { cues = { [105174] = { draw = true, emphasis = "ROTATION" } } },   -- only HoG cued
-        { ["34991"] = { spellID = 105174 }, ["34990"] = { spellID = 686 } }) -- SB displayed too
-      local m = byAnchor(drawList.cues)
-      -- HoG: a full cue.
-      assert.are.equal("ROTATION", m["34991"].emphasis)
-      assert.are.equal("R", m["34991"].keybind)
-      -- SB: an empty cue — key hint, no emphasis.
-      assert.is_not_nil(m["34990"])
-      assert.is_nil(m["34990"].emphasis)
-      assert.are.equal("Q", m["34990"].keybind)
-    end)
-
-    it("still draws a keybind-only cue for an icon whose Coach cue is draw=false", function()
+    it("emits no cue for an icon whose Coach cue is draw=false, however well bound", function()
       local b = Binder.New({ keybindFor = keybindsFrom({ [105174] = "R" }) })
       local drawList = b:Bind(
         { cues = { [105174] = { draw = false, emphasis = "ROTATION" } } },
-        { ["34991"] = { spellID = 105174 } })
-      assert.are.equal(1, #drawList.cues)
-      assert.is_nil(drawList.cues[1].emphasis)     -- draw=false demotes to no dot...
-      assert.are.equal("R", drawList.cues[1].keybind)  -- ...but the key still rides
-    end)
-
-    it("omits a displayed icon with neither emphasis nor keybind", function()
-      local b = Binder.New({ keybindFor = keybindsFrom({}) })   -- unbound
-      local drawList = b:Bind({ cues = {} }, { ["34990"] = { spellID = 686 } })
+        { ["34991"] = { spellID = 105174, keybind = "R" } })
+      -- Pre-Phase-3 this emitted an "empty cue" so the key could ride.  Now the key rides
+      -- its own channel and the cue channel says nothing.
       assert.are.equal(0, #drawList.cues)
+      assert.are.equal(1, #drawList.keybinds)
+    end)
+  end)
+
+  ------------------------------------------------------------------------------
+  -- Phase 3 — the keybinds channel.  Identity chrome, off the Layout, no Coach.
+  ------------------------------------------------------------------------------
+  describe("keybinds", function()
+    it("stamps upper-left corner geometry + the key, and nothing else", function()
+      local b = Binder.New({ keybindFor = keybindsFrom({ [105174] = "R" }) })
+      local drawList = b:Bind(
+        { cues = { [105174] = { draw = true, emphasis = "ROTATION" } } },
+        { ["34991"] = { spellID = 105174 } })
+      assert.are.equal(1, #drawList.keybinds)
+      assertEqual({
+        anchorTo = "34991", point = "TOPLEFT", relPoint = "TOPLEFT",
+        dx = 2, dy = -2, keybind = "R",
+      }, drawList.keybinds[1], "keybind")
     end)
 
-    -- P5d fix — the layout's OWN keybind (State-resolved, stitched by the driver) wins
-    -- over the cfg seam, so a divergent re-lookup can't override State's correct value.
+    -- The phase's user-visible payoff: the key hint rides EVERY displayed icon, and an
+    -- uncued one costs the cue channel nothing at all.
+    it("emits a keybind for a displayed icon the Coach didn't signal, and zero cues", function()
+      local b = Binder.New({ keybindFor = keybindsFrom({ [686] = "Q" }) })
+      local drawList = b:Bind(
+        { cues = {} },                                   -- the Coach signalled nothing
+        { ["34990"] = { spellID = 686 } })               -- ...but Shadow Bolt is displayed
+      assert.are.equal(0, #drawList.cues)
+      assert.are.equal(1, #drawList.keybinds)
+      assert.are.equal("Q", drawList.keybinds[1].keybind)
+      assert.are.equal("34990", drawList.keybinds[1].anchorTo)
+    end)
+
+    it("carries no entry when the spell is unbound (never a placeholder)", function()
+      local b = Binder.New({ keybindFor = keybindsFrom({}) })   -- nothing bound
+      local drawList = b:Bind(
+        { cues = { [105174] = { draw = true, emphasis = "ROTATION" } } },
+        { ["34991"] = { spellID = 105174 } })
+      assert.are.equal(1, #drawList.cues)        -- the decision still stands...
+      assert.are.equal(0, #drawList.keybinds)    -- ...with no key hint invented for it
+    end)
+
+    -- P5d's surviving fix — the layout's OWN keybind (State-resolved, stitched by the
+    -- driver) wins over the cfg seam, so a divergent re-lookup can't override State's
+    -- correct value.  Since Phase 3 §4.1 that value comes off the RUNG LADDER, which is
+    -- exactly why the Binder must not second-guess it.
     it("prefers the layout's State-resolved keybind over the cfg seam", function()
       local b = Binder.New({ keybindFor = keybindsFrom({ [105174] = "WRONG" }) })
       local drawList = b:Bind(
-        { cues = { [105174] = { draw = true, emphasis = "ROTATION" } } },
+        { cues = {} },
         { ["34991"] = { spellID = 105174, keybind = "R" } })   -- State said R
-      assert.are.equal("R", byAnchor(drawList.cues)["34991"].keybind)
+      assert.are.equal("R", drawList.keybinds[1].keybind)
     end)
 
-    it("draws a keybind-only cue straight from the layout keybind (no seam, no emphasis)", function()
-      local b = Binder.New({})   -- no seam at all, mirroring the live driver
+    it("reads straight off the layout keybind with no seam at all (the live driver's shape)", function()
+      local b = Binder.New({})   -- no keybindFor, mirroring HudDriver
       local drawList = b:Bind(
         { cues = {} },
         { ["671"] = { spellID = 104316, keybind = "E" } })   -- State-stitched Dreadstalkers
-      local m = byAnchor(drawList.cues)
-      assert.is_nil(m["671"].emphasis)
-      assert.are.equal("E", m["671"].keybind)
+      assert.are.equal(1, #drawList.keybinds)
+      assert.are.equal("671", drawList.keybinds[1].anchorTo)
+      assert.are.equal("E", drawList.keybinds[1].keybind)
+    end)
+
+    it("is emitted in a deterministic (sorted) handle order", function()
+      local b = Binder.New({})
+      local drawList = b:Bind({ cues = {} }, {
+        ["671"]   = { spellID = 104316, keybind = "E" },
+        ["34990"] = { spellID = 686,    keybind = "Q" },
+        ["2742"]  = { spellID = 265187, keybind = "sQ" },
+      })
+      local order = {}
+      for i, k in ipairs(drawList.keybinds) do order[i] = k.anchorTo end
+      assertEqual({ "2742", "34990", "671" }, order, "keybind order")
     end)
   end)
 
@@ -322,12 +363,13 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
       ["secrecy-combat"]   = { fake1 = "1979", fake2 = "2742" },
     }
 
-    -- The fixture cues keyed by their MAPPED cooldownID, so they line up with the
-    -- Binder's anchorTo.
-    local function expectedCues(scenario)
+    -- A fixture channel keyed by its MAPPED cooldownID, so it lines up with the Binder's
+    -- anchorTo.  Both `cues` and `keybinds` use the same handle vocabulary, so one helper
+    -- re-keys either.
+    local function expectedChannel(scenario, channel)
       local map = HANDLE_MAP[scenario]
       local m = {}
-      for _, c in ipairs(Fixtures[scenario].drawList.cues or {}) do
+      for _, c in ipairs(Fixtures[scenario].drawList[channel] or {}) do
         local cid = map[c.anchorTo] or error("no handle map for " .. tostring(c.anchorTo))
         local copy = {}
         for k, v in pairs(c) do copy[k] = v end
@@ -345,12 +387,20 @@ describe("Binder:Bind — Guidance + Layout -> DrawList", function()
         local drawList = b:Bind(sc.guidance, sc.layout)
         local fixture = Fixtures[scenario].drawList
 
-        -- The Binder now also emits keybind-only (empty) cues for displayed icons the
-        -- Coach didn't signal (P5d); the rendertest fixtures carry only the emphasis-
-        -- bearing dots, so compare that subset. (The empty-cue path has its own tests.)
-        local dots = {}
-        for _, c in ipairs(drawList.cues) do if c.emphasis then dots[#dots + 1] = c end end
-        assertEqual(expectedCues(scenario), byAnchor(dots), scenario .. ".cues")
+        -- The cue channel now matches the fixture EXACTLY — no subsetting.  Before Phase 3
+        -- the Binder padded it with keybind-only "empty cues" that the fixture never
+        -- carried, so this comparison had to filter them out first.
+        assertEqual(expectedChannel(scenario, "cues"), byAnchor(drawList.cues),
+                    scenario .. ".cues")
+        -- The keybinds channel covers every DISPLAYED icon, while the fixture only draws
+        -- the scenario's two squares — so compare the fixture's handles as a subset.
+        local expectedKeys = expectedChannel(scenario, "keybinds")
+        local gotKeys = byAnchor(drawList.keybinds)
+        for cid, want in pairs(expectedKeys) do
+          assertEqual(want, gotKeys[cid], scenario .. ".keybinds." .. cid)
+        end
+        -- ...and every OTHER displayed icon with a bind gets one too (the phase's point).
+        assert.are.equal(6, #drawList.keybinds)
         assertEqual(fixture.panel, drawList.panel, scenario .. ".panel")
         assertEqual(fixture.resourceBars, drawList.resourceBars, scenario .. ".resourceBars")
       end)

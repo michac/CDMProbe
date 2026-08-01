@@ -189,11 +189,15 @@ describe("Renderer", function()
   end)
 
   ------------------------------------------------------------------------------
-  -- keybind hint (upper-left inside the icon)
+  -- keybind hints — the DrawList's SECOND per-icon channel (Phase 3).  These used to
+  -- ride the cue entry; they now arrive on `keybinds[]` and are drawn independently.
   ------------------------------------------------------------------------------
-  it("draws the keybind hint at the icon's TOPLEFT when the cue carries one", function()
+  -- The geometry comes off the ENTRY, not from literals in the Renderer (the Binder
+  -- stamps ns.HudGeometry.KEY), so this asserts what it was TOLD.
+  it("draws the keybind hint at the entry's own anchor point", function()
     local r, icons = rigged(1)
-    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION", keybind = "R" } } })
+    r:Draw({ keybinds = { { anchorTo = "fake1", point = "TOPLEFT", relPoint = "TOPLEFT",
+                            dx = 2, dy = -2, keybind = "R" } } })
     local fs = r.cueKeys["fake1"]
     assert.equals("R", fs:GetText())
     assert.is_true(fs._shown)
@@ -201,41 +205,71 @@ describe("Renderer", function()
     assert.equals("TOPLEFT", pt.point)
     assert.equals(icons[1], pt.rel)          -- pinned to the icon, not the dot
     assert.equals("TOPLEFT", pt.relPoint)
+    assert.equals(2, pt.dx)
+    assert.equals(-2, pt.dy)
   end)
 
-  it("draws no keybind hint when the cue omits one", function()
+  it("draws no keybind hint for a cue-only icon", function()
     local r = rigged(1)
     r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" } } })
     assert.is_nil(r.cueKeys["fake1"])
   end)
 
-  it("hides the keybind hint when its handle drops out", function()
+  it("hides the keybind hint when its handle drops out of the keybinds channel", function()
     local r = rigged(2)
-    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION", keybind = "R" },
-                      { anchorTo = "fake2", emphasis = "SOON", keybind = "E" } } })
+    r:Draw({ keybinds = { { anchorTo = "fake1", keybind = "R" },
+                          { anchorTo = "fake2", keybind = "E" } } })
     assert.is_true(r.cueKeys["fake2"]._shown)
-    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION", keybind = "R" } } })
+    r:Draw({ keybinds = { { anchorTo = "fake1", keybind = "R" } } })
     assert.is_false(r.cueKeys["fake2"]._shown)
   end)
 
-  -- P5d: an EMPTY CUE (keybind, no emphasis) draws the key hint but NO dot/glow.
-  it("draws the keybind on an empty cue (no emphasis) with no dot", function()
+  -- The Phase-3 shape: a key hint on an icon with no cue at all draws the hint and NO dot.
+  -- (Pre-Phase-3 this was an "empty cue" — a keybind with no emphasis on the cue channel.)
+  it("draws a keybind-only icon with no dot and no glow", function()
     local r = rigged(1)
-    r:Draw({ cues = { { anchorTo = "fake1", keybind = "Q" } } })   -- no emphasis
+    r:Draw({ cues = {}, keybinds = { { anchorTo = "fake1", keybind = "Q" } } })
     assert.equals("Q", r.cueKeys["fake1"]:GetText())
     assert.is_true(r.cueKeys["fake1"]._shown)
     assert.is_nil(r.cueFrames["fake1"])       -- no dot was ever created
     assert.is_nil(r.glowing["fake1"])
   end)
 
-  -- The dot hides but the key hint survives when a cued icon loses its emphasis.
-  it("keeps the key hint but drops the dot when a cue goes empty", function()
+  ------------------------------------------------------------------------------
+  -- CULL INDEPENDENCE — the one real trap in Phase 3.  Both channels share
+  -- `cueHolders` (one holder per icon, carrying both decorations), so culling holders
+  -- inside either pass would hide the other channel's decoration every frame.  R:Draw
+  -- culls on the UNION; these two tests are what pin that, one per direction.
+  ------------------------------------------------------------------------------
+  it("keeps the key hint when the icon's DOT drops out", function()
     local r = rigged(1)
-    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION", keybind = "Q" } } })
+    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" } },
+             keybinds = { { anchorTo = "fake1", keybind = "Q" } } })
     assert.is_true(r.cueFrames["fake1"]._shown)
-    r:Draw({ cues = { { anchorTo = "fake1", keybind = "Q" } } })   -- emphasis gone
-    assert.is_false(r.cueFrames["fake1"]._shown) -- dot hidden...
-    assert.is_true(r.cueKeys["fake1"]._shown)    -- ...key hint stays
+    r:Draw({ cues = {}, keybinds = { { anchorTo = "fake1", keybind = "Q" } } })
+    assert.is_false(r.cueFrames["fake1"]._shown)   -- dot hidden...
+    assert.is_true(r.cueKeys["fake1"]._shown)      -- ...key hint stays
+    assert.is_true(r.cueHolders["fake1"]._shown)   -- ...and so does the holder it rides
+  end)
+
+  it("keeps the dot when the icon's KEY HINT drops out", function()
+    local r = rigged(1)
+    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" } },
+             keybinds = { { anchorTo = "fake1", keybind = "Q" } } })
+    assert.is_true(r.cueKeys["fake1"]._shown)
+    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" } }, keybinds = {} })
+    assert.is_false(r.cueKeys["fake1"]._shown)     -- hint hidden...
+    assert.is_true(r.cueFrames["fake1"]._shown)    -- ...dot stays
+    assert.is_true(r.cueHolders["fake1"]._shown)
+  end)
+
+  it("hides the holder only when BOTH channels drop the handle", function()
+    local r = rigged(1)
+    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" } },
+             keybinds = { { anchorTo = "fake1", keybind = "Q" } } })
+    assert.is_true(r.cueHolders["fake1"]._shown)
+    r:Draw({})
+    assert.is_false(r.cueHolders["fake1"]._shown)
   end)
 
   ------------------------------------------------------------------------------
@@ -303,11 +337,13 @@ describe("Renderer", function()
   end)
 
   -- `states` is the reference card: every VISIBLE cue state the live pipeline can put
-  -- on an icon, in one DrawList.  IDLE (no emphasis) draws a keybind and nothing else;
-  -- every other square carries a live emphasis token that rings.
+  -- on an icon, in one DrawList.  Since Phase 3 the IDLE square is the CHANNEL SEPARATION
+  -- made visible — it is in `keybinds` and not in `cues` at all, so there are 8 captions,
+  -- 8 keybinds, and only 7 cues.
   it("the states fixture draws the whole live emphasis set, captioned", function()
     local st = H.ns.RenderTestFixtures["states"]
-    assert.equals(8, #st.drawList.cues)
+    assert.equals(7, #st.drawList.cues)
+    assert.equals(8, #st.drawList.keybinds)
     assert.equals(8, #st.captions)
     local seen = {}
     for _, c in ipairs(st.drawList.cues) do if c.emphasis then seen[c.emphasis] = true end end
@@ -318,17 +354,25 @@ describe("Renderer", function()
     for i = 1, 8 do r:Register("fake" .. i, H.newStub()) end
     r:Draw(st.drawList)
     assert.is_nil(r.cueFrames["fake1"])           -- IDLE: keybind only, no dot
+    assert.is_true(r.cueKeys["fake1"]._shown)     -- ...and its hint is still drawn
     assert.is_true(r.glowing["fake2"])            -- SOON glows (moving = anticipation)
     assert.is_true(r.glowing["fake3"])            -- FALLBACK rings
     assert.is_true(r.glowing["fake4"])            -- ROTATION glows
     assert.is_true(r.glowing["fake5"])            -- LATE glows
   end)
-  it("fixtures anchor the cue dot to the icon's upper-right corner with a keybind", function()
+  -- The two corners, one per channel: the dot upper-RIGHT, the key hint upper-LEFT, and
+  -- the cue carries no key of its own (Phase 3).
+  it("fixtures put the dot upper-right and the key hint upper-left", function()
     local ns = H.ns
-    local hog = ns.RenderTestFixtures["hand-of-guldan"].drawList.cues[1]
+    local fx = ns.RenderTestFixtures["hand-of-guldan"].drawList
+    local hog = fx.cues[1]
     assert.equals("TOPRIGHT", hog.point)
     assert.equals("TOPRIGHT", hog.relPoint)
-    assert.equals("R", hog.keybind)
+    assert.is_nil(hog.keybind)
+    local key = fx.keybinds[1]
+    assert.equals("fake1", key.anchorTo)
+    assert.equals("TOPLEFT", key.point)
+    assert.equals("R", key.keybind)
   end)
 
   ------------------------------------------------------------------------------

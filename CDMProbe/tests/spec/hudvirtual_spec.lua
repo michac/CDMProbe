@@ -166,10 +166,19 @@ describe("HudVirtual.Sync / Reflect — the live half", function()
       assert.are.equal(1.00, V.buttons[INCINERATE]:GetAlpha())
     end)
 
-    it("a keybind-only cue (no emphasis) does NOT light it", function()
-      -- The Binder puts a keybind on every displayed icon, cued or not.  That is identity
-      -- chrome, not a press call, and must not read as "press this".
-      V.Reflect({ cues = { { anchorTo = -INCINERATE, keybind = "3" } } })
+    -- The Binder puts a keybind on every displayed icon, cued or not.  That is identity
+    -- chrome, not a press call, and must not read as "press this".  Since Phase 3 it
+    -- travels on its OWN channel, so this is now structural rather than a rule Reflect
+    -- has to enforce: Reflect reads `cues` and a keybinds entry is not in it.
+    it("a keybinds[] entry on its handle does NOT light it", function()
+      V.Reflect({ cues = {}, keybinds = { { anchorTo = -INCINERATE, keybind = "3" } } })
+      assert.is_true(V.buttons[INCINERATE]:GetAlpha() < 1)
+    end)
+
+    -- The defensive floor Reflect still keeps: an emphasis-less cue, however it got onto
+    -- the cue channel, is not a press call.
+    it("an emphasis-less cue does NOT light it either", function()
+      V.Reflect({ cues = { { anchorTo = -INCINERATE } } })
       assert.is_true(V.buttons[INCINERATE]:GetAlpha() < 1)
     end)
 

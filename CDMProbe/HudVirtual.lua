@@ -297,8 +297,10 @@ end
 --------------------------------------------------------------------------------
 -- Reads the DrawList the driver already holds, so this module needs no guidance knowledge of
 -- its own: a cue on a NEGATIVE handle carrying an emphasis token is, by construction, one of
--- ours.  (An emphasis-less cue is the Binder's keybind-only entry, which is not a press call
--- and must not light the icon.)
+-- ours.  Reflect reads `cues` ONLY — the keybinds channel is identity chrome and never lights
+-- a button (Phase 3; before it, a keybind rode an emphasis-less "empty cue" through this same
+-- list, which is why the `c.emphasis` guard below exists).  That guard stays as a defensive
+-- floor: a cue without an emphasis is not a press call however it got here.
 function V.Reflect(drawList)
   local lit = {}
   for _, c in ipairs((drawList and drawList.cues) or {}) do

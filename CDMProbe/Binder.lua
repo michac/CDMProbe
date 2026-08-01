@@ -10,14 +10,21 @@
 --
 --   * cues:        Layout{cooldownID -> {spellID}} + Guidance.cues{spellID} -> DrawList.
 --                  For each DISPLAYED icon, look its Coach cue up by the icon's spellID,
---                  stamp the corner-dot geometry, pass the emphasis TOKEN through (colour
---                  stays the Renderer's job), look the keybind up by the entry's spellID —
---                  anchoring to the icon's cooldownID.  (Ring/glow is emphasis-derived in
---                  the Renderer now, so there is no glow flag to set.)  An icon
---                  the Coach did NOT signal still gets an EMPTY CUE (no emphasis -> no dot)
---                  as long as it has a keybind, so the key hint rides every button (P5d).
---                  A spellID cue whose ability isn't in a displayed icon viewer is DROPPED
---                  (the Coach ranked it, but there's no icon to anchor to).
+--                  stamp the corner-dot geometry and pass the emphasis TOKEN through
+--                  (colour stays the Renderer's job) — anchoring to the icon's cooldownID.
+--                  (Ring/glow is emphasis-derived in the Renderer now, so there is no glow
+--                  flag to set.)  ONE CUE PER DECISION: an icon the Coach did not signal
+--                  emits NOTHING here, so `#cues` means "decisions this tick" and nothing
+--                  else.  A spellID cue whose ability isn't in a displayed icon viewer is
+--                  DROPPED (the Coach ranked it, but there's no icon to anchor to).
+--   * keybinds:    Layout -> DrawList, with NO Coach involvement at all.  One entry per
+--                  displayed icon that has a key, so the hint rides every button — cued or
+--                  not.  This is its own channel (Phase 3, roster-state-plan §4) because a
+--                  keybind is IDENTITY CHROME, not a rotation signal: it says which icon is
+--                  which button.  Until Phase 3 it rode an EMPTY CUE (a cue with a keybind
+--                  and no emphasis, W4 P5d), which pushed a display concern through the
+--                  decision channel, made the cue count meaningless, and cost a
+--                  "cue with no dot" special case in the Renderer and in HudVirtual.
 --   * panel:       Guidance.sequence -> DrawList.panel (self-anchored).
 --   * resourceBars: Guidance.resourceBars[] -> DrawList.resourceBars[] (self-anchored, stacked).
 --
@@ -34,8 +41,8 @@
 --   * geometry    the shared ns.HudGeometry (overridable for a test / retheme).
 --   * keybindFor  fn(spellID) -> string | nil.  TEST-ONLY now: LIVE keybinds come from
 --                 STATE (the single resolver), stitched onto each layout entry by the
---                 driver, so a cue prefers `layout[cid].keybind` and only falls back to
---                 this seam when the layout carries none (the fixture path).
+--                 driver, so a keybind entry prefers `layout[cid].keybind` and only falls
+--                 back to this seam when the layout carries none (the fixture path).
 --
 -- THE cooldownID <-> spellID BRIDGE is the LAYOUT (it carries both), not the Binder:
 -- Guidance keys cues by BASE spellID and the keybind scan keys by spellID too, while the
@@ -72,27 +79,30 @@ local function keybindOf(self, spellID)
   return nil
 end
 
+-- The displayed cooldownIDs in a STABLE order.  `pairs` order is undefined and both
+-- channels are compared as lists in the specs, so the iteration is sorted — determinism
+-- is the contract, not a nicety.
+local function sortedHandles(layout)
+  local keys = {}
+  for cid in pairs(layout) do keys[#keys + 1] = cid end
+  table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+  return keys
+end
+
 --------------------------------------------------------------------------------
--- cues — the layout-gated geometry/keybind merge.
+-- cues — the layout-gated geometry merge.  ONE ENTRY PER DECISION.
 --------------------------------------------------------------------------------
 function B:bindCues(guidance, layout)
   local G = self.geometry
   local cues = guidance.cues or {}
   layout = layout or {}
 
-  -- Iterate the LAYOUT (every displayed icon), not just the Coach's cues.  A cue is
-  -- emitted for any displayed item that has an EMPHASIS (a Coach signal) OR a KEYBIND.
-  -- The keybind-only case is an EMPTY CUE — no emphasis, so the Renderer draws the key
-  -- hint but no dot/glow.  This is how keybinds ride EVERY button (cued or not) with no
-  -- separate DrawList channel (W4 P5d): the keybind is identity chrome, not a signal.
-  -- A cooldownID the Layout doesn't display is never iterated, so off-screen cues drop
-  -- for free; an uncued icon with no keybind emits nothing.
-  local keys = {}
-  for cid in pairs(layout) do keys[#keys + 1] = cid end
-  table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
-
+  -- Iterate the LAYOUT (every displayed icon), not just the Coach's cues: a cooldownID the
+  -- Layout doesn't display is never iterated, so off-screen cues drop for free.  A cue is
+  -- emitted ONLY where there is an EMPHASIS — an uncued displayed icon emits nothing here
+  -- and gets its key hint from the keybinds channel instead (Phase 3).
   local out = {}
-  for _, cid in ipairs(keys) do
+  for _, cid in ipairs(sortedHandles(layout)) do
     local entry = layout[cid]
     -- THE spellID->cooldownID JOIN (the W4 re-layer).  Guidance cues are keyed by BASE
     -- spellID (the Coach's vocabulary); the Layout carries the spellID<->cooldownID bridge
@@ -101,14 +111,37 @@ function B:bindCues(guidance, layout)
     -- where the summon-drop bug dies: an ability displays through its Essential row, which
     -- IS in the Layout, so its cue draws; the TrackedBar cid never reached the Coach at all.
     local cue = (entry and entry.spellID ~= nil) and cues[entry.spellID] or nil
-    -- draw=false demotes to "no emphasis" (the keybind may still ride).
+    -- draw=false demotes to "no emphasis", which now means "no cue at all".
     local emphasis = (cue and cue.draw ~= false) and cue.emphasis or nil
+    if emphasis then
+      out[#out + 1] = G.cue(cid, emphasis)
+    end
+  end
+  return out
+end
+
+--------------------------------------------------------------------------------
+-- keybinds — identity chrome, straight off the Layout.  NO GUIDANCE ARGUMENT: the
+-- Coach has no say in which icon shows which key, and that is the whole point of the
+-- channel.  One entry per displayed icon that resolves a key; an unbound icon emits
+-- nothing (never a placeholder — HudBinds' "a fake key is worse than no key").
+--------------------------------------------------------------------------------
+function B:bindKeybinds(layout)
+  local G = self.geometry
+  layout = layout or {}
+  local out = {}
+  for _, cid in ipairs(sortedHandles(layout)) do
+    local entry = layout[cid]
     -- Prefer the keybind STATE already resolved (stitched onto the layout live by the
-    -- driver, keyed by cooldownID) — State is the SINGLE keybind resolver.  Fall back to
-    -- the cfg seam only for the test path (a fixture layout carries no keybind).
-    local keybind = (entry and entry.keybind) or keybindOf(self, entry and entry.spellID)
-    if emphasis or keybind then
-      out[#out + 1] = G.cue(cid, emphasis, keybind)
+    -- driver, keyed by cooldownID) — State is the SINGLE keybind resolver, and since
+    -- Phase 3 §4.1 it walks the rung ladder.  Fall back to the cfg seam only for the test
+    -- path (a fixture layout carries no keybind).
+    local key = entry and entry.keybind
+    if type(key) ~= "string" or key == "" then
+      key = keybindOf(self, entry and entry.spellID)
+    end
+    if key then
+      out[#out + 1] = G.keybind(cid, key)
     end
   end
   return out
@@ -153,6 +186,7 @@ function B:Bind(guidance, layout)
   guidance = guidance or {}
   return {
     cues = self:bindCues(guidance, layout),
+    keybinds = self:bindKeybinds(layout),
     panel = self:bindPanel(guidance),
     resourceBars = self:bindResources(guidance),
   }

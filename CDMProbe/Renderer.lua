@@ -13,6 +13,8 @@
 -- V1 IS BARE-BONES (this session's call):
 --   * cue = a solid DOT, coloured by its `emphasis` token.  No bar, no fill
 --     fraction, no pulse.
+--   * keybind = a corner key hint, drawn from the DrawList's OWN `keybinds[]` channel
+--     (Phase 3) — identity chrome, independent of whether the icon is cued.
 --   * panel = a plain titled list of step rows (state · keybind · label), shown
 --     only when the DrawList carries one.
 --   * resourceBars = an array of minimal discrete-pip rows, stacked (optional).
@@ -205,16 +207,17 @@ end
 -- upper-right; see the fixtures).  Diff-by-key on `anchorTo`: only handles in THIS
 -- DrawList are (re)painted; a handle that dropped out is hidden, never destroyed.
 --
--- THE DOT AND THE KEY HINT ARE DECOUPLED (P5d).  A cue carries an optional emphasis
--- token AND an optional `keybind` string, and they draw INDEPENDENTLY:
---   * emphasis with a GLOW_SPEC entry -> a coloured circle + its glow ring (motion per
---     the spec); an absent or unknown token draws NO circle (never guess a colour),
---     hiding any prior one.
---   * a `keybind` string -> a hint in the icon's UPPER-LEFT corner, drawn WHENEVER
---     present regardless of emphasis (identity chrome — which button is which).
--- So an EMPTY CUE (keybind, no emphasis) is a key hint with no dot — that is how the
--- Binder puts a keybind on every displayed icon, cued or not.  The handle stays
--- ACTIVE while it carries either, so its key hint isn't culled with the dropouts.
+-- THE DOT AND THE KEY HINT ARE TWO CHANNELS (Phase 3, roster-state-plan §4).  A cue
+-- carries an emphasis token and nothing else; the key hint arrives on the DrawList's own
+-- `keybinds[]` list and is drawn by R:drawKeybinds.  Until Phase 3 both rode ONE cue entry
+-- and an emphasis-less "empty cue" was how a key hint reached an uncued icon — which is
+-- why this function used to keep a dotless handle alive on purpose.  It no longer has to:
+-- a handle with no emphasis simply is not in `cues`.
+--
+-- ⚠ `drawCues` RETURNS its active set rather than culling `cueHolders` itself.  Holders
+-- are SHARED with the keybind channel, so the cull is a UNION and lives in R:Draw — see
+-- the note there.  An unknown/absent emphasis token still draws no circle (never guess a
+-- colour) and hides any prior one; that defensive branch stays.
 function R:drawCues(cues)
   local active = {}
   for _, c in ipairs(cues or {}) do
@@ -269,24 +272,18 @@ function R:drawCues(cues)
                         gs and gs.spin, gs and gs.pulse,
                         gs and gs.ringScale, gs and gs.spinSecs)
       else
-        -- EMPTY CUE (keybind-only): no emphasis the theme knows -> no dot, no glow.
-        -- Hide any dot/glow this handle had, but keep the handle ACTIVE so its keybind
-        -- hint (below) survives the end-of-frame cull.
+        -- DEFENSIVE: an emphasis token the theme has no entry for draws NOTHING — we never
+        -- guess a colour.  Hide any dot/glow this handle had.  (Before Phase 3 this branch
+        -- also had to keep the handle alive for a keybind-only cue; that job is gone, but
+        -- the "unknown token ⇒ no dot" rule is a contract of its own and stays.)
         if self.cueFrames[key] then self.cueFrames[key]:Hide() end
         self:setDotGlow(key, holder, self.cueFrames[key], nil, sz)
       end
-      -- The keybind hint draws regardless of emphasis — identity chrome on every button.
-      self:drawCueKey(key, holder, anchor, c.keybind)
     end
   end
-  for key, h in pairs(self.cueHolders) do
-    if not active[key] then h:Hide() end
-  end
+  -- Dots + glows cull on the CUE-active set; holders do not (see R:Draw).
   for key, dot in pairs(self.cueFrames) do
     if not active[key] then dot:Hide() end
-  end
-  for key, fs in pairs(self.cueKeys) do
-    if not active[key] then fs:Hide() end
   end
   for key, g in pairs(self.cueGlows) do
     if not active[key] then
@@ -297,28 +294,50 @@ function R:drawCues(cues)
       self.glowing[key] = nil
     end
   end
+  return active
 end
 
--- The keybind hint: a small outlined string pinned to the icon's upper-left.
--- Drawn only when the cue carries a non-empty `keybind` AND its handle resolves to
--- a frame; otherwise any prior hint for that handle is hidden.
-function R:drawCueKey(key, holder, anchor, keybind)
-  local fs = self.cueKeys[key]
-  if not (keybind and keybind ~= "" and anchor) then
-    if fs then fs:Hide() end
-    return
+--------------------------------------------------------------------------------
+-- Keybind hints — the DrawList's second per-icon channel (Phase 3).
+--------------------------------------------------------------------------------
+-- A small outlined string pinned inside the icon's upper-left, diagonally opposite the
+-- cue dot.  IDENTITY CHROME: it says which icon is which button and carries no rotation
+-- meaning, so it is drawn from its own channel with no reference to `cues` at all — an
+-- icon can have a key and no dot, a dot and no key, or both, and none of those is a
+-- special case any more.  Position comes off the ENTRY (G.KEY, stamped by the Binder),
+-- not from literals here, so the `/cdmp rt` fixtures and the live producer agree.
+--
+-- Reuses `cueHolders` (so both channels ride the same per-icon strata/level fix) and the
+-- same pooled `cueKeys` fontstrings, diff-by-key on `anchorTo`.  RETURNS its active set;
+-- the holder cull is the union of both channels and lives in R:Draw.
+function R:drawKeybinds(list)
+  local active = {}
+  for _, k in ipairs(list or {}) do
+    local key = k.anchorTo
+    local anchor = key ~= nil and self.registry[key] or nil
+    local text = k.keybind
+    if key ~= nil and anchor and type(text) == "string" and text ~= "" then
+      active[key] = true
+      local holder = self:ensureHolder(key, anchor)
+      local fs = self.cueKeys[key]
+      if not fs then
+        fs = holder:CreateFontString(nil, "OVERLAY")
+        ns.SetFont(fs, 14, "OUTLINE")
+        fs:SetJustifyH("LEFT")
+        fs:SetTextColor(KEY_COL[1], KEY_COL[2], KEY_COL[3], 1)
+        self.cueKeys[key] = fs
+      end
+      fs:SetText(text)
+      fs:ClearAllPoints()
+      fs:SetPoint(k.point or "TOPLEFT", anchor, k.relPoint or k.point or "TOPLEFT",
+                  k.dx or 0, k.dy or 0)
+      fs:Show()
+    end
   end
-  if not fs then
-    fs = holder:CreateFontString(nil, "OVERLAY")
-    ns.SetFont(fs, 14, "OUTLINE")
-    fs:SetJustifyH("LEFT")
-    fs:SetTextColor(KEY_COL[1], KEY_COL[2], KEY_COL[3], 1)
-    self.cueKeys[key] = fs
+  for key, fs in pairs(self.cueKeys) do
+    if not active[key] then fs:Hide() end
   end
-  fs:SetText(keybind)
-  fs:ClearAllPoints()
-  fs:SetPoint("TOPLEFT", anchor, "TOPLEFT", 2, -2)
-  fs:Show()
+  return active
 end
 
 --------------------------------------------------------------------------------
@@ -522,9 +541,20 @@ end
 --------------------------------------------------------------------------------
 -- The one entry point
 --------------------------------------------------------------------------------
+-- ⚠ THE HOLDER CULL IS A UNION, AND IT HAS TO BE.  `cueHolders` is shared by the cue and
+-- keybind channels (one holder per icon, carrying both decorations), so culling it inside
+-- either pass would hide the other channel's decoration every frame: an uncued icon's key
+-- hint would be parented to a hidden holder, and a keyless cued icon's dot likewise.  Each
+-- pass therefore returns its own active set and the holder cull happens HERE, over both.
+-- Dots/glows still cull on cue-active and key fontstrings on keybind-active — those pools
+-- are single-channel.  renderer_spec pins both directions of the independence.
 function R:Draw(drawList)
   drawList = drawList or {}
-  self:drawCues(drawList.cues)
+  local cued = self:drawCues(drawList.cues)
+  local keyed = self:drawKeybinds(drawList.keybinds)
+  for key, h in pairs(self.cueHolders) do
+    if not (cued[key] or keyed[key]) then h:Hide() end
+  end
   self:drawPanel(drawList.panel)
   self:drawResources(drawList.resourceBars)
   return self
