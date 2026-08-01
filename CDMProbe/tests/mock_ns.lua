@@ -266,8 +266,13 @@ function H.installGlobals()
                   Available = 1, PandemicTime = 2, OnCooldown = 3,
                   ChargeGained = 4, OnAuraApplied = 5, OnAuraRemoved = 6,
                 } }
+  -- ⚠ ALL THREE ARE INERT — they hand back a cancellable handle and NEVER FIRE.  A ticker
+  -- that fired would make every module owning one (HudDriver at 10 Hz, Flight at 1 Hz)
+  -- run its whole body inside an unrelated test, on that test's fixture.  Tests drive the
+  -- sampled function DIRECTLY instead, which is also the only way to control WHEN.
   _G.C_Timer = { After = function() end,
-                 NewTimer = function() return { Cancel = function() end } end }
+                 NewTimer  = function() return { Cancel = function() end } end,
+                 NewTicker = function() return { Cancel = function() end } end }
   _G.C_Spell = { GetSpellName = function(id) return "Spell:" .. tostring(id) end,
                  GetSpellTexture = function(id) return "Interface\\Icons\\Spell_" .. tostring(id) end }
 

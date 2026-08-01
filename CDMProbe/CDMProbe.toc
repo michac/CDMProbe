@@ -30,3 +30,4 @@ Coverage.lua
 DecisionLog.lua
 HudProcGlow.lua
 HudDriver.lua
+Flight.lua

@@ -28,6 +28,10 @@ local DEFAULTS = {
   -- `assist_on`).  One row per readability-CLASS change; deleted with Assist.lua once the
   -- "does GetNextCastSpell survive combat" answer lands in the KB.
   assist = {},
+  -- The ACCEPTANCE RECORDER's ring (`/cdmp flight`).  One row per change of ANSWER SHAPE
+  -- across a whole in-game pass; read by `wowkb.cdmp flight`, which turns it into a
+  -- PASS/FAIL report.  Wiped on every arm — a flight is one session.
+  flight = {},
   -- The moveable virtual-icon panel's saved point (HudVirtual.lua, `/cdmp panel`):
   -- `{ point, relPoint, x, y }`.  The EMPTY table means "no saved position" — RestorePosition
   -- detects that via the absent `point` and falls back to the default anchor, exactly as

@@ -70,6 +70,14 @@ Design context + status live in the parent workspace at
     spec DECLARES vs what the CDM actually tracks, blind rows first. The summary line rides
     `hud status`. ⚠ Alert types read **"reported eligible"**, never "cannot fire" —
     `GetValidAlertTypes` under-reports.
+- `flight` — **ARM THE ACCEPTANCE RECORDER — the one command an in-game pass needs.**
+  Turns the HUD on and records every *change of answer* (coverage, assist classes,
+  aura-frame capability, keybind stats, layout, cue/key counts) through combat entry, spec
+  swaps and hero swaps, **with no further typing**. Then `/reload` and run
+  `uv run python -m wowkb.cdmp flight` for a **PASS / FAIL / MEASURED** report judged
+  against criteria that live in code. `flight off` stops it, `flight status` shows progress.
+  ⚠ Arming **wipes the ring** — a flight is one session. Replaces what used to be a
+  ten-command checklist typed partly during a GCD.
 - `assist` — ⚠ **TEMPORARY** probe of `C_AssistedCombat` (`Assist.lua`): does
   `GetNextCastSpell()` return a **readable** spellID in combat? Bare = a one-shot readout of
   readability CLASSES (never raw values); `assist watch` arms a 1 Hz class-change sampler
@@ -173,6 +181,23 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   answer. Delete this file, its .toc line and the
                                   `assist`/`assist_on` saved-vars once the answer lands in
                                   knowledge/addon-dev/api-events-and-discovery.md §2.
+    Flight.lua                    THE ACCEPTANCE RECORDER (`/cdmp flight`). Every phase
+                                  of this project ends with an in-game pass, and the pass
+                                  kept being written down as a CHECKLIST OF SLASH COMMANDS —
+                                  which asks the player to type during a GCD and makes the
+                                  acceptance criteria something a human eyeballs in a chat
+                                  dump. The decision log already solved this shape: record
+                                  structurally, extract on the desktop. This is that,
+                                  applied to the whole pass. 1 Hz ticker recording only on a
+                                  change of ANSWER SHAPE (the AlertTape/Assist dedup idiom),
+                                  with combat entry/exit + spec + talent swaps forcing an
+                                  immediate sample so the interesting transitions are never
+                                  up to a second late. ⚠ IT MUST NOT PERTURB WHAT IT
+                                  MEASURES: it calls the SHIPPING ns.Coverage.Get() and
+                                  ns.Assist.Probe(), never a private copy — a copy could
+                                  pass while the shipped path fails, which is the whole
+                                  failure mode it exists to catch. Read by
+                                  `wowkb.cdmp flight`.
     Mode.lua                      the single/AoE target-mode toggle (`ns.Mode.aoe`
                                   + `single`/`multi`/`aoe`); State forwards it, the
                                   Coach reads it (extracted from HudCore at the cutover)
@@ -405,6 +430,13 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   ⚠ Hand-built rows prove the JOIN and nothing about where
                                   rows come from — state_domainview_spec's "St.CoverageRows"
                                   block is the shipped-symbol companion
+      spec/flight_spec.lua        the acceptance recorder: the properties that would make
+                                  the REPORT lie — a transition deduped away, an unbounded
+                                  ring, an arm that appends to the last flight — plus the
+                                  two that matter most, that entering combat leaves the
+                                  coverage answer INVARIANT (cached + stale, never a
+                                  rescan) and that a cold in-combat arm refuses rather than
+                                  reading the roster through secret-shortened enumeration
       spec/assist_spec.lua        the temporary C_AssistedCombat probe, cheap by design: the
                                   readout degrades honestly when the namespace is absent
                                   (ABSENT and nil are different findings), when the call
@@ -484,7 +516,7 @@ put `~/.luarocks/bin` on PATH.
   `SpecDemonology`) + the multi-spec seam (`SpecRegistry`/`ResolveActiveSpec`, the
   resource-array projection) + the **Destruction** rotation gate + **State's domain-view
   fold** + State's hero-tree resolution + the **CDM edge inventory** (see `tests/fixtures/`
-  below). **610 tests / 4 pending.** The harness is
+  below). **621 tests / 4 pending.** The harness is
   **`CDMProbe/tests/mock_ns.lua`**: a chainable `CreateFrame`/FontString/animation
   stub, a **settable `GetTime` fake clock**, global fakes
   (`wipe`/`InCombatLockdown`/`issecretvalue`/`C_Timer`/`Enum`/`GetSpecialization`/…),
@@ -513,6 +545,13 @@ change. Use it to answer "why does `/cdmp hud` show nothing here?":
 cd ~/code/fun/wow/tools
 uv run python -m wowkb.cdmp decisionlog   # → raw/cdmp-decision.log
 ```
+
+**`wowkb.cdmp flight`** is the one to run after a test build: it reads `/cdmp flight`'s ring
+out of the same SavedVariables file and prints a **PASS / FAIL / MEASURED** acceptance report
+— roster coverage per spec, the in-combat wholesale guard, spec/hero invalidation, the
+standing capability checks, the Phase-2 + `ChargeGained` signals lifted from the decision
+log, and the `C_AssistedCombat` measurement. Exit 2 means "no failures, but you did not fly
+part of it".
 
 *(The old `wowkb.cdmp check|show|diff` probe-assertion suite + `probe-baseline.json` were
 retired with the probe on 2026-07-29 — see the Commands note above.)*
