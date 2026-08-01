@@ -66,6 +66,16 @@ Design context + status live in the parent workspace at
     `CDMProbeDB.decisionlog` (extract with `wowkb.cdmp decisionlog`).
   - `hud layout` — dump the live Layout (icon viewers -> cooldownID -> spellID +
     the State-resolved keybind) — the row to read when a cue's key is missing.
+  - `hud coverage` — the **roster coverage** table (Phase 4, `Coverage.lua`): every id the
+    spec DECLARES vs what the CDM actually tracks, blind rows first. The summary line rides
+    `hud status`. ⚠ Alert types read **"reported eligible"**, never "cannot fire" —
+    `GetValidAlertTypes` under-reports.
+- `assist` — ⚠ **TEMPORARY** probe of `C_AssistedCombat` (`Assist.lua`): does
+  `GetNextCastSpell()` return a **readable** spellID in combat? Bare = a one-shot readout of
+  readability CLASSES (never raw values); `assist watch` arms a 1 Hz class-change sampler
+  (off by default) into `CDMProbeDB.assist`, `off` stops it, `dump` reads the ring, `clear`
+  wipes it. Delete the file, its `.toc` line and the saved-vars once the answer lands in
+  `knowledge/addon-dev/api-events-and-discovery.md` §2.
 - `single` / `multi` / `aoe` — the target-mode toggle (`Mode.lua`): idempotent
   macro-friendly setters + a bare toggle. Forwarded by State as its `mode` field;
   the Coach reads it but does not branch yet (scaffolding for a 2nd spec / AoE rule).
@@ -105,7 +115,10 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   ns.ReadCooldown / ReadCharges / ReadGCD /
                                   ns.ReadValidAlertTypes (promoted out of AlertTape.lua in
                                   Phase 3 — ⚠ that API UNDER-REPORTS, so a consumer says
-                                  "not reported eligible", never "cannot fire")
+                                  "not reported eligible", never "cannot fire") +
+                                  ns.AlertEventName (the alert-enum value->name map,
+                                  promoted out of AlertTape.lua in Phase 4 for the same
+                                  reason)
     Viewers.lua                   locate viewers, enumerate items, and resolve each item's
                                   IDENTITY: ns.GetViewer / ns.GetItemFrames /
                                   ns.ItemCooldownID / ns.ItemBaseSpellID /
@@ -144,6 +157,22 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
     -- `wowkb.cdmp census`. It did its job: the 2026-07-31 capture answered all six
     -- roster-state-plan Phase-2 questions and Phase 2 consumed the answers. Recover from
     -- git history if a genuinely new struct question ever needs the same instrument.)
+    Assist.lua                    ⚠ TEMPORARY discovery instrument, MEANT TO BE DELETED —
+                                  the AlertTape mould, and NOT in the pipeline (nothing
+                                  reads it). One question: does
+                                  `C_AssistedCombat.GetNextCastSpell()` return a READABLE
+                                  spellID in COMBAT? If it does, Blizzard hands us a
+                                  ground-truth "what to press next" through a channel that
+                                  survives Secret Values — an independent oracle to diff the
+                                  Coach against (never a replacement: it is generic
+                                  single-target with no mode/AoE awareness and no burst
+                                  planning). `GetRotationSpells()` rides along as a second
+                                  opinion on ROSTER COMPLETENESS. `/cdmp assist [watch|off|
+                                  dump|clear]`; the watch ring dedups by READABILITY CLASS,
+                                  because a value change is noise and a class change is the
+                                  answer. Delete this file, its .toc line and the
+                                  `assist`/`assist_on` saved-vars once the answer lands in
+                                  knowledge/addon-dev/api-events-and-discovery.md §2.
     Mode.lua                      the single/AoE target-mode toggle (`ns.Mode.aoe`
                                   + `single`/`multi`/`aoe`); State forwards it, the
                                   Coach reads it (extracted from HudCore at the cutover)
@@ -277,6 +306,28 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   `ns.db.virtualPanel` (BucketBinds Console.lua's shape).
     HudDriver.lua                 the LIVE driver: the ~10 Hz ticker that runs the
                                   pipeline + the `/cdmp hud` command.
+    Coverage.lua                  THE ROSTER COVERAGE PROBE (roster-state-plan Phase 4):
+                                  does the CDM actually TRACK every id the spec's roster
+                                  declares? Asked OUT OF COMBAT, where it is cheap.
+                                  `Build(rows, specTable, deps)` is PURE (deps injected);
+                                  `Get()` computes once, caches, and owns its own event
+                                  frame (SPELLS_CHANGED / TRAIT_CONFIG_UPDATED /
+                                  PLAYER_SPECIALIZATION_CHANGED) so the State->Coverage
+                                  dependency stays ONE-WAY. Per id: coverage
+                                  (tracked/untracked/unreadable) + verdict (ok / virtual /
+                                  expected / BLIND / unknown). Also the REQUIRED replacement
+                                  for `pulse.dropped`, which Phase 5 deletes.
+                                  ⚠ THE WHOLESALE GUARD IS THE POINT: an empty scan is
+                                  `ok=false, reason="cdm-empty"` and reports NO entry as
+                                  untracked (an empty database means the read refused, not
+                                  that your roster is blind) — the twin of domainView's
+                                  `next(items) ~= nil` refusal; in combat Get() hands back
+                                  the cached report marked stale rather than rescanning. The
+                                  zero-row case is MUTATION-CHECKED. ⚠ Virtual eligibility
+                                  calls the REAL St.VirtualCandidates fences with an empty
+                                  abilities map — do NOT copy the fences here, that is how
+                                  the two drift. ⚠ Alert types render as "reported
+                                  eligible", never "cannot fire" (lower bound).
     DecisionLog.lua               the decision log: one greppable `S{} G{} B{}` line
                                   per decision change -> CDMProbeDB.decisionlog.
                                   Short-codes come from per-spec `abbr`/`spec.log`.
@@ -341,6 +392,25 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
       spec/binder_spec.lua        spellID cue -> display cooldownID/icon resolution, and
                                   the SECOND channel: cues carry decisions only, keybinds[]
                                   carries the key hint for every displayed icon (Phase 3)
+      spec/coverage_spec.lua      the ROSTER COVERAGE JOIN as a pure function: the four ways
+                                  a row can carry a declared id (base / overrideSpellID /
+                                  overrideTooltipSpellID / a linkedSpellIDs member — four
+                                  cases, because they are four separate joins), the three
+                                  untracked verdicts, three-valued knownness surviving onto
+                                  the entry, the alert-type outcomes (a refusal carries the
+                                  REASON, an empty list is a distinct real answer, a secret
+                                  member renders SECRET) — and THE WHOLESALE GUARD, which is
+                                  MUTATION-CHECKED: flip the guard off and the zero-row case
+                                  must go red. Plus C.Get's cache + its combat refusal.
+                                  ⚠ Hand-built rows prove the JOIN and nothing about where
+                                  rows come from — state_domainview_spec's "St.CoverageRows"
+                                  block is the shipped-symbol companion
+      spec/assist_spec.lua        the temporary C_AssistedCombat probe, cheap by design: the
+                                  readout degrades honestly when the namespace is absent
+                                  (ABSENT and nil are different findings), when the call
+                                  throws, and when the return is secret — a secret must
+                                  render as a CLASS, never be compared or printed, and must
+                                  reach disk as the string "<secret>"
       spec/hudbinds_spec.lua      B.Resolve's RUNG LADDER off the REAL module: order (3>4>5),
                                   fall-through on an unbound rung, the secret/non-number
                                   refusals, nil rather than a placeholder, the alias fallback
@@ -414,7 +484,7 @@ put `~/.luarocks/bin` on PATH.
   `SpecDemonology`) + the multi-spec seam (`SpecRegistry`/`ResolveActiveSpec`, the
   resource-array projection) + the **Destruction** rotation gate + **State's domain-view
   fold** + State's hero-tree resolution + the **CDM edge inventory** (see `tests/fixtures/`
-  below). **569 tests / 4 pending.** The harness is
+  below). **610 tests / 4 pending.** The harness is
   **`CDMProbe/tests/mock_ns.lua`**: a chainable `CreateFrame`/FontString/animation
   stub, a **settable `GetTime` fake clock**, global fakes
   (`wipe`/`InCombatLockdown`/`issecretvalue`/`C_Timer`/`Enum`/`GetSpecialization`/…),
