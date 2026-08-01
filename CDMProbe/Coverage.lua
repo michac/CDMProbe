@@ -35,8 +35,20 @@
 --             expected     untracked and `expect == false` — the override-only ids and
 --                          cast aliases, declared BECAUSE they only ever appear as an
 --                          override                                        quiet
---             blind        untracked, `expect ~= false`, not virtual-covered   LOUD
---             unknown      fields refused                                  mild
+--             unlearned    untracked and the client says the character does NOT HAVE it.
+--                          Not a finding: there is nothing to be blind TO   quiet
+--             blind        untracked, `expect ~= false`, not virtual-covered, and the
+--                          character DEMONSTRABLY HAS IT                    LOUD
+--             unknown      fields refused, or untracked with knownness unreadable  mild
+--
+-- ⚠ `unlearned` AND THE KNOWNNESS FENCE ON `blind` ARE FIELD-DRIVEN (2026-08-01, the first
+-- flight).  As first shipped, `blind` did not consult knownness at all — and EVERY blind
+-- row the flight produced was a false alarm of exactly that shape: Axe Toss 119914 on both
+-- specs (no Felguard, so the character has no such ability) and Wither 445468 on Diabolist
+-- (untalented on that hero tree).  Three loud rows, zero real findings, which is precisely
+-- how a report earns being ignored.  `blind` now means "you HAVE this ability and we cannot
+-- see it" — the only version of the claim that is worth shouting.  §5.1 pre-registered this
+-- as the nuance to watch; the field settled it on the first pass.
 --
 -- ⚠ THE WHOLESALE GUARD IS THE ONE WAY THIS GOES WRONG.  If the scan returns nothing
 -- (viewers not up yet, CDM unavailable, a login race) the report is `ok = false` with a
@@ -58,10 +70,12 @@ local C = ns.Coverage
 
 -- Loudest first, so the readout leads with what needs acting on and a test can assert the
 -- order without depending on `pairs`.
-local VERDICT_RANK = { blind = 1, unknown = 2, virtual = 3, expected = 4, ok = 5 }
+local VERDICT_RANK = { blind = 1, unknown = 2, virtual = 3, expected = 4,
+                       unlearned = 5, ok = 6 }
 
 local function zeroCounts()
-  return { ok = 0, virtual = 0, expected = 0, blind = 0, unknown = 0, total = 0 }
+  return { ok = 0, virtual = 0, expected = 0, blind = 0, unknown = 0, unlearned = 0,
+           total = 0 }
 end
 
 local function emptyReport(reason)
@@ -187,8 +201,17 @@ function C.Build(rows, specTable, deps)
         entry.coverage, entry.verdict = "unreadable", "unknown"
       else
         entry.coverage = "untracked"
+        -- ORDER MATTERS, and each rung is a different KIND of "not a problem":
+        --   virtual    we draw it ourselves (the fence list said so)
+        --   expected   the author declared it BECAUSE it is override-only
+        --   unlearned  the character does not have the ability at all
+        --   unknown    we could not find out whether they have it — so we cannot claim
+        --              blindness either; an unprovable alarm is not an alarm
+        -- Only what survives all four is loud.
         if virtual[spellID] then entry.verdict = "virtual"
         elseif info.expect == false then entry.verdict = "expected"
+        elseif entry.known == false then entry.verdict = "unlearned"
+        elseif entry.known == nil then entry.verdict = "unknown"
         else entry.verdict = "blind" end
       end
       counts[entry.verdict] = counts[entry.verdict] + 1

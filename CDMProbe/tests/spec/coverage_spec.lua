@@ -127,7 +127,7 @@ describe("Coverage.Build — the roster/CDM join", function()
       -- channel for it at all (C_UnitAuras fully secret, the combat log unregisterable).
       local r = Cov.Build({ row(31, CHAOS_BOLT) },
                           { [417234] = { kind = "aura", label = "Crashing Chaos" } },
-                          deps())
+                          deps())   -- deps().known says TRUE: the character HAS it
       local e = entryFor(r, 417234)
       assert.equals("untracked", e.coverage)
       assert.equals("blind", e.verdict)
@@ -158,6 +158,44 @@ describe("Coverage.Build — the roster/CDM join", function()
       assert.equals("untracked", e.coverage)
       assert.equals("expected", e.verdict)
       assert.equals(0, r.counts.blind)
+    end)
+
+    it("an untracked id the character DOES NOT HAVE is `unlearned`, never blind", function()
+      -- ⚠ FIELD-DRIVEN (2026-08-01).  As first shipped, `blind` ignored knownness — and
+      -- every blind row the first flight produced was this shape: Axe Toss 119914 with no
+      -- Felguard on the character, and Wither 445468 untalented on Diabolist.  Three loud
+      -- rows, zero real findings.  There is nothing to be blind TO.
+      local r = Cov.Build({ row(35, CHAOS_BOLT) },
+                          { [119914] = { kind = "button", cadence = "utility",
+                                         label = "Axe Toss" } },
+                          deps({ known = function() return false end }))
+      local e = entryFor(r, 119914)
+      assert.equals("untracked", e.coverage)
+      assert.equals("unlearned", e.verdict)
+      assert.equals(0, r.counts.blind)
+      assert.equals(1, r.counts.unlearned)
+    end)
+
+    it("an untracked id whose knownness REFUSED is `unknown`, never blind", function()
+      -- We cannot claim they have it, so we cannot claim blindness either — an unprovable
+      -- alarm is not an alarm.  The same direction as the wholesale guard, per row.
+      local r = Cov.Build({ row(36, CHAOS_BOLT) },
+                          { [119914] = { kind = "button", cadence = "utility",
+                                         label = "Axe Toss" } },
+                          deps({ known = function() return nil end }))
+      assert.equals("unknown", entryFor(r, 119914).verdict)
+      assert.equals(0, r.counts.blind)
+    end)
+
+    it("`blind` therefore means: the character HAS it and the CDM tracks it nowhere", function()
+      -- The positive control for the two cases above — the same roster entry, the only
+      -- difference being that knownness now reads TRUE, must still be loud.
+      local r = Cov.Build({ row(37, CHAOS_BOLT) },
+                          { [119914] = { kind = "button", cadence = "utility",
+                                         label = "Axe Toss" } },
+                          deps({ known = function() return true end }))
+      assert.equals("blind", entryFor(r, 119914).verdict)
+      assert.equals(1, r.counts.blind)
     end)
 
     it("entries are sorted LOUDEST first — blind before the quiet verdicts", function()

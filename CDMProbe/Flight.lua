@@ -80,6 +80,11 @@ local function readCoverage()
     out.verdicts[#out.verdicts + 1] = {
       id = e.spellID, v = e.verdict, cov = e.coverage, n = #(e.rows or {}),
       known = e.known,
+      -- `kind` rides along because the desktop report cannot otherwise tell an AURA from a
+      -- BUTTON, and the two have completely different expectations about having an icon:
+      -- auras live in the BUFF viewers, which `HudLayout.Scan` does not walk at all.  The
+      -- first flight's tracked-but-not-displayed cross-check was unreadable without it.
+      kind = e.kind,
     }
   end
   return out

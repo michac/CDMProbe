@@ -255,11 +255,12 @@ end
 -- so on every dump; `ns.ReadValidAlertTypes`' own header carries the same rule and this
 -- readout must not contradict it.
 local VERDICT_TAG = {
-  blind    = "|cffff4040BLIND|r    ",
-  unknown  = "|cffffcc00unknown|r  ",
-  virtual  = "|cff88ccffour icon|r ",
-  expected = "|cff808080override|r ",
-  ok       = "|cff88ff88tracked|r  ",
+  blind     = "|cffff4040BLIND|r    ",
+  unknown   = "|cffffcc00unknown|r  ",
+  virtual   = "|cff88ccffour icon|r ",
+  expected  = "|cff808080override|r ",
+  unlearned = "|cff808080unlearn'd|r",
+  ok        = "|cff88ff88tracked|r  ",
 }
 
 local function coverageSummary(rep)
@@ -271,9 +272,11 @@ local function coverageSummary(rep)
   local blind = (c.blind > 0)
     and string.format(" · |cffff4040%d BLIND|r", c.blind)
     or  " · 0 blind"
-  return string.format("  roster coverage: %d tracked · %d our own icons · %d override-only%s%s%s"
+  return string.format("  roster coverage: %d tracked · %d our own icons · %d override-only%s%s%s%s"
     .. "   |cffffffff(/cdmp hud coverage)|r",
-    c.ok, c.virtual, c.expected, blind,
+    c.ok, c.virtual, c.expected,
+    (c.unlearned or 0) > 0 and string.format(" · %d unlearned", c.unlearned) or "",
+    blind,
     c.unknown > 0 and string.format(" · |cffffcc00%d unknown|r", c.unknown) or "",
     rep.stale and "   |cff808080(stale)|r" or "")
 end
@@ -317,9 +320,9 @@ local function dumpCoverage()
     end
   end
   local c = rep.counts
-  ns.Printf("  %d declared · %d tracked · %d our own icons · %d override-only · %s%s"
+  ns.Printf("  %d declared · %d tracked · %d our own icons · %d by-design absent · %s%s"
     .. "   (%d CDM row(s) scanned%s)",
-    c.total, c.ok, c.virtual, c.expected,
+    c.total, c.ok, c.virtual, c.expected + (c.unlearned or 0),
     (c.blind > 0) and ("|cffff4040" .. c.blind .. " BLIND|r") or "0 blind",
     c.unknown > 0 and (" · |cffffcc00" .. c.unknown .. " unknown|r") or "",
     rep.scanned,
@@ -329,8 +332,9 @@ local function dumpCoverage()
     .. "under-reports (cid 164597 listed PandemicTime only, then raised an OnAuraApplied "
     .. "in the same session). It never says 'cannot fire'.|r")
   if c.blind > 0 then
-    ns.Print("  |cff808080read a BLIND row's knownness note first: an id we could not "
-      .. "confirm the character HAS is a weaker finding than one they do.|r")
+    ns.Print("  |cff808080BLIND means the character HAS this ability and the CDM tracks it "
+      .. "nowhere. Ids they do NOT have read `unlearn'd`, and ids whose knownness would not "
+      .. "read say `unknown` — neither is an alarm.|r")
   end
   if rep.stale then
     ns.Print("  |cffffcc00stale|r — this is the last out-of-combat scan; we do not rescan "
