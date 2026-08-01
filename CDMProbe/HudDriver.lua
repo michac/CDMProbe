@@ -34,7 +34,15 @@ D.ticker = nil
 -- since hooksecurefunc hooks can never be uninstalled).
 function ns.HudOn() return D.on end
 D.lastCues = 0        -- diagnostics: cues drawn on the last tick
+D.lastKeys = 0        -- diagnostics: key hints drawn on the last tick (Phase 3's 2nd channel)
 D.lastError = nil     -- diagnostics: last tick error text (nil = clean)
+-- The last DrawList the Renderer was actually handed.  ⚠ DIAGNOSTIC ONLY — nothing in the
+-- pipeline reads it.  It exists because `hud layout` could not answer the question it
+-- claims to ("the row to read when a key is missing"): it printed STATE's keybind, which is
+-- upstream of both the Binder and the Renderer, so a key that resolved but never reached
+-- the screen looked identical to one that drew fine.  Now the dump can say which stage
+-- dropped it.
+D.lastDraw = nil
 
 local TICK_PERIOD = 0.1   -- ~10 Hz, matching State's poll cadence
 
@@ -140,6 +148,8 @@ local function tick()
   -- handle raises them out of their resting dim.  After Draw, so the two never disagree.
   ns.HudVirtual.Reflect(drawList)
   D.lastCues = drawList.cues and #drawList.cues or 0
+  D.lastKeys = drawList.keybinds and #drawList.keybinds or 0
+  D.lastDraw = drawList
   -- Re-hook newly-pooled CDM frames + re-apply the native-proc-glow dim (idempotent,
   -- cheap — a per-instance flag skips already-hooked frames).
   if ns.HudProcGlow then ns.HudProcGlow.Install() end
@@ -187,11 +197,24 @@ end
 --------------------------------------------------------------------------------
 -- Layout inspection (Phase 5a) — dump the live Layout + registry, draws nothing.
 --------------------------------------------------------------------------------
+-- ⚠ TWO KEYBIND COLUMNS, AND THE PAIR IS THE POINT.  `key=` is what STATE resolved down
+-- the rung ladder; `drew=` is what the LAST TICK's DrawList actually carried for that
+-- handle.  They sit side by side because this dump claims to be "the row to read when a
+-- key is missing" and, showing State alone, it could not be: a key that resolved and then
+-- fell out of the Binder looked exactly like one that drew fine.  Reading the pair:
+--   key=X drew=X   resolved and drawn — if it is not on screen, it is OCCLUDED
+--   key=X drew=—   the Binder dropped it: the driver's keybind STITCH missed this cid
+--   key=none       State resolved no bind at all (genuinely unbound, or the ladder failed)
 local function dumpLayout()
   local layout, registry = ns.HudLayout.Scan()
-  -- The keybind the cue will actually use comes from STATE (stitched by cooldownID), so
-  -- show that, not a re-lookup — this is the row to read when a key is missing.
+  -- The keybind the chrome will actually use comes from STATE (stitched by cooldownID), so
+  -- show that, not a re-lookup.
   local cds = ns.State.Build(false).cooldowns or {}
+  -- …and what the Renderer was last HANDED, keyed the same way.
+  local drew, cued = {}, {}
+  local last = D.lastDraw
+  for _, k in ipairs((last and last.keybinds) or {}) do drew[k.anchorTo] = k.keybind end
+  for _, c in ipairs((last and last.cues) or {}) do cued[c.anchorTo] = c.emphasis end
   ns.Heading("HUD live Layout (icon viewers -> cooldownID -> spellID + State keybind)")
   local ids = {}
   for cid in pairs(layout) do ids[#ids + 1] = cid end
@@ -203,12 +226,19 @@ local function dumpLayout()
     local e = layout[cid]
     local frame = registry[cid]
     local kb = cds[cid] and cds[cid].keybind
-    ns.Printf("  cd=%d  spellID=%s (%s)  key=%s  frame=%s",
+    ns.Printf("  cd=%d  spellID=%s (%s)  key=%s  drew=%s%s  frame=%s",
       cid, tostring(e.spellID), (e.spellID and ns.SpellName(e.spellID)) or "?",
       kb and ("|cff88ff88" .. kb .. "|r") or "|cff808080none|r",
+      drew[cid] and ("|cff88ff88" .. drew[cid] .. "|r") or "|cffff4040—|r",
+      cued[cid] and ("  cue=|cffffcc00" .. tostring(cued[cid]) .. "|r") or "",
       frame and "|cff88ff88bound|r" or "|cffff4040nil|r")
   end
-  ns.Printf("  %d displayed icon(s). |cff808080key=none|r = State resolved no bind (unbound / unresolvable).", #ids)
+  ns.Printf("  %d displayed icon(s). |cff808080key=none|r = State resolved no bind; "
+    .. "|cffff4040drew=—|r = it never reached the DrawList.", #ids)
+  if not last then
+    ns.Print("  |cffffcc00drew= is blank for every row: no tick has run yet|r — "
+      .. "is |cffffffff/cdmp hud|r on?")
+  end
 end
 
 --------------------------------------------------------------------------------
@@ -226,7 +256,10 @@ local function status()
   else
     ns.Printf("  spec: %s |cffff8080— no profile, HUD passive|r", ns.detectedSpecName or "?")
   end
-  ns.Printf("  last tick: %d cue(s) drawn%s", D.lastCues,
+  -- TWO CHANNELS since Phase 3, and they are counted apart on purpose.  `cue(s)` is
+  -- DECISIONS — it dropped when the empty-cue trick went away, and that drop is the phase
+  -- working, not a regression.  `key hint(s)` is the chrome that used to be folded into it.
+  ns.Printf("  last tick: %d cue(s) + %d key hint(s) drawn%s", D.lastCues, D.lastKeys,
     D.lastError and ("   |cffff4040error:|r " .. D.lastError) or "   |cff88ff88clean|r")
   -- THE §3.10 CAPABILITY VERDICT.  `item.auraDataUnit` / `item.PandemicIcon` are widget
   -- INTERNALS, not API: no deprecation, no error, and if Blizzard stops writing them they
