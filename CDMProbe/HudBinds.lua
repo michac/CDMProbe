@@ -177,6 +177,38 @@ function B.Get(spellID)
   return (alias and B.map[alias]) or nil
 end
 
+-- THE KEYBIND LADDER (roster-state-plan.md §4.1).  Candidate ids in rung order, each
+-- tried through B.Get (which owns the secret guard and the SpecBindAlias fallback);
+-- FIRST ID WITH A REAL BINDING WINS, otherwise nil.  Live call site: State.Build passes
+-- `overrideTooltipSpellID, overrideSpellID, spellID` — rung 3 -> rung 4 -> rung 5.
+--
+-- ⚠ THIS LADDER IS DELIBERATELY UNLIKE THE OTHER TWO IN THE CODEBASE.  Do not "align" it:
+--
+--   * NO SPEC FENCES.  ns.DisplayIdentity (Viewers.lua:153-176) gates an override on
+--     `declared` / `kind == "button"` / `expect ~= false`, because adopting a wrong
+--     IDENTITY mis-keys a whole row.  This ladder asks the ACTION BAR instead: an id that
+--     is not on a bar yields nil and falls through, so first-hit-wins is self-correcting.
+--     A wrong candidate costs nothing; it simply has no binding to return.
+--   * RUNGS 1 AND 2 STAY OUT.  Rung 1 (the live aura instance) and the observed live
+--     override are the v0.7.0 Demonic-Art transform fence (Viewers.lua:75-80): the bar
+--     slot holds the BASE through a transform, so keying on the transformed id misses.
+--     Rung 2 (the elected `linkedSpellID`) was MEASURED ABSENT on 2026-07-31 — 0 of 72
+--     rows carried it and `item:GetLinkedSpell()` was nil on every frame — so it is out
+--     of the ladder entirely rather than merely unreachable.
+--   * NOT THE SAME RUNGS AS `readCharge`, which uses 4 + 5 only (§3.2 — that one mirrors
+--     Blizzard's own charge ladder, a different question with a different answer).
+--
+-- The motivating case is Hellcaller: the row's base is Immolate 348 while the bar holds
+-- Wither (arriving as `overrideSpellID`), so base-only resolution left the icon with no
+-- key hint at all.
+function B.Resolve(...)
+  for i = 1, select("#", ...) do
+    local k = B.Get((select(i, ...)))
+    if k then return k end
+  end
+  return nil
+end
+
 local ev = CreateFrame("Frame")
 ev:SetScript("OnEvent", function(_, event)
   -- PLAYER_REGEN_ENABLED is only interesting if a rescan was owed; every other

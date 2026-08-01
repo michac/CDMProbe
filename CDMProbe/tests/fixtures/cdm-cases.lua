@@ -447,8 +447,8 @@ local B = {
   --------------------------------------------------------------------------------
   {
     name = "identity/the-keybind-follows-the-override-when-the-bar-holds-it",
-    status = "pinned-defect",
-    fixes = "phase3 §4.1",
+    status = "green",
+    fixed = "phase3 §4.1",
     spec = 3,
     pins = "THE HELLCALLER SHAPE, and the one a player feels.  The row's base is Immolate "
         .. "348 on both hero trees; on Hellcaller the bar holds WITHER, which arrives as "
@@ -484,8 +484,8 @@ local B = {
 
   {
     name = "identity/the-keybind-ladder-takes-rung3-over-rung4-over-the-base",
-    status = "pinned-defect",
-    fixes = "phase3 §4.1",
+    status = "green",
+    fixed = "phase3 §4.1",
     spec = 3,
     pins = "Rung ORDER, with all three candidates bound to DIFFERENT keys so the winner "
         .. "names itself: `GetSpellID()` tries overrideTooltipSpellID before "

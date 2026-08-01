@@ -1817,8 +1817,14 @@ function St.Build(drain)
       -- for the refresh window, both self-clearing where the alert edge cannot.  NOT
       -- family-gated: measured on the tab-1 Essential row too.
       auraFrame = readAuraFrame(items[cooldownID]),
-      -- mostly-static, OOC-resolved off the BASE id (finding-3)
-      keybind = base and ns.HudBinds.Get(base) or nil,
+      -- mostly-static, OOC-resolved DOWN THE RUNG LADDER: rung 3 -> rung 4 -> rung 5,
+      -- first id with a real binding wins (roster-state-plan §4.1).  These are the
+      -- ALREADY-RESOLVED locals, the same single reads the identity above was taken
+      -- under (§3.9) — no second index of the struct.  Base-only resolution was the
+      -- Hellcaller hole: the row's base is Immolate 348 while the bar holds Wither, so
+      -- the icon got no key hint at all.  ⚠ Rung 1 and the observed live override are
+      -- deliberately NOT candidates (finding-3, the Demonic-Art transform fence).
+      keybind = ns.HudBinds.Resolve(ovtID, ovID, base),
     }
   end
 
