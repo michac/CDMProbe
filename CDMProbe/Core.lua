@@ -24,6 +24,10 @@ local DEFAULTS = {
   -- TEMPORARY — the CDM alert-channel discovery tape.  Off unless `/cdmp alerts on`
   -- (`alerttape_on`).  Its end date and what it is for: AlertTape.lua's header.
   alerttape = {},
+  -- TEMPORARY — the C_AssistedCombat readability ring (`/cdmp assist watch`, off unless
+  -- `assist_on`).  One row per readability-CLASS change; deleted with Assist.lua once the
+  -- "does GetNextCastSpell survive combat" answer lands in the KB.
+  assist = {},
   -- The moveable virtual-icon panel's saved point (HudVirtual.lua, `/cdmp panel`):
   -- `{ point, relPoint, x, y }`.  The EMPTY table means "no saved position" — RestorePosition
   -- detects that via the absent `point` and falls back to the default anchor, exactly as
