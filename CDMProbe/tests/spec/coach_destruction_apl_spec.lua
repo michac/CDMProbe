@@ -83,7 +83,9 @@ end
 -- Build a pulse from high-level facts.  Cooldown-bearing abilities default to cdFar (not
 -- usable — the safe reading); the no-cooldown spenders/fillers are always present with an
 -- `unknown` cd, since their gates are cost and proc, not readiness.
---   shards, incoming    projected = shards + incoming
+--   shards              the live bar value
+--   incoming            the IN-FLIGHT projection (projected = shards + incoming),
+--                       synthesised as a real in-flight Chaos Bolt — see the builder
 --   art "ruination"|"infernal"   the armed Demonic Art (override on the CB / Incinerate frame)
 --   soulFire/conflagrate/infernal/malevolence/shadowburn/cataclysm   a cd sub-table
 --   confCharge/sburnCharge       a `charge` sub-table (the OOC banked-charge read)
@@ -197,7 +199,19 @@ local function build(f)
   end
   for id, a in pairs(f.auraFramesRaw or {}) do auraFrames[id] = a end
 
-  local shardBar = { value = f.shards or 0, incoming = f.incoming or 0, max = 5, readable = true }
+  -- `f.incoming` is the IN-FLIGHT PROJECTION, and since roster-state-plan Phase 6 the pulse
+  -- no longer carries it — the Coach derives it from cast history via ns.SpecPowerDelta.  So
+  -- the fixture drives the REAL path: an in-flight Chaos Bolt (a 'start' with no terminal
+  -- phase) plus the live shard cost SpecPowerDelta reads, chosen so its −cost IS f.incoming.
+  -- Placed outside CAST_FRESH (1.0) but inside the flight window (3.0), so it is in flight
+  -- without also raising the cast_started EDGE — a different question, tested elsewhere.
+  local history = {}
+  if f.incoming and f.incoming ~= 0 then
+    H.fx.cost[ID.CB] = -f.incoming
+    history[#history + 1] = { phase = "start", spellID = ID.CB, base = ID.CB, at = NOW - 2 }
+  end
+
+  local shardBar = { value = f.shards or 0, max = 5, readable = true }
   return {
     at = NOW, combat = (f.combat ~= false), combatStartedAt = NOW - 60,
     mode = f.mode or "st",
@@ -206,7 +220,7 @@ local function build(f)
     hero = f.hero,
     power = { SoulShards = shardBar },
     buffs = buffs,
-    history = {},
+    history = history,
     abilities = abilities,
     dotEdges = dotEdges,
     auraFrames = auraFrames,

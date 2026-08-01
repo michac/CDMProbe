@@ -243,8 +243,21 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
     -- HudDriver.  See docs/architecture.md.
     State.lua                     ingestion + State.Build: folds the CDM rows into
                                   the base-spellID domain view (abilities/buffs/
-                                  resources); Secret-Value-guarded, napkin + edge
+                                  power); Secret-Value-guarded, napkin + edge
                                   fused for honest readiness. The pipeline's INPUT.
+                                  ⚠ `power` is RAW — value/max/readable per
+                                  Enum.PowerType NAME, no `incoming`. The in-flight
+                                  projection lived here until roster-state-plan Phase 6
+                                  moved it to ns.Coach.InflightPower; that took the
+                                  `ns.SpecPowerDelta` injection, BOTH
+                                  `Enum.PowerType.SoulShards` hardwires (State's last
+                                  class-specific literals) and its only read of
+                                  ns.ActiveSpec out of this file. ⚠ The four terminal
+                                  cast events it registers (INTERRUPTED / FAILED /
+                                  FAILED_QUIET / STOP) now look ORPHANED from in here —
+                                  they push history's `"stopped"` phase, which is what
+                                  lets the COACH cancel a mid-flight spender. Do not
+                                  drop them or the phase.
                                   ⚠ `abilities` is FILTERED (field-fix A): a row that is
                                   unlearned (isKnown==false) or undrawable (no item frame)
                                   never enters it — both read `ready` forever, so they won
@@ -265,6 +278,16 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   ns.ActiveSpec live each tick; returns EmptyGuidance when
                                   passive. Holds no spec logic — Context/RankWinner/Escalate
                                   live on the active spec object (CoachDemonology.lua).
+                                  Also the PUBLIC SHELL KIT both brains read from their
+                                  Context: ns.Coach.CommittedWithin and (Phase 6)
+                                  ns.Coach.InflightPower — the per-power in-flight
+                                  projection, a PURE walk of the pulse's cast history
+                                  (latest phase per base inside a 3s window x the spec's
+                                  signed ns.SpecPowerDelta, passed IN so it is not a hidden
+                                  dependency). ⚠ Its predecessor in State had a
+                                  double-deduction guard; that was DROPPED, not ported —
+                                  roster-state-plan §7.1 says why, read it before
+                                  "restoring" it.
     CoachDemonology.lua           the Demonology BRAIN: attaches Context / RankWinner /
                                   Escalate + tunables to spec 266's object. RankWinner is a
                                   FLAT priority list (apl-prototype/pseudocode.md) — no phase
@@ -369,6 +392,10 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
     DecisionLog.lua               the decision log: one greppable `S{} G{} B{}` line
                                   per decision change -> CDMProbeDB.decisionlog.
                                   Short-codes come from per-spec `abbr`/`spec.log`.
+                                  ⚠ The `PW:` field reads guidance.resourceBars (Phase 6),
+                                  NOT pulse.power — the bar carries both `value` and
+                                  `incoming`, and State stopped writing `incoming`. A
+                                  PASSIVE spec has no bar, so it honestly renders `?/?`.
     HudNapkin.lua                 anticipation: SUCCEEDED cast -> base-cooldown
                                   countdown.  The only DRIFTING input, fenced so it
                                   can only make the HUD early: an observed ready edge
@@ -505,7 +532,13 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
       spec/specdelta_spec.lua     SpecDemonology signal-bucket deltas
       spec/spec_registry_spec.lua RegisterSpec/SetActiveSpec + legacy-global rebind
       spec/spec_detect_spec.lua   ResolveActiveSpec: known / unsupported / swap / no-spec
-      spec/resource_multipower_spec.lua  synthetic 2-power spec -> resourceBars[] + N meters
+      spec/resource_multipower_spec.lua  synthetic 2-power spec -> resourceBars[] + N meters,
+                                  and (Phase 6) the home of ns.Coach.InflightPower's proof:
+                                  the per-power MAP survived the move off State, and the
+                                  LATEST-PHASE-SUPERSEDES rule — a 'succeeded' or 'stopped'
+                                  cancels an in-flight 'start', a re-cast after one projects
+                                  again — which was never tested while it lived in State and
+                                  is the thing that move was most likely to break silently
 ```
 
 ## Local checks (luacheck + busted) — M4.5
@@ -529,7 +562,7 @@ put `~/.luarocks/bin` on PATH.
   `SpecDemonology`) + the multi-spec seam (`SpecRegistry`/`ResolveActiveSpec`, the
   resource-array projection) + the **Destruction** rotation gate + **State's domain-view
   fold** + State's hero-tree resolution + the **CDM edge inventory** (see `tests/fixtures/`
-  below). **624 tests / 4 pending.** The harness is
+  below). **630 tests / 4 pending.** The harness is
   **`CDMProbe/tests/mock_ns.lua`**: a chainable `CreateFrame`/FontString/animation
   stub, a **settable `GetTime` fake clock**, global fakes
   (`wipe`/`InCombatLockdown`/`issecretvalue`/`C_Timer`/`Enum`/`GetSpecialization`/…),

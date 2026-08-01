@@ -74,7 +74,9 @@ end
 
 -- Build a pulse from high-level facts.  Abilities default to "not usable" (cdFar /
 -- unknown), the safe reading, so a test only sets what its branch needs.
---   shards, incoming        projected = shards + incoming
+--   shards                  the live bar value
+--   incoming                the IN-FLIGHT projection (projected = shards + incoming),
+--                           synthesised as a real in-flight HoG — see the builder
 --   core (bool)             a Demonic Core proc (Demonbolt glow + Core buff present)
 --   art  "ruination"|"infernal"  the armed Demonic Art (override on HoG / SB frame)
 --   tyrant/dread/grimoire/implosion   a cd sub-table (ready/probably/soon/far/unknown)
@@ -105,7 +107,21 @@ local function build(f)
   if f.dreadCommitted then history[#history + 1] = { phase = "start", base = ID.DREAD, at = NOW - 1 } end
   if f.grimoireCommitted then history[#history + 1] = { phase = "start", base = ID.GRIM, at = NOW - 1 } end
 
-  local shardBar = { value = f.shards or 0, incoming = f.incoming or 0, max = 5, readable = true }
+  -- `f.incoming` is the IN-FLIGHT PROJECTION, and since roster-state-plan Phase 6 the pulse
+  -- no longer carries it — the Coach derives it from cast history via ns.SpecPowerDelta.  So
+  -- the fixture drives the REAL path: an in-flight Hand of Gul'dan (a 'start' with no
+  -- terminal phase) plus the live shard cost SpecPowerDelta reads, chosen so its −cost IS
+  -- f.incoming.  Placed outside CAST_FRESH (1.0) but inside the flight window (3.0), so it
+  -- is in flight without also raising the cast_started EDGE — a different question.
+  -- ⚠ HoG is Demo's only shard spender, so this necessarily also sets ctx.hogCost (the
+  -- brain reads the same live cost).  Harmless while every hogCost case leaves f.incoming
+  -- unset; a case that wants both must expect cost == -incoming.
+  if f.incoming and f.incoming ~= 0 then
+    H.fx.cost[ID.HOG] = -f.incoming
+    history[#history + 1] = { phase = "start", spellID = ID.HOG, base = ID.HOG, at = NOW - 2 }
+  end
+
+  local shardBar = { value = f.shards or 0, max = 5, readable = true }
   return {
     at = NOW, combat = (f.combat ~= false), combatStartedAt = NOW - 60,
     mode = f.mode or "st",

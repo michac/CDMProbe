@@ -172,13 +172,17 @@ function DL.Render(pulse, guidance, drawList)
   for _, k in ipairs(L.procOrder or {}) do if prSet[k] then prParts[#prParts + 1] = k end end
   local prStr = (#prParts > 0) and table.concat(prParts, ",") or "-"
 
-  -- PW — the power bar the HUD renders.  Read the FIRST `incoming` power off the active
-  -- spec's power array (Demo -> power.SoulShards); no `resources.shards` alias anymore.
-  local ss = {}
-  for _, p in ipairs((ns.ActiveSpec and ns.ActiveSpec.powers) or {}) do
-    if p.incoming then ss = (pulse.power and pulse.power[p.name]) or {}; break end
-  end
-  local val, inc = num(ss.value), num(ss.incoming)
+  -- PW — the power bar the HUD renders, read off the GUIDANCE the Coach emitted, which is
+  -- the ONE place both halves of the string live: resourceBars[] carries `value` AND
+  -- `incoming` (guidance-contract.json -> channels/resourceBars).  Before Phase 6 this
+  -- walked ns.ActiveSpec.powers and read `pulse.power[…].incoming` straight off the pulse;
+  -- State no longer writes that field — the Coach derives the projection from the pulse's
+  -- cast history — so reading the pulse here would render a permanent `+0`.
+  -- The first bar is the spec's primary meter (Demo/Destro: Soul Shards).  ⚠ A PASSIVE spec
+  -- emits none (EmptyGuidance -> resourceBars = {}), so it renders `?/?` rather than reading
+  -- through to the pulse.  That is more honest, not less: there is no bar.
+  local bar = (guidance.resourceBars or {})[1] or {}
+  local val, inc = num(bar.value), num(bar.incoming)
   local pwStr = (val and string.format("%d", math.floor(val)) or "?")
     .. "/" .. (inc and string.format("%+d", inc) or "?")
 

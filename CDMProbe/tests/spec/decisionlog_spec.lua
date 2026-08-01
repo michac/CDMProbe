@@ -68,7 +68,10 @@ local function build(f)
 
   return {
     at = 1000, combat = true,
-    power = { SoulShards = { value = f.shards or 0, incoming = f.incoming or 0, max = 5 } },
+    -- Raw power, as State emits it.  ⚠ The log's PW field does NOT read this any more —
+    -- since roster-state-plan Phase 6 it reads guidance.resourceBars, the one place that
+    -- carries BOTH halves of the string (see `bars` on the guidance helper below).
+    power = { SoulShards = { value = f.shards or 0, max = 5 } },
     buffs = buffs,
     history = f.history or {},
     abilities = abilities,
@@ -79,13 +82,21 @@ local function build(f)
 end
 
 -- A guidance whose cues carry an emphasis per BASE spellID.  `cues = { [spellID] = "ROTATION", … }`.
-local function guidance(cues, notes)
+-- `bars` is the resourceBars channel the PW field reads (Phase 6); omit it for the passive
+-- shape — an empty array is what EmptyGuidance emits.
+local function guidance(cues, notes, bars)
   notes = notes or {}
   local out = {}
   for spellID, emph in pairs(cues) do
     out[spellID] = { draw = true, emphasis = emph, note = notes[spellID] }
   end
-  return { cues = out }
+  return { cues = out, resourceBars = bars or {} }
+end
+
+-- The one shard meter Demo/Destro emit, in guidance terms.
+local function bar(value, incoming)
+  return { { value = value, incoming = incoming or 0, max = 5,
+             display = "discrete", powerType = "SOUL_SHARDS" } }
 end
 
 -- A drawList that anchors the given cids (i.e. the Binder DREW them).
@@ -142,10 +153,11 @@ describe("DecisionLog.Render", function()
 
   it("encodes shards value/incoming, procs, readiness tokens", function()
     local pulse = build{
-      shards = 3, incoming = -3, core = true, art = "infernal",
+      shards = 3, core = true, art = "infernal",
       tyrant = cdReady(), dread = cdSoon(8), implosion = cdProbably(), grimoire = cdUnknown(),
     }
-    local s = ns.DecisionLog.Render(pulse, { cues = {} }, { cues = {} })
+    -- PW is sourced from the GUIDANCE bar (Phase 6), not the pulse.
+    local s = ns.DecisionLog.Render(pulse, guidance({}, nil, bar(3, -3)), { cues = {} })
     assert.truthy(s:find("PW:3/-3", 1, true), s)
     assert.truthy(s:find("PR:core,IB", 1, true), s)
     assert.truthy(s:find("T=R", 1, true), s)         -- ready
@@ -154,11 +166,21 @@ describe("DecisionLog.Render", function()
     assert.truthy(s:find("G=?", 1, true), s)         -- unknown
   end)
 
-  it("guards a <secret> shard value → ?", function()
-    local pulse = build{}
-    pulse.power.SoulShards.value = "<secret>"
-    local s = ns.DecisionLog.Render(pulse, { cues = {} }, { cues = {} })
+  -- ⚠ Since Phase 6 the SECRET DEGRADATION happens at the COACH boundary, not here:
+  -- Coach:ResourceBars already coerces a non-numeric value to 0.  The log keeps its own
+  -- guard anyway — it is a formatter over a channel it does not own, and a `?` is the only
+  -- honest render of a value it cannot floor.
+  it("guards a non-numeric (<secret>) bar value → ?", function()
+    local g = guidance({}, nil, bar("<secret>", 0))
+    local s = ns.DecisionLog.Render(build{}, g, { cues = {} })
     assert.truthy(s:find("PW:?/", 1, true), s)
+  end)
+
+  -- A PASSIVE spec's EmptyGuidance carries resourceBars = {}, so there IS no bar.  `?/?`
+  -- is the honest render; reading through to the pulse would invent one.
+  it("renders PW:?/? when guidance emits no resource bar (a passive spec)", function()
+    local s = ns.DecisionLog.Render(build{ shards = 3 }, guidance({}), { cues = {} })
+    assert.truthy(s:find("PW:?/?", 1, true), s)
   end)
 
   it("in-flight cast: newest start with no later terminal ⇒ CS code", function()

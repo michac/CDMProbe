@@ -1,10 +1,12 @@
 -- specdelta_spec.lua — ns.SpecPowerDelta, the SIGNED in-flight POWER projection reader
--- (multi-spec Phase 3; was SpecShardDelta, W4 Phase 6 Part 2).  State.lua sums this over
--- in-flight 'start's to emit power.<name>.incoming; the SIGN is the whole point — a builder
--- credits (+), an in-flight spender (Hand of Gul'dan) subtracts (−cost), so the Coach clears
--- the spender mid-cast instead of re-cuing it.  Phase 3 made the return per-power:
--- `{ power, delta }` — the reader now NAMES the power it moves (Demo: "SoulShards"), and a
--- zero net delta returns `{ power = nil, delta = 0 }` (State skips nil-power entries).
+-- (multi-spec Phase 3; was SpecShardDelta, W4 Phase 6 Part 2).  `ns.Coach.InflightPower`
+-- sums this over in-flight 'start's into the per-power `incoming` map; the SIGN is the whole
+-- point — a builder credits (+), an in-flight spender (Hand of Gul'dan) subtracts (−cost), so
+-- the Coach clears the spender mid-cast instead of re-cuing it.  Phase 3 made the return
+-- per-power: `{ power, delta }` — the reader NAMES the power it moves (Demo: "SoulShards"),
+-- and a zero net delta returns `{ power = nil, delta = 0 }` (the sum skips nil-power entries).
+-- ⚠ Only the CALLER moved in roster-state-plan Phase 6 (State.lua -> the Coach); this reader
+-- is unchanged, which is why this spec is untouched by that phase.
 -- Cost is read via ns.ShardCost (fixture-settable here).
 local dir = (debug.getinfo(1, "S").source:match("^@(.*[/\\])")) or "./"
 local H = dofile(dir .. "../mock_ns.lua")

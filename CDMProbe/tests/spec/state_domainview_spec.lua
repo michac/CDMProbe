@@ -294,7 +294,7 @@ describe("State domain view — the pressable filter (field-fix A)", function()
       local abilities, dropped = St.DomainView(cooldowns, nil, true, nil)
       return {
         at = NOW, combat = true, combatStartedAt = NOW - 60, mode = "st",
-        power = { SoulShards = { value = 3, incoming = 0, max = 5, readable = true } },
+        power = { SoulShards = { value = 3, max = 5, readable = true } },
         buffs = {}, history = {}, abilities = abilities, dropped = dropped,
       }
     end

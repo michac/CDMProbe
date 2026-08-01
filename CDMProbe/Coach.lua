@@ -58,6 +58,9 @@ local SOON_LEAD  = 3.0    -- a tracked cooldown anticipated within this => a dum
                          -- of the winner/burst logic — NOT a press claim.  A generic
                          -- decoration lead (not asserted spec-specific), so it stays here.
 local CAST_FRESH = 1.0    -- a history 'start' this fresh => the cast_started edge
+local INFLIGHT_WINDOW = 3.0  -- a cast still plausibly IN FLIGHT this recently (~2 GCDs).
+                             -- Distinct from CAST_FRESH, which answers a different question
+                             -- ("is this the cast_started EDGE"), so do not merge them.
 
 -- Pure SAFETY FALLBACKS for ResourceBars (multi-spec Phase 3).  The resource shape is now
 -- an ARRAY the spec brain fills (ctx.powers, each entry carrying its own value/max/display/
@@ -102,6 +105,61 @@ function C.CommittedWithin(state, base, window)
     end
   end
   return false
+end
+
+-- Net power delta of the casts currently IN FLIGHT: a 'start' with no later 'succeeded'
+-- or 'stopped' for the same base, inside the flight window.  PURE over the pulse — this
+-- is roster-state-plan Phase 6, which moved the projection out of State.lua (where it
+-- dragged `ns.SpecPowerDelta` and both `Enum.PowerType.SoulShards` hardwires into the
+-- INGESTION layer) and into the layer that already decides things and is fixture-tested.
+--
+-- Returns a MAP `powerName -> total`, so a dual-resource spec accumulates each cast onto
+-- its OWN named power.  A single-power spec (Demo/Destro) gets the one SoulShards key.
+-- The SIGN is the whole point: a builder credits (+), an in-flight spender subtracts
+-- (−cost), so the brain ranking on projected = value + incoming clears the spender it is
+-- mid-cast on instead of re-cuing it.
+--
+-- `deltaFn` (in practice `ns.SpecPowerDelta`) is PASSED IN rather than reached for, so the
+-- helper stays testable and the spec global is not a hidden dependency.  It returns
+-- `{ power, delta }` per base spellID; a nil power or zero delta contributes nothing.
+--
+-- ⚠ THE DOUBLE-DEDUCTION GUARD IS DELIBERATELY GONE (Phase 6; roster-state-plan §7).  The
+-- old State version snapshotted live UnitPower at UNIT_SPELLCAST_START and dropped a
+-- spender's −delta once the live value fell below it.  A pure function of the pulse has no
+-- `before` value to diff against, and the accepted cost is a stale −N for at most ONE ~10 Hz
+-- tick at completion — 'succeeded' supersedes the 'start' on the very next pulse, and often
+-- lands before a Build even runs.  Deleting it also removed two latent defects rather than
+-- porting them: the snapshot LEAKED whenever the terminal event's spellID read secret (the
+-- map entry survived into the next cast of that spender and under-projected for a full
+-- flight window), and the comparison was already wrong for a multi-power spec by its own
+-- admission.  Do not "fix" this back without reading §7 first.
+--
+-- EXPOSED as ns.Coach.InflightPower — public shell kit, like C.CommittedWithin: both spec
+-- brains read it from their Context.
+function C.InflightPower(state, deltaFn, window)
+  local sums = {}
+  if not deltaFn then return sums end
+  local now = state.at or 0
+  local hist = state.history or {}
+  -- Latest phase per base within the flight window (a fresh 'start' is still in flight; a
+  -- 'succeeded'/'stopped' supersedes it and stops it counting).
+  local latest = {}
+  for i = 1, #hist do
+    local h = hist[i]
+    local id = h.base or h.spellID
+    if num(id) and num(h.at) and (now - h.at) <= (window or INFLIGHT_WINDOW) then
+      local prev = latest[id]
+      if not prev or h.at >= prev.at then latest[id] = { phase = h.phase, at = h.at } end
+    end
+  end
+  for id, e in pairs(latest) do
+    if e.phase == "start" then
+      local r = deltaFn(id)
+      local p, d = r and r.power, r and r.delta
+      if p and num(d) and d ~= 0 then sums[p] = (sums[p] or 0) + d end
+    end
+  end
+  return sums
 end
 
 -- The MOST RECENT in-flight start for `base` with no later succeeded, if fresh.

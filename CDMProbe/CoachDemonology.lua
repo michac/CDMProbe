@@ -67,9 +67,14 @@ function spec:Context(state, env)
     return (state.buffs and state.buffs[spellID] == true) or false
   end
 
+  -- The in-flight projection, derived HERE from the pulse's cast history (roster-state-plan
+  -- Phase 6 — State emits raw `power` now and no longer folds `incoming` onto the bar).
+  -- One map per Context, shared by the shard scalars below and the generic ctx.powers loop.
+  local sums = ns.Coach.InflightPower(state, ns.SpecPowerDelta)
+
   local ss = (state.power or {}).SoulShards or {}
   local shards   = num(ss.value)
-  local incoming = num(ss.incoming) or 0
+  local incoming = sums.SoulShards or 0
   local smax     = num(ss.max) or self.SHARD_CAP
   local projected = shards and (shards + incoming) or nil
 
@@ -95,7 +100,10 @@ function spec:Context(state, env)
     ctx.powers[#ctx.powers + 1] = {
       value     = num(pw.value),
       max       = num(pw.max) or self.SHARD_CAP,
-      incoming  = num(pw.incoming) or 0,
+      -- `p.incoming` is the spec-declared "this bar shows a projection" flag.  Its READER
+      -- moved here from State's deleted projectIncoming (Phase 6); the field on
+      -- spec.powers is unchanged.
+      incoming  = (p.incoming and sums[p.name]) or 0,
       display   = p.display or "discrete",
       powerType = p.token,
     }
