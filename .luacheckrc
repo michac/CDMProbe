@@ -42,7 +42,8 @@ stds.wow = {
     "ActionButtonSpellAlertManager",
     -- C_ namespaces the addon uses (functions accessed via these tables) -------
     "C_AddOns", "C_AssistedCombat", "C_ClassTalents", "C_CooldownViewer", "C_NamePlate", "C_Secrets",
-    "C_Spell", "C_SpellActivationOverlay", "C_SpellBook", "C_Timer", "C_UnitAuras", "AuraUtil",
+    "C_Spell", "C_SpellActivationOverlay", "C_SpellBook", "C_Texture", "C_Timer",
+    "C_UnitAuras", "AuraUtil",
     -- Enums --------------------------------------------------------------------
     "Enum",
   },

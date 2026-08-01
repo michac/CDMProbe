@@ -276,7 +276,22 @@ end
 local FX = {
   bg      = false,  -- black backing disc on/off
   bgAlpha = 0.75,   -- its opacity
-  bgScale = 1.15,   -- diameter relative to the RING's (not the dot's)
+  -- ⚠ MEASURED AGAINST THE RING'S TEXTURE BOUNDS, WHICH IS WHY IT LOOKS TOO BIG.
+  -- 1.0 = the full quad the ring atlas is drawn into.  But `services-ring-large-glowspin`
+  -- does not fill its own quad: the art has transparent padding and its rays fade out well
+  -- before the edge, so a disc sized to the QUAD is visibly larger than the light it is
+  -- backing.  The first cut compounded that by adding another 15 %.  There is no API that
+  -- reports where the art's visible energy actually ends, so this is an eyeball constant —
+  -- `bg size <n>` is the dial, and going BELOW 1.0 is expected, not a mistake.
+  bgScale = 0.85,   -- diameter relative to the ring's TEXTURE BOUNDS
+  -- RAYS WITHOUT BRIGHTNESS (`rays <n>`).  An OUTER ECHO of the same ring at n x the
+  -- diameter, drawn additively like the base one — so the ray structure reads as extending
+  -- further out.  ⚠ Additive light STACKS, so a naive echo just makes it brighter, which is
+  -- exactly what was asked against.  The alpha of both the base and the echo is therefore
+  -- split (see echoAlpha) so total added light stays roughly flat and only the REACH grows.
+  rays      = 1.0,  -- echo diameter multiplier; 1.0 = no echo
+  raysAlpha = 0.55, -- the echo's share of the light
+  atlas     = nil,  -- index into ATLASES; nil = whatever Renderer.lua's GLOW_ATLAS is
   stack   = 1,      -- additive glow copies: 1 = stock, 2 = "doubled"
   pop     = false,  -- one-shot scale on application
   ghost   = false,  -- one-shot scale+fade on removal
@@ -289,6 +304,7 @@ local FX = {
   holders = {},     -- key -> our own frame (never culled by the Renderer)
   bgs     = {},     -- key -> backing disc
   stacks  = {},     -- key -> { extra glow copies }
+  echoes  = {},     -- key -> the outer ray-echo texture
   ghosts  = {},     -- key -> ghost texture
   lastOn  = {},     -- key -> true if it carried a cue on the PREVIOUS draw
 }
@@ -334,6 +350,51 @@ local function sizeDisc(t, size, rel)
   t.mask:SetPoint("CENTER", t, "CENTER", 0, 0)
   t:ClearAllPoints()
   t:SetPoint("CENTER", rel, "CENTER", 0, 0)
+end
+
+-- CANDIDATE GLOW ATLASES — the OTHER answer to "longer rays".  You cannot stretch a ring
+-- radially: a texture is a quad and tex-coords are rectangular, so there is no transform
+-- that lengthens the rays while holding the inner radius (sampling a sub-rect just
+-- magnifies the hole).  The reach of a ray is baked into the ART.  So either echo the ring
+-- outward (`rays`) or draw DIFFERENT art — this is the list for the second option.
+--
+-- ⚠ SAME CAVEAT AS THE SOUND LIST: these names are written from knowledge of the atlas
+-- set, NOT verified against this build.  `C_Texture.GetAtlasInfo` returns nil for a name
+-- that does not exist, so `atlas list` validates them in-game and reports each as
+-- present/absent — the same resolve-and-report-absent shape the sound list uses, for the
+-- same reason (a silently-wrong atlas would just show nothing and read as "no improvement").
+local ATLASES = {
+  { "services-ring-large-glowspin", "the current ring (Renderer.lua's GLOW_ATLAS)" },
+  { "services-ring-small-glowspin", "same family, tighter" },
+  { "AzeriteTooltipBackground-CircleGlow", "soft radial, few rays" },
+  { "ChallengeMode-RingGlow", "M+ keystone ring" },
+  { "Artifacts-StarGlow", "star burst — long spokes" },
+  { "loottoast-glow", "loot-toast burst" },
+  { "UI-Frame-Bar-Glow", "generic bar glow (control: no rays at all)" },
+}
+
+local function atlasName(i)
+  local e = ATLASES[i]
+  return e and e[1] or nil
+end
+
+local function atlasExists(name)
+  if not (name and C_Texture and C_Texture.GetAtlasInfo) then return nil end
+  return C_Texture.GetAtlasInfo(name) ~= nil
+end
+
+-- The atlas a glow should wear: an explicit override, else whatever the Renderer chose.
+local function wantAtlas(glow)
+  return (FX.atlas and atlasName(FX.atlas))
+      or (glow and glow.GetAtlas and glow:GetAtlas())
+      or nil
+end
+
+-- Split the light between the base ring and its echo so adding REACH does not add
+-- BRIGHTNESS.  With no echo the base keeps all of it.
+local function echoAlpha()
+  if FX.rays <= 1.0 then return 1.0, 0 end
+  return 1.0 - FX.raysAlpha, FX.raysAlpha
 end
 
 -- The Scale animation's setter was renamed across expansions; both spellings are still
@@ -431,9 +492,46 @@ end
 
 -- "Master" rather than "SFX" on purpose: a rotation cue must not vanish because the
 -- player turned effects down to hear the boss.
+--
+-- ⚠ RETURNS `willPlay` — AND THAT IS THE WHOLE POINT.  Both PlaySound and PlaySoundFile
+-- hand back (willPlay, soundHandle), so "I hear nothing" has a machine answer instead of
+-- a guess: nothing selected / name not in SOUNDKIT / the client refused the request /
+-- it played and the problem is elsewhere (volume, channel, muted).  Reported by
+-- `sound test`.  Silence with no readout is the failure mode this experiment cannot
+-- afford, because every one of those four causes looks identical from the chair.
 local function playCueSound()
-  if FX.soundFile then PlaySoundFile(FX.soundFile, "Master")
-  elseif FX.soundID then PlaySound(FX.soundID, "Master") end
+  if FX.soundFile then return PlaySoundFile(FX.soundFile, "Master") end
+  if FX.soundID then return PlaySound(FX.soundID, "Master") end
+  return nil
+end
+
+-- The `I hear nothing` decision tree, answered in one line each.
+local function soundDiagnose()
+  ns.Heading("rt fx sound — diagnosis")
+  ns.Printf("  SOUNDKIT table   %s",
+    SOUNDKIT and "|cff88ff88present|r" or "|cffff4040MISSING (nothing by name can work)|r")
+  if not (FX.soundID or FX.soundFile) then
+    ns.Print("  selection        |cffff4040NONE — the sound knob defaults OFF|r")
+    ns.Print("  |cffffffff=> run /cdmp rt fx sound|r to pick one.  This is the usual answer.")
+    return
+  end
+  ns.Printf("  selection        |cffffffff%s|r", FX.soundLabel or "?")
+  if FX.sound and not FX.soundID then
+    ns.Printf("  resolve          |cffff4040'%s' is NOT in SOUNDKIT on this build|r",
+      SOUNDS[FX.sound][1])
+    ns.Print("  |cffffffff=> try another, or /cdmp rt fx sound id <kitID>|r")
+    return
+  end
+  local willPlay = playCueSound()
+  if willPlay == nil then
+    ns.Print("  request          |cffff4040the API returned nothing|r")
+  elseif willPlay then
+    ns.Print("  request          |cff88ff88accepted (willPlay=true) — the client IS playing it|r")
+    ns.Print("  |cffffffff=> if you still hear nothing it is volume/mute, not the addon|r")
+  else
+    ns.Print("  request          |cffff4040REFUSED (willPlay=false) — bad id for this build|r")
+    ns.Print("  |cffffffff=> try a different id|r")
+  end
 end
 
 -- Point the cue sound at a list entry / a raw kit id / a file, and report what it is.
@@ -455,15 +553,61 @@ local function applyFX(renderer, activeKeys, newOnly)
       local holder = fxHolder(key, anchor)
       local ring   = (glow and glow:GetWidth() or 0)
       if ring <= 0 then ring = dot:GetWidth() * 2.3 end
-      -- 1. BACKING DISC
+      local baseA, echoA = echoAlpha()
+      local r, g2, b = 1, 1, 1
+      if glow then r, g2, b = glow:GetVertexColor() end
+      r, g2, b = r or 1, g2 or 1, b or 1
+      -- ATLAS OVERRIDE + light split are applied to the RENDERER'S OWN ring.  That is the
+      -- one place this layer writes back into the renderer's pool rather than decorating
+      -- around it — unavoidable, since "same ring, different art / dimmer" is the
+      -- experiment.  `R:Draw` re-asserts atlas-independent state (size, colour, points)
+      -- every draw but never re-sets the atlas after creation, so the override sticks;
+      -- the alpha DOES get reset to 1 by the renderer's SetVertexColor, which is why it is
+      -- re-applied here on every pass rather than once.
+      if glow then
+        local a = wantAtlas(glow)
+        if a and FX.atlas then glow:SetAtlas(a) end
+        glow:SetVertexColor(r, g2, b, baseA)
+      end
+      -- 1. BACKING DISC.  Sized off the ring's OUTERMOST drawn extent (the echo, when one
+      -- is on), not off the base ring — otherwise turning `rays` up leaves the echo
+      -- hanging off an undersized disc.
+      local outer = ring * math.max(1.0, FX.rays)
       local bg = FX.bgs[key]
       if FX.bg then
         if not bg then bg = ensureDisc(holder, "BACKGROUND"); FX.bgs[key] = bg end
         bg:SetColorTexture(0, 0, 0, FX.bgAlpha)
-        sizeDisc(bg, ring * FX.bgScale, dot)
+        sizeDisc(bg, outer * FX.bgScale, dot)
         bg:Show()
       elseif bg then
         bg:Hide()
+      end
+      -- 1b. RAY ECHO — the same ring, larger and dimmer, so the rays REACH further without
+      -- the pair adding light.  Counter-rotating on purpose: two copies of one ring turning
+      -- together read as a single thicker ring, whereas opposed rotation keeps the spokes
+      -- crossing and is what makes the extra reach legible as rays.
+      local echo = FX.echoes[key]
+      if FX.rays > 1.0 and glow then
+        if not echo then
+          echo = holder:CreateTexture(nil, "ARTWORK")
+          echo:SetBlendMode("ADD")
+          local sg = echo:CreateAnimationGroup()
+          local rot = sg:CreateAnimation("Rotation")
+          rot:SetDegrees(360); rot:SetDuration(6.0); rot:SetOrigin("CENTER", 0, 0); rot:SetOrder(1)
+          sg:SetLooping("REPEAT")
+          echo._spin = sg
+          FX.echoes[key] = echo
+        end
+        local a = wantAtlas(glow)
+        if a then echo:SetAtlas(a) end
+        echo:SetVertexColor(r, g2, b, echoA)
+        echo:SetSize(outer, outer)
+        echo:ClearAllPoints()
+        echo:SetPoint("CENTER", glow, "CENTER", 0, 0)
+        echo:Show()
+        if not echo._spinOn then echo._spin:Play(); echo._spinOn = true end
+      elseif echo then
+        echo:Hide()
       end
       -- 2. GLOW STACK — extra additive copies of the live ring, in phase.
       local copies = FX.stacks[key] or {}
@@ -482,10 +626,11 @@ local function applyFX(renderer, activeKeys, newOnly)
           copies[i] = c
         end
         if glow then
-          local atlas = glow.GetAtlas and glow:GetAtlas()
+          local atlas = wantAtlas(glow)
           if atlas then c:SetAtlas(atlas) end
-          local r, g2, b = glow:GetVertexColor()
-          c:SetVertexColor(r or 1, g2 or 1, b or 1, 1)
+          -- Full alpha, unlike the echo: `glow <n>` IS the brightness knob, so its copies
+          -- are supposed to stack light.  `rays` is the reach knob and compensates.
+          c:SetVertexColor(r, g2, b, 1)
           c:SetSize(ring, ring)
           c:ClearAllPoints()
           c:SetPoint("CENTER", glow, "CENTER", 0, 0)
@@ -511,6 +656,7 @@ local function applyFX(renderer, activeKeys, newOnly)
   for key in pairs(FX.lastOn) do
     if not activeKeys[key] then
       if FX.bgs[key] then FX.bgs[key]:Hide() end
+      if FX.echoes[key] then FX.echoes[key]:Hide() end
       for _, c in ipairs(FX.stacks[key] or {}) do c:Hide() end
       if FX.ghost then
         local anchor = renderer.registry[key]
@@ -527,6 +673,7 @@ end
 
 local function clearFX()
   for _, t in pairs(FX.bgs) do t:Hide() end
+  for _, t in pairs(FX.echoes) do t:Hide() end
   for _, list in pairs(FX.stacks) do for _, c in ipairs(list) do c:Hide() end end
   for _, t in pairs(FX.ghosts) do t:Hide() end
   FX.lastOn = {}
@@ -544,13 +691,20 @@ end
 
 local function fxStatus()
   ns.Heading("rt fx — experimental cue treatments")
-  ns.Printf("  bg    |cffffffff%s|r  (alpha %.2f, %.2fx the ring)",
+  ns.Printf("  bg    |cffffffff%s|r  (alpha %.2f, size %.2fx the ring's texture bounds)",
     FX.bg and "|cff88ff88on|r" or "off", FX.bgAlpha, FX.bgScale)
-  ns.Printf("  glow  |cffffffffx%d|r  (%d additive cop%s stacked on the live ring)",
+  ns.Printf("  glow  |cffffffffx%d|r  (%d additive cop%s — this is the BRIGHTNESS knob)",
     FX.stack, FX.stack - 1, FX.stack == 2 and "y" or "ies")
+  ns.Printf("  rays  |cffffffff%.2fx|r (%s — this is the REACH knob, light-compensated)",
+    FX.rays, FX.rays > 1.0 and string.format("echo at %.0f%% of the light", FX.raysAlpha * 100)
+                            or "no echo")
+  local a = FX.atlas and atlasName(FX.atlas)
+  ns.Printf("  atlas |cffffffff%s|r", a or "(Renderer.lua's GLOW_ATLAS)")
   ns.Printf("  pop   |cffffffff%s|r  ghost |cffffffff%s|r  (peak %.1fx over %.2fs)",
     FX.pop and "on" or "off", FX.ghost and "on" or "off", FX.peak, FX.secs)
-  ns.Printf("  sound |cffffffff%s|r", FX.soundLabel or "off")
+  ns.Printf("  sound |cffffffff%s|r%s", FX.soundLabel or "off",
+    (FX.soundID or FX.soundFile) and ""
+      or "  |cffff8080<- OFF BY DEFAULT; `rt fx sound` picks one|r")
 end
 
 --------------------------------------------------------------------------------
@@ -599,8 +753,46 @@ local function fxCommand(words)
     return true
   end
   if verb == "bg" then
-    if a1 then FX.bgAlpha = tonumber(a1) or FX.bgAlpha; FX.bg = FX.bgAlpha > 0
-    else FX.bg = not FX.bg end
+    -- `bg` toggles; `bg <alpha>` keeps the old one-arg spelling; `bg size <n>` is the
+    -- dial the first cut was missing — the disc was 1.15x the ring's quad with no way to
+    -- shrink it short of an edit.
+    if a1 == "size" then
+      FX.bgScale = tonumber(words[4]) or FX.bgScale; FX.bg = true
+    elseif a1 == "alpha" then
+      FX.bgAlpha = tonumber(words[4]) or FX.bgAlpha; FX.bg = FX.bgAlpha > 0
+    elseif a1 then
+      FX.bgAlpha = tonumber(a1) or FX.bgAlpha; FX.bg = FX.bgAlpha > 0
+    else
+      FX.bg = not FX.bg
+    end
+  elseif verb == "rays" then
+    -- REACH, not brightness.  `rays 1` turns the echo off.
+    FX.rays = math.max(1.0, math.min(4.0, tonumber(a1 or "") or (FX.rays + 0.25)))
+    if not a1 and FX.rays >= 4.0 then FX.rays = 1.0 end     -- bare `rays` cycles
+    if words[4] then FX.raysAlpha = tonumber(words[4]) or FX.raysAlpha end
+  elseif verb == "atlas" then
+    if a1 == "list" then
+      ns.Heading("rt fx atlas — candidate ring art (validated against THIS build)")
+      for i, e in ipairs(ATLASES) do
+        local ok = atlasExists(e[1])
+        ns.Printf("  %d. |cffffffff%s|r — %s %s", i, e[1], e[2],
+          ok == nil and "|cff808080[cannot check]|r"
+            or (ok and "|cff88ff88[present]|r" or "|cffff4040[absent]|r"))
+      end
+      ns.Print("usage: |cffffffff/cdmp rt fx atlas|r (next) | <n> | reset | list")
+      return true
+    elseif a1 == "reset" then
+      FX.atlas = nil
+    elseif tonumber(a1) then
+      FX.atlas = math.max(1, math.min(#ATLASES, math.floor(tonumber(a1))))
+    else
+      FX.atlas = (FX.atlas or 0) % #ATLASES + 1
+    end
+    local name = FX.atlas and atlasName(FX.atlas)
+    if name and atlasExists(name) == false then
+      ns.Printf("|cffff4040'%s' is not an atlas on this build|r — the ring will draw "
+        .. "NOTHING; try another or |cffffffffatlas reset|r", name)
+    end
   elseif verb == "glow" then
     FX.stack = math.max(1, math.min(4, math.floor(tonumber(a1 or "") or (FX.stack + 1))))
     if not a1 and FX.stack >= 4 then FX.stack = 1 end   -- bare `glow` cycles 1..4
@@ -610,7 +802,10 @@ local function fxCommand(words)
     FX.ghost = not FX.ghost
   elseif verb == "sound" then
     local a2 = words[4]
-    if a1 == "off" then
+    if a1 == "test" then
+      soundDiagnose()
+      return true
+    elseif a1 == "off" then
       selectSound(nil, nil, nil, nil)
     elseif a1 == "list" then
       ns.Heading("rt fx sound — the audition list (a starting point, NOT a verified set)")
@@ -646,11 +841,13 @@ local function fxCommand(words)
     return true
   else
     ns.Heading("rt fx — experimental cue treatments")
-    ns.Print("  |cff88ff88bg|r [alpha]     black backing disc under dot + ring (contrast)")
-    ns.Print("  |cff88ff88glow|r [1-4]     additive ring copies — 2 = literally doubled")
+    ns.Print("  |cff88ff88bg|r [size <n>|alpha <n>]  black backing disc (contrast)")
+    ns.Print("  |cff88ff88glow|r [1-4]     additive ring copies — the BRIGHTNESS knob")
+    ns.Print("  |cff88ff88rays|r [n] [a]   outer ring echo — the REACH knob, light-compensated")
+    ns.Print("  |cff88ff88atlas|r [n|reset|list]  swap the ring ART (rays are baked into it)")
     ns.Print("  |cff88ff88pop|r [peak]     one-shot scale on cue APPLICATION")
     ns.Print("  |cff88ff88ghost|r          one-shot scale+fade on cue REMOVAL")
-    ns.Print("  |cff88ff88sound|r [n|id <kitID>|file <path>|off|list]  cue SFX (bare = next)")
+    ns.Print("  |cff88ff88sound|r [n|id <kitID>|file <path>|test|off|list]  cue SFX (bare = next)")
     ns.Print("  |cff88ff88status|r         print the current settings")
     ns.Print("pop/ghost/sound need a rising edge — watch them on |cffffffff/cdmp rt rotate|r")
     return true
