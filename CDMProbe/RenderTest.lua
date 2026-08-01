@@ -294,6 +294,11 @@ local FX = {
   -- emphasis, which is why one sprite can look right there and flat everywhere else.
   scale     = 1.0,  -- ring diameter multiplier (base GLOW_SCALE is 2.3)
   spinMul   = 1.0,  -- spin PERIOD multiplier; <1 = faster (base SPIN_SECS is 4.0)
+  -- THE LATE EFFECT, GENERALISED.  See layerSpin(): the extra ring layers used to spin at
+  -- a HARDCODED absolute period, which happened to equal the base everywhere except LATE.
+  -- This is that accident turned into a ratio, so any emphasis can have it.
+  desync    = 2.5,  -- extra layers' spin period / the BASE ring's period.  1.0 = locked
+  counter   = true, -- extra layers turn the OTHER way (relative slide is the whole effect)
   rays      = 1.0,  -- echo diameter multiplier; 1.0 = no echo
   raysAlpha = 0.55, -- the echo's share of the light
   art       = nil,  -- index into GLOW_ART; nil = whatever Renderer.lua's GLOW_ATLAS is
@@ -451,6 +456,34 @@ local function setScale(anim, from, to)
     anim:SetScaleFrom(from, from); anim:SetScaleTo(to, to)
   else
     anim:SetFromScale(from, from); anim:SetToScale(to, to)
+  end
+end
+
+-- LAYER SPIN — re-time/re-aim ONE extra ring layer against the BASE ring's actual period.
+--
+-- ⚠ THIS IS THE "WHY IS LATE SPECIAL" BUG, AND IT WAS A GOOD ONE.  The stack copies and
+-- the ray echo used to spin at HARDCODED absolute periods (4.0s and 6.0s).  The base ring
+-- runs at SPIN_SECS = 4.0 for ROTATION / SOON / FALLBACK -- so a copy at 4.0 sat exactly
+-- in phase with it, two identical spoked rings superimposed, invisible as a second layer.
+-- LATE is the ONE emphasis with its own spinSecs (1.6), so there the copy ran 2.5x slower
+-- than the base and the two spoke sets slid continuously past each other.  That slide IS
+-- the effect: relative motion reads as a counter-rotating inner set, and the spokes
+-- crossing and separating near the hub is the "rippling".  It was never LATE-specific --
+-- it was a desync that only LATE happened to have.
+--
+-- So the period is now a RATIO to whatever the base is actually doing, which makes the
+-- effect available to every emphasis and survives any retune of GLOW_SPEC/SPIN_SECS.
+-- ratio 1.0 = locked in phase (the old ROTATION behaviour, i.e. no effect).
+local function layerSpin(tex, baseSecs, ratio, counter)
+  if not (tex and tex._rot) then return end
+  local secs = math.max(0.15, (baseSecs or 4.0) * (ratio or 1.0))
+  local deg  = counter and 360 or -360
+  -- Re-apply only on CHANGE: SetDuration/SetDegrees on a playing group restart it, which
+  -- at 10 Hz would reset the slide every tick and hide the very thing being tested.
+  if tex._fxSecs ~= secs or tex._fxDeg ~= deg then
+    tex._fxSecs, tex._fxDeg = secs, deg
+    tex._rot:SetDuration(secs)
+    tex._rot:SetDegrees(deg)
   end
 end
 
@@ -684,7 +717,9 @@ local function updatePanel()
   if not p then return end
   p.bgVal:SetText(FX.bg and string.format("|cff88ff88on|r  a%.2f s%.2f", FX.bgAlpha, FX.bgScale)
                         or "|cff808080off|r")
-  p.glowVal:SetText(string.format("|cffffffffx%d|r", FX.stack))
+  p.glowVal:SetText(string.format("|cffffffffx%d|r  desync |cffffffff%.1f|r%s%s",
+    FX.stack, FX.desync, FX.counter and " rev" or "",
+    (FX.stack < 2 and FX.rays <= 1.0) and "  |cff808080(needs glow 2+ or rays)|r" or ""))
   p.ringVal:SetText(string.format("size |cffffffff%.2fx|r  spin |cffffffff%.2fx|r%s",
     FX.scale, FX.spinMul,
     (FX.scale == 1.0 and FX.spinMul == 1.0) and "  |cff808080(stock)|r" or ""))
@@ -778,6 +813,10 @@ local function ensureFxPanel()
   label("glow", y)
   btn("-", 24, 40, y, bump(function() FX.stack = math.max(1, FX.stack - 1) end))
   btn("+", 24, 66, y, bump(function() FX.stack = math.min(4, FX.stack + 1) end))
+  btn("dsy", 30, 96, y, bump(function()
+    FX.desync = FX.desync >= 3.0 and 1.0 or FX.desync + 0.5
+  end))
+  btn("rev", 30, 130, y, bump(function() FX.counter = not FX.counter end))
   local glowVal = value(y)
   -- ring size + spin speed (the LATE-vs-rest lever)
   y = y - ROW_H2
@@ -851,6 +890,7 @@ local function ensureFxPanel()
     FX.bg, FX.bgAlpha, FX.bgScale = false, 0.75, 0.85
     FX.stack, FX.rays, FX.raysAlpha, FX.art = 1, 1.0, 0.55, nil
     FX.scale, FX.spinMul = 1.0, 1.0
+    FX.desync, FX.counter = 2.5, true
     FX.pop, FX.ghost, FX.peak = false, false, 2.0
     stopSoundLoop(); selectSound(nil, nil, nil, nil)
   end))
@@ -971,6 +1011,9 @@ local function applyFX(renderer, activeKeys, newOnly)
       -- 1. BACKING DISC.  Sized off the ring's OUTERMOST drawn extent (the echo, when one
       -- is on), not off the base ring — otherwise turning `rays` up leaves the echo
       -- hanging off an undersized disc.
+      -- The base ring's ACTUAL period (per-emphasis: 1.6 on LATE, 4.0 elsewhere), which
+      -- every extra layer is timed against.
+      local baseSecs = (glow and (glow._fxSpin or glow._spinSecs)) or 4.0
       local outer = ring * math.max(1.0, FX.rays)
       local bg = FX.bgs[key]
       if FX.bg then
@@ -992,12 +1035,13 @@ local function applyFX(renderer, activeKeys, newOnly)
           echo:SetBlendMode("ADD")
           local sg = echo:CreateAnimationGroup()
           local rot = sg:CreateAnimation("Rotation")
-          rot:SetDegrees(360); rot:SetDuration(6.0); rot:SetOrigin("CENTER", 0, 0); rot:SetOrder(1)
+          rot:SetOrigin("CENTER", 0, 0); rot:SetOrder(1)
           sg:SetLooping("REPEAT")
-          echo._spin = sg
+          echo._spin, echo._rot = sg, rot
           FX.echoes[key] = echo
         end
         mirrorArt(echo, glow)
+        layerSpin(echo, baseSecs, FX.desync, FX.counter)
         echo:SetVertexColor(r, g2, b, echoA)
         echo:SetSize(outer, outer)
         echo:ClearAllPoints()
@@ -1007,7 +1051,7 @@ local function applyFX(renderer, activeKeys, newOnly)
       elseif echo then
         echo:Hide()
       end
-      -- 2. GLOW STACK — extra additive copies of the live ring, in phase.
+      -- 2. GLOW STACK — extra additive copies of the live ring, DESYNCED (see layerSpin).
       local copies = FX.stacks[key] or {}
       FX.stacks[key] = copies
       local want = math.max(0, FX.stack - 1)
@@ -1018,13 +1062,17 @@ local function applyFX(renderer, activeKeys, newOnly)
           c:SetBlendMode("ADD")
           local sg = c:CreateAnimationGroup()
           local rot = sg:CreateAnimation("Rotation")
-          rot:SetDegrees(-360); rot:SetDuration(4.0); rot:SetOrigin("CENTER", 0, 0); rot:SetOrder(1)
+          rot:SetOrigin("CENTER", 0, 0); rot:SetOrder(1)
           sg:SetLooping("REPEAT")
-          c._spin = sg
+          c._spin, c._rot = sg, rot
           copies[i] = c
         end
         if glow then
           mirrorArt(c, glow)
+          -- Each copy gets its OWN ratio (i * desync): with 3+ layers a single shared
+          -- ratio would put copies 2..n back in phase with each other, collapsing them
+          -- into one slide instead of several.
+          layerSpin(c, baseSecs, 1 + (FX.desync - 1) * i, FX.counter)
           -- Full alpha, unlike the echo: `glow <n>` IS the brightness knob, so its copies
           -- are supposed to stack light.  `rays` is the reach knob and compensates.
           c:SetVertexColor(r, g2, b, 1)
@@ -1090,8 +1138,11 @@ local function fxStatus()
   ns.Heading("rt fx — experimental cue treatments")
   ns.Printf("  bg    |cffffffff%s|r  (alpha %.2f, size %.2fx the ring's texture bounds)",
     FX.bg and "|cff88ff88on|r" or "off", FX.bgAlpha, FX.bgScale)
-  ns.Printf("  glow  |cffffffffx%d|r  (%d additive cop%s — this is the BRIGHTNESS knob)",
+  ns.Printf("  glow  |cffffffffx%d|r  (%d additive cop%s — the BRIGHTNESS knob)",
     FX.stack, FX.stack - 1, FX.stack == 2 and "y" or "ies")
+  ns.Printf("  desync|cffffffff%.1fx|r%s — extra layers vs the base ring's period. "
+    .. "THE LATE RIPPLE; 1.0 = in phase, no effect",
+    FX.desync, FX.counter and " |cffffffffrev|r" or "")
   ns.Printf("  ring  |cffffffff%.2fx|r size, spin |cffffffff%.2fx|r period  "
     .. "(LATE is already 1.4x / 2.5x faster than the rest)", FX.scale, FX.spinMul)
   ns.Printf("  rays  |cffffffff%.2fx|r (%s — this is the REACH knob, light-compensated)",
@@ -1170,6 +1221,9 @@ local function fxCommand(words)
     else
       FX.bg = not FX.bg
     end
+  elseif verb == "desync" then
+    FX.desync = math.max(1.0, math.min(4.0, tonumber(a1 or "") or (FX.desync + 0.5)))
+    if words[4] then FX.counter = words[4] ~= "off" end
   elseif verb == "scale" or verb == "ring" then
     FX.scale = math.max(0.5, math.min(3.0, tonumber(a1 or "") or (FX.scale + 0.15)))
     if words[4] then FX.spinMul = tonumber(words[4]) or FX.spinMul end
@@ -1302,6 +1356,8 @@ local function fxCommand(words)
     ns.Print("  |cff88ff88(bare)|r        open the PANEL — every knob as a button")
     ns.Print("  |cff88ff88bg|r [size <n>|alpha <n>]  black backing disc (contrast)")
     ns.Print("  |cff88ff88glow|r [1-4]     additive ring copies — the BRIGHTNESS knob")
+    ns.Print("  |cff88ff88desync|r [n] [off]  extra layers' spin ratio vs the base ring —")
+    ns.Print("         |cffffd100this is the LATE ripple|r; 1.0 locks them in phase")
     ns.Print("  |cff88ff88ring|r [n] / |cff88ff88spin|r [n]  ring SIZE / spin PERIOD, x the Renderer's")
     ns.Print("         (LATE already runs 1.4x bigger + 2.5x faster than the rest)")
     ns.Print("  |cff88ff88rays|r [n] [a]   outer ring echo — the REACH knob, light-compensated")
