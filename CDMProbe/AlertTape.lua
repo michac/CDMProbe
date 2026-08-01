@@ -220,8 +220,12 @@ end
 --------------------------------------------------------------------------------
 -- `/cdmp alerts` — the command surface.
 --------------------------------------------------------------------------------
--- ELIGIBILITY (Q3): which alert types each tracked cooldown can even raise, via the public
--- C_CooldownViewer.GetValidAlertTypes(cooldownID).  A plain out-of-combat read.
+-- ELIGIBILITY (Q3): which alert types each tracked cooldown can even raise, via
+-- `ns.ReadValidAlertTypes` — the guarded reader in Util.lua.  A plain out-of-combat read.
+-- The read itself was PROMOTED out of this file (Phase 3 housekeeping) because Phase 4's
+-- roster coverage probe is built on it and this file is scheduled for deletion; what stays
+-- here is only the capture bookkeeping and the formatting.  ⚠ The API under-reports — see
+-- ns.ReadValidAlertTypes' own note.
 --
 -- ⚠ THIS WRITES TO SAVEDVARIABLES, not just chat.  An earlier cut printed it to chat only,
 -- which was useless: WoW's default chat frame has no copy/paste, so the one output that has
@@ -233,10 +237,6 @@ end
 function T.CaptureEligibility()
   local sess = T.session
   if not sess then return nil, "no session" end
-  if not (C_CooldownViewer and C_CooldownViewer.GetValidAlertTypes) then
-    sess.eligError = "C_CooldownViewer.GetValidAlertTypes absent"
-    return nil, sess.eligError
-  end
   if not ns.VIEWERS then
     sess.eligError = "no viewers"
     return nil, sess.eligError
@@ -253,9 +253,9 @@ function T.CaptureEligibility()
         local ekey = build .. "|" .. tostring(cid)
         if cid and not sess.elig[ekey] then
           local base = ns.ItemBaseSpellID(item)
-          local ok, types = pcall(C_CooldownViewer.GetValidAlertTypes, cid)
+          local types, err = ns.ReadValidAlertTypes(cid)
           local list
-          if ok and type(types) == "table" then
+          if types then
             local parts = {}
             for _, t in ipairs(types) do
               -- Never format a secret; an unreadable member is named as such, not dropped.
@@ -263,7 +263,7 @@ function T.CaptureEligibility()
             end
             list = #parts > 0 and table.concat(parts, ",") or "(none)"
           else
-            list = "<unreadable>"
+            list = "<" .. (err or "unreadable") .. ">"
           end
           sess.elig[ekey] = {
             build = build, cid = cid, spellID = base, viewer = v.label, types = list,

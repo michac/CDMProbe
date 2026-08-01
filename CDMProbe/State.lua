@@ -147,9 +147,11 @@ local function copyInfoFields(info, rec)
   end
 end
 
--- The static candidate POOL, guarded at every step the way Census.lua's `poolOf` is: the
--- index can raise, the table can be secret, and iterating it can raise independently of
--- both.  A refusal yields an EMPTY pool, never a partial one presented as whole.
+-- The static candidate POOL, guarded at every step, because each step can fail on its own:
+-- the index can raise, the table can be secret, and iterating it can raise independently of
+-- both.  A refusal yields an EMPTY pool, never a partial one presented as whole.  (The same
+-- three-step guard was used by the retired `/cdmp census` instrument, deleted with Phase 3
+-- once its six questions were answered.)
 local function readPool(info)
   local out = {}
   local t

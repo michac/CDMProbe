@@ -278,6 +278,36 @@ function ns.ReadCooldown(spellID, gcd)
   return false, remaining, duration, startTime
 end
 
+-- ns.ReadValidAlertTypes(cooldownID) -> list | nil, err
+--
+-- Which alert types a tracked cooldown can raise, via the public
+-- `C_CooldownViewer.GetValidAlertTypes`.  Same shape as the guarded-read ladder above:
+-- capability check, then a pcall, then a type check — a refusal is `nil` plus a REASON,
+-- never an empty list dressed as an answer (an empty list is a real, different answer:
+-- "this row raises nothing").  Members are returned RAW; a caller that wants to print one
+-- must run it through `ns.IsSecret` itself, because a member can read secret in combat.
+--
+-- ⚠ THE API UNDER-REPORTS, SO THIS IS A LOWER BOUND.  The 2026-07-31 capture caught a row
+-- raising an `OnAuraApplied` it did not list.  Any consumer must therefore phrase its
+-- output as "not reported eligible", NEVER as "cannot fire" — the difference is the whole
+-- value of the Phase-4 coverage report, which is about finding roster ids the CDM tracks
+-- nowhere, not about proving a negative on one that it does.
+--
+-- Promoted out of `AlertTape.lua` (Phase 3 housekeeping): that file is a temporary
+-- discovery instrument scheduled for deletion, and Phase 4 is built on this call.
+function ns.ReadValidAlertTypes(cooldownID)
+  if type(cooldownID) ~= "number" or ns.IsSecret(cooldownID) then
+    return nil, "unreadable cooldownID"
+  end
+  if not (C_CooldownViewer and C_CooldownViewer.GetValidAlertTypes) then
+    return nil, "C_CooldownViewer.GetValidAlertTypes absent"
+  end
+  local ok, types = pcall(C_CooldownViewer.GetValidAlertTypes, cooldownID)
+  if not ok then return nil, "GetValidAlertTypes raised" end
+  if type(types) ~= "table" or ns.IsSecretTable(types) then return nil, "unreadable" end
+  return types
+end
+
 -- Power cost for a spell, as the CLIENT reports it for THIS character's build.
 -- Returns (cost, powerTypeName) or nil.
 --
