@@ -193,6 +193,61 @@ local function flagOf(rec, key)
 end
 
 --------------------------------------------------------------------------------
+-- St.CoverageRows — the CDM database as PLAIN RECORDS, for the coverage probe
+--------------------------------------------------------------------------------
+-- One record per enumerated cooldownID, carrying every id field a roster entry could
+-- join on:
+--
+--   { cooldownID, category, spellID, overrideSpellID, overrideTooltipSpellID,
+--     linkedSpellIDs = {…}, isKnown = true|false|nil, readable = true|false }
+--
+-- ⚠ IT LIVES HERE BECAUSE `enumerate` / `readInfo` / `readable` / `flagOf` ARE THE
+-- ADDON'S ONLY GUARDED CDM-DATABASE READERS.  A copy of this walk in Coverage.lua would
+-- be a SECOND guard ladder over the same restricted API, which is the exact mistake §3.9
+-- exists about — one ladder drifts from the other and the difference is invisible until a
+-- struct field starts raising.  `St.AuraFrameCapability` is the standing precedent: a
+-- diagnostic exported from State because the reads it needs are State's.
+--
+-- NO NEW CLIENT READS.  Everything below is already on `St.Build`'s per-tick path; this
+-- just hands the same three reads out unfolded, because coverage is a question about the
+-- DATABASE (which ids exist at all), not about the domain view (which rows are pressable
+-- right now) — the fold deliberately throws away exactly the fields the join needs.
+--
+-- `readable = false` says the row EXISTS but refused its fields.  That is load-bearing
+-- downstream: a refused row could be carrying any spellID, so it makes every UNTRACKED
+-- verdict unprovable rather than merely unknown-for-that-row.  Coverage degrades those to
+-- "unknown" instead of crying blind.
+--
+-- Sorted by cooldownID so the readout, and any test over it, is order-stable.
+function St.CoverageRows()
+  local out = {}
+  for cid, category in pairs(enumerate()) do
+    local rec = readInfo(cid)
+    local row = {
+      cooldownID = cid,
+      category   = category,
+      linkedSpellIDs = (rec and rec.linkedSpellIDs) or {},
+      readable   = rec ~= nil and not rec.raised.spellID,
+    }
+    if rec ~= nil then
+      -- Ids go through `readable` for the same reason every other consumer does: a secret
+      -- id cannot be compared or used as a table key, so it is an ABSENT id, not a value.
+      if readable(rec.spellID) then row.spellID = rec.spellID end
+      if readable(rec.overrideSpellID) then row.overrideSpellID = rec.overrideSpellID end
+      if readable(rec.overrideTooltipSpellID) then
+        row.overrideTooltipSpellID = rec.overrideTooltipSpellID
+      end
+      -- Three-valued, exactly as St.Build reads it (readableBool, not flagOf): a refusal
+      -- must never be laundered into an assertion for the one flag that removes rows.
+      if readableBool(rec.isKnown) then row.isKnown = rec.isKnown end
+    end
+    out[#out + 1] = row
+  end
+  table.sort(out, function(a, b) return a.cooldownID < b.cooldownID end)
+  return out
+end
+
+--------------------------------------------------------------------------------
 -- Identity — one resolver, one copy (B1), with its inverse (B3)
 --------------------------------------------------------------------------------
 -- DISPLAY IDENTITY vs BASE IDENTITY are two different questions and must stay so.

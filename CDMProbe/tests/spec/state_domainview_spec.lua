@@ -1222,3 +1222,81 @@ describe("State readiness vs a foreign live override", function()
     assert.is_true(sawTyrant)
   end)
 end)
+
+--------------------------------------------------------------------------------
+-- St.CoverageRows — the SHIPPED-SYMBOL gate for the Phase-4 coverage probe.
+--
+-- `coverage_spec` drives `ns.Coverage.Build` as a pure function over hand-built row
+-- arrays, which proves the JOIN and proves nothing at all about where the rows come
+-- from.  That is the v0.32.25 outage shape exactly (`viewers_spec`'s doctrine: a stub
+-- proves the caller works GIVEN the collaborator, never that the collaborator exists),
+-- so this asserts the real symbol off the real State.lua, against the real
+-- C_CooldownViewer read path — the record SHAPE included, since Coverage joins on
+-- fields a fold could quietly stop carrying.
+--------------------------------------------------------------------------------
+describe("St.CoverageRows (the coverage probe's row source)", function()
+  local ns, St
+  local CID = { cb = 701, ritual = 702, refused = 703 }
+
+  before_each(function()
+    ns = H.fresh()
+    H.load("State.lua")
+    St = ns.State
+    _G.Enum.CooldownViewerCategory = { Essential = 0, TrackedBuff = 2 }
+    _G.C_CooldownViewer = {
+      GetCooldownViewerCategorySet = function(value)
+        if value == 0 then return { CID.cb, CID.refused } end
+        if value == 2 then return { CID.ritual } end
+        return {}
+      end,
+      GetCooldownViewerCooldownInfo = function(cid)
+        if cid == CID.cb then
+          return { spellID = CHAOS_BOLT, isKnown = true,
+                   overrideSpellID = 433885,          -- Ruination, the Art transform
+                   linkedSpellIDs = { 434635, 434636 } }
+        end
+        if cid == CID.ritual then return { spellID = 428514, isKnown = true } end
+        if cid == CID.refused then return H.poison({ spellID = SOUL_FIRE }, { "spellID" }) end
+      end,
+    }
+    ns.OnLogin()   -- builds the category-name cache
+  end)
+
+  after_each(function()
+    _G.C_CooldownViewer = nil
+    _G.Enum.CooldownViewerCategory = nil
+  end)
+
+  it("ships, and returns one record per enumerated cooldownID, sorted", function()
+    local rows = St.CoverageRows()
+    assert.equals(3, #rows)
+    assert.equals(CID.cb, rows[1].cooldownID)
+    assert.equals(CID.ritual, rows[2].cooldownID)
+    assert.equals(CID.refused, rows[3].cooldownID)
+  end)
+
+  it("carries every id field the coverage join needs, and the category", function()
+    local rows = St.CoverageRows()
+    assert.equals("Essential", rows[1].category)
+    assert.equals(CHAOS_BOLT, rows[1].spellID)
+    assert.equals(433885, rows[1].overrideSpellID)
+    assert.same({ 434635, 434636 }, rows[1].linkedSpellIDs)
+    assert.is_true(rows[1].isKnown)
+    assert.is_true(rows[1].readable)
+    assert.equals("TrackedBuff", rows[2].category)
+  end)
+
+  it("a row whose fields RAISE is present and marked unreadable, not dropped", function()
+    -- Dropping it would turn "we could not read this row" into "this row does not exist",
+    -- which is precisely the negative Coverage must never assert on.
+    local rows = St.CoverageRows()
+    assert.equals(CID.refused, rows[3].cooldownID)
+    assert.is_false(rows[3].readable)
+    assert.is_nil(rows[3].spellID)
+  end)
+
+  it("an empty CDM database yields NO rows — the wholesale guard's input", function()
+    _G.C_CooldownViewer.GetCooldownViewerCategorySet = function() return {} end
+    assert.equals(0, #St.CoverageRows())
+  end)
+end)
