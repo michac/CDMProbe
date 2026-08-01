@@ -122,3 +122,73 @@ describe("HudBinds — B.Resolve, the keybind rung ladder", function()
     assert.equals("2", B.Resolve(nil, WITHER, IMP_LORD))
   end)
 end)
+
+--------------------------------------------------------------------------------
+-- THE LOGIN RACE (v0.32.50).  Field-found: every one of 17 displayed rows read
+-- `key=none`, and MOVING THE CDM in Edit Mode fixed them — because that finally raised a
+-- binding event.  `B.Start` runs from `St.Acquire`, i.e. when the HUD is enabled, which on
+-- a login auto-enable is before the client has populated slots and bindings; the scan
+-- cached an empty map, cleared `dirty`, and nothing re-armed it, because the events that
+-- would have (UPDATE_BINDINGS / ACTIONBAR_SLOT_CHANGED) had already fired during load.
+--
+-- These drive the REAL 180-slot scan through the harness's default-inert action-bar fake.
+-- ⚠ `C_Timer.After` is a no-op in the harness, so the retry does not recurse here — what
+-- is asserted is the STATE the retry is armed from (`dirty` kept, `retried` counted),
+-- which is the half that was wrong.
+--------------------------------------------------------------------------------
+describe("HudBinds — the login race", function()
+  local ns, B
+
+  before_each(function()
+    ns = H.fresh()
+    H.load("HudBinds.lua")
+    B = ns.HudBinds
+  end)
+
+  it("does NOT accept an empty scan as the answer", function()
+    -- Bars not populated yet: every slot empty.
+    B.Start()
+    assert.equals(0, B.stats.bound)
+    assert.is_true(B.dirty, "an empty scan must stay dirty so a rescan is owed")
+    assert.equals(1, B.stats.retried)
+  end)
+
+  it("accepts a scan that resolved something, and stops retrying", function()
+    H.bar[1] = { id = IMMOLATE }
+    H.bindings["ACTIONBUTTON1"] = "3"
+    B.Start()
+    assert.equals("3", B.Get(IMMOLATE))
+    assert.equals(1, B.stats.bound)
+    assert.is_false(B.dirty)
+    assert.equals(0, B.stats.retried)
+  end)
+
+  -- The BAR IS POPULATED BUT THE BINDINGS ARE NOT — the specific half-loaded shape, and
+  -- the one that produces the confusing symptom (a slot is seen, no key comes back).
+  it("treats bound=0 as unresolved even when slots were seen", function()
+    H.bar[1] = { id = IMMOLATE }        -- ...but no binding for ACTIONBUTTON1 yet
+    B.Start()
+    assert.equals(1, B.stats.slots)
+    assert.equals(0, B.stats.bound)
+    assert.is_true(B.dirty)
+    assert.equals(1, B.stats.retried)
+  end)
+
+  it("resolves through the ladder once the bar finally arrives", function()
+    B.Start()                            -- the early, empty scan
+    assert.is_nil(B.Resolve(nil, WITHER, IMMOLATE))
+    H.bar[5] = { id = WITHER }           -- Hellcaller's Wither lands on the bar
+    H.bindings["ACTIONBUTTON5"] = "F"
+    B.Start()                            -- stands in for the rescan the retry/event drives
+    assert.equals("F", B.Resolve(nil, WITHER, IMMOLATE))
+  end)
+
+  it("never scans in combat — it defers and stays dirty", function()
+    H.bar[1] = { id = IMMOLATE }
+    H.bindings["ACTIONBUTTON1"] = "3"
+    H.setCombat(true)
+    B.Start()
+    assert.equals(0, B.stats.scans, "the 180-slot scan must not run in combat")
+    assert.is_true(B.dirty)
+  end)
+end)

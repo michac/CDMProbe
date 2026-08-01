@@ -76,7 +76,7 @@ end
 -- Cache ------------------------------------------------------------------------
 B.map = {}        -- spellID -> short key string
 B.dirty = true
-B.stats = { slots = 0, bound = 0, scans = 0, deferred = 0, coalesced = 0 }
+B.stats = { slots = 0, bound = 0, scans = 0, deferred = 0, coalesced = 0, retried = 0 }
 
 -- Returns true if the resolved map actually CHANGED.  Callers use that to skip
 -- re-attaching chrome across every item when nothing moved, which is the common
@@ -138,6 +138,28 @@ end
 local DEBOUNCE = 0.5
 local scheduled = false
 
+-- ⚠ THE LOGIN RACE (v0.32.50).  An EMPTY scan is not an answer, it is a RACE — and until
+-- this fence existed it was cached as authoritative and never re-armed, so the whole HUD
+-- ran keyless until something happened to touch a bar.  The mechanism:
+--
+--   * `B.Start` runs from `St.Acquire`, i.e. the moment the HUD is enabled — which on a
+--     login auto-enable is early, before the client has populated action slots and
+--     bindings.
+--   * The invalidating events that WOULD have healed it (`UPDATE_BINDINGS`,
+--     `ACTIONBAR_SLOT_CHANGED`) had already fired during load, BEFORE `Start` registered
+--     for them.  So `dirty` was cleared over an empty map and nothing ever set it again.
+--
+-- Measured in the field 2026-07-31: all 17 displayed rows read `key=none`, and MOVING THE
+-- CDM in Edit Mode fixed them — because that finally raised a binding event.  A partial
+-- scan (bar 1 up, multibars not yet) is the same race caught mid-flight, and produces the
+-- more confusing symptom: SOME icons keyed, some not.
+--
+-- The fence is deliberately narrow: a scan that resolved ZERO bindings keeps `dirty` and
+-- re-arms, up to a cap.  Capped because "no bindings at all" is a legitimate state for a
+-- fresh character, and an uncapped retry would poll for the length of the session.
+local EMPTY_RETRIES = 12         -- ~6 s of cover at the debounce interval; then believe it
+local emptyRetries = 0
+
 local function runScan()
   scheduled = false
   if not B.dirty then return end
@@ -148,6 +170,13 @@ local function runScan()
   -- Refresh the cache; the pipeline reads it live off State (State.readCd -> HudBinds.Get)
   -- each tick, so there is nothing to notify.
   scan()
+  if B.stats.bound == 0 and emptyRetries < EMPTY_RETRIES then
+    emptyRetries = emptyRetries + 1
+    B.stats.retried = B.stats.retried + 1
+    B.dirty = true               -- the scan does NOT get to say "done" on nothing
+    scheduled = true
+    C_Timer.After(DEBOUNCE, runScan)
+  end
 end
 
 local function invalidate()
@@ -223,8 +252,15 @@ function B.Start()
   ev:RegisterEvent("ACTIONBAR_PAGE_CHANGED")
   ev:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
   ev:RegisterEvent("PLAYER_REGEN_ENABLED")
+  -- The second half of the login-race fix: this one fires AFTER the bars and bindings are
+  -- up, so it heals a cache that was built too early even in the case the retry cap ran
+  -- out.  It is also the only registered event that fires on a plain /reload.
+  ev:RegisterEvent("PLAYER_ENTERING_WORLD")
   -- Scan immediately when we can, so the first chrome attach already has keys;
-  -- otherwise arm the debounce and let it land out of combat.
+  -- otherwise arm the debounce and let it land out of combat.  ⚠ Through `runScan`, NOT
+  -- `scan` — this is the call most likely to land in the login race, so it is the one that
+  -- most needs the empty-scan retry above.  It used to call `scan()` raw.
   B.dirty = true
-  if InCombatLockdown() then invalidate() else scan() end
+  emptyRetries = 0
+  if InCombatLockdown() then invalidate() else runScan() end
 end

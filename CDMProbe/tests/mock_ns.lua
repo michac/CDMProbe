@@ -356,6 +356,17 @@ function H.installGlobals()
     if not s then return nil end
     return s[1], s[2]   -- specID, name (real API also returns description/icon/role — unused)
   end
+  -- ACTION BARS — default-INERT, so HudBinds' 180-slot scan can run with no client: an
+  -- empty bar is a legitimate answer and is exactly the LOGIN-RACE state its retry fence is
+  -- about.  A spec opts in via `H.bar[slot] = { id = <spellID> }` +
+  -- `H.bindings[<command>] = "<key>"`.
+  _G.GetActionInfo = function(slot)
+    local a = H.bar and H.bar[slot]
+    if not a then return nil end
+    return a.kind or "spell", a.id
+  end
+  _G.GetMacroSpell = function(id) return H.macros and H.macros[id] or nil end
+  _G.GetBindingKey = function(cmd) return H.bindings and H.bindings[cmd] or nil end
   _G.UIParent = _G.UIParent or newStub()   -- the Renderer's default root token target
 end
 
@@ -383,6 +394,7 @@ function H.fresh()
   H.asked = { cooldown = {}, charges = {}, glow = {}, auraByID = {}, known = {},
               info = {}, categorySet = {} }
   H.specIndex = 1               -- default to Demonology so the resolver activates 266
+  H.bar, H.bindings, H.macros = {}, {}, {}   -- the action-bar client fake (default: empty)
   -- ⚠ RE-INSTALL, do not assume.  A previous test may have deleted or replaced a `_G`
   -- fake; without this the damage outlives the file that did it (see installGlobals').
   H.installGlobals()

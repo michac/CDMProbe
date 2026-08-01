@@ -280,6 +280,21 @@ local function status()
       (unit == 0 or window == 0)
         and "   |cffff4040the internals moved — DoT is on the edge-latch fallback|r" or "")
   end
+  -- THE KEYBIND CACHE, because its failure mode is silent and was field-found the hard
+  -- way: an empty action-bar scan used to be cached as authoritative, so every icon ran
+  -- keyless with nothing anywhere saying why (v0.32.50).  `bound=0` is the tell.
+  local bs = ns.HudBinds and ns.HudBinds.stats
+  if bs then
+    ns.Printf("  keybinds: %s%d bound|r / %d slot(s), %d scan(s)%s%s%s",
+      (bs.bound == 0) and "|cffff4040" or "|cff88ff88", bs.bound, bs.slots, bs.scans,
+      bs.retried > 0 and ("   retried " .. bs.retried .. "x") or "",
+      bs.deferred > 0 and ("   deferred " .. bs.deferred .. "x (combat)") or "",
+      ns.HudBinds.dirty and "   |cffffcc00rescan owed|r" or "")
+    if bs.bound == 0 then
+      ns.Print("    |cffff4040no bindings resolved|r — every key hint will be blank. "
+        .. "If this persists out of combat, the bar scan is not seeing your bars.")
+    end
+  end
   ns.Print("  |cffffffff/cdmp hud layout|r dumps the live Layout.")
 end
 
