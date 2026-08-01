@@ -1114,6 +1114,70 @@ local function applyFX(renderer, activeKeys, newOnly)
   end
   FX.lastOn = {}
   for key in pairs(activeKeys) do FX.lastOn[key] = true end
+  FX.lastKeys, FX.lastRenderer = activeKeys, renderer   -- for `rt fx dump`
+end
+
+-- LAYER DUMP — read back what is ACTUALLY on screen, per handle, instead of reasoning
+-- about what the code should have produced.  Written after two wrong theories about why
+-- LATE looks different: the answer has to come off the live widgets, because every guess
+-- so far has been about numbers nobody had measured.  Reports, per cue: the base ring's
+-- real size and spin, and every extra layer's size/period/direction/playing state.
+local function safeCall(obj, method, dflt)
+  if not (obj and obj[method]) then return dflt end
+  local ok, v = pcall(obj[method], obj)
+  if ok and v ~= nil then return v end
+  return dflt
+end
+
+local function describeLayer(tag, tex)
+  if not tex then return end
+  local rot = tex._rot
+  local grp = tex._spin
+  ns.Printf("      %-8s %5.1fpx  %s  period |cffffffff%s|r deg |cffffffff%s|r  %s  a=%.2f",
+    tag, safeCall(tex, "GetWidth", 0),
+    tex:IsShown() and "|cff88ff88shown|r" or "|cff808080hidden|r",
+    rot and string.format("%.2fs", safeCall(rot, "GetDuration", 0)) or "-",
+    rot and tostring(safeCall(rot, "GetDegrees", 0)) or "-",
+    grp and (safeCall(grp, "IsPlaying", false) and "|cff88ff88playing|r" or "|cffff4040STOPPED|r")
+        or "-",
+    select(4, tex:GetVertexColor()) or 1)
+end
+
+local function fxDump()
+  local r = FX.lastRenderer
+  if not (r and FX.lastKeys) then
+    ns.Print("rt fx dump: nothing drawn yet — run |cffffffff/cdmp rt fx|r first")
+    return
+  end
+  ns.Heading("rt fx dump — what is ACTUALLY on each cue")
+  ns.Printf("  desync |cffffffff%.1f|r  counter |cffffffff%s|r  glow x%d  rays %.2f  "
+    .. "ring %.2fx  spin %.2fx", FX.desync, tostring(FX.counter), FX.stack, FX.rays,
+    FX.scale, FX.spinMul)
+  for key, emph in pairs(FX.lastKeys) do
+    local glow = r.cueGlows[key]
+    local dot  = r.cueFrames[key]
+    ns.Printf("  |cff88ff88%s|r  (%s)  dot %.0fpx",
+      tostring(emph), tostring(key), safeCall(dot, "GetWidth", 0))
+    if glow then
+      -- The BASE ring is the Renderer's, so its rotation lives on glow.rot with the
+      -- per-emphasis period the Renderer chose (LATE 1.6s, everything else 4.0s).
+      ns.Printf("      %-8s %5.1fpx  %s  period |cffffffff%.2fs|r deg |cffffffff%s|r  %s",
+        "BASE", safeCall(glow, "GetWidth", 0),
+        glow:IsShown() and "|cff88ff88shown|r" or "|cff808080hidden|r",
+        safeCall(glow.rot, "GetDuration", 0),
+        tostring(safeCall(glow.rot, "GetDegrees", 0)),
+        safeCall(glow.spin, "IsPlaying", false) and "|cff88ff88playing|r" or "|cffff4040STOPPED|r")
+      ns.Printf("      %-8s pulse %s", "",
+        safeCall(glow.pulse, "IsPlaying", false) and "|cff88ff88playing|r" or "stopped")
+    else
+      ns.Print("      |cffff4040no base ring|r")
+    end
+    for i, c in ipairs(FX.stacks[key] or {}) do describeLayer("copy" .. i, c) end
+    describeLayer("echo", FX.echoes[key])
+    describeLayer("ghost", FX.ghosts[key])
+  end
+  ns.Print("|cffffd100Compare the ROTATION and LATE rows: any field that differs is the "
+    .. "cause.|r")
 end
 
 local function clearFX()
@@ -1129,7 +1193,9 @@ end
 local function cuedKeys(drawList, renderer)
   local set = {}
   for _, c in ipairs((drawList and drawList.cues) or {}) do
-    if c.anchorTo ~= nil and renderer.registry[c.anchorTo] then set[c.anchorTo] = true end
+    if c.anchorTo ~= nil and renderer.registry[c.anchorTo] then
+      set[c.anchorTo] = c.emphasis or true       -- truthy either way; the token is for the dump
+    end
   end
   return set
 end
@@ -1208,7 +1274,10 @@ local function fxCommand(words)
     end
     return true
   end
-  if verb == "bg" then
+  if verb == "dump" then
+    fxDump()
+    return true
+  elseif verb == "bg" then
     -- `bg` toggles; `bg <alpha>` keeps the old one-arg spelling; `bg size <n>` is the
     -- dial the first cut was missing — the disc was 1.15x the ring's quad with no way to
     -- shrink it short of an edit.
@@ -1368,6 +1437,9 @@ local function fxCommand(words)
     ns.Print("         |cffffd100no volume API|r — `sound sweep` walks the loud pool,")
     ns.Print("         `sound channel` picks which slider governs it")
     ns.Print("  |cff88ff88status|r         print the current settings")
+    ns.Print("  |cff88ff88dump|r           read back what is ACTUALLY on each cue "
+      .. "(sizes, spin periods, directions) — use this when a state looks different "
+      .. "and you want to know why")
     ns.Print("pop/ghost/sound need a rising edge — watch them on |cffffffff/cdmp rt rotate|r")
     return true
   end
