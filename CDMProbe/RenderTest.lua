@@ -301,6 +301,8 @@ local FX = {
   soundID = nil,    -- the numeric SoundKit id actually played; nil + no file = silent
   soundFile = nil,  -- ...or a file path, played with PlaySoundFile instead
   soundLabel = nil, -- what `status` should call it
+  channel = 1,      -- index into SOUND_CHANNELS; the closest thing to a volume dial
+  sweep   = 0,      -- position in LOUD_UI while auditioning the loud pool
   holders = {},     -- key -> our own frame (never culled by the Renderer)
   bgs     = {},     -- key -> backing disc
   stacks  = {},     -- key -> { extra glow copies }
@@ -490,6 +492,55 @@ local function soundID(i)
   return e and SOUNDKIT and SOUNDKIT[e[1]] or nil
 end
 
+-- ⚠ THERE IS NO VOLUME PARAMETER.  `PlaySound(kitID, channel, forceNoDuplicates,
+-- runFinishCallback)` and `PlaySoundFile(fileOrID, channel)` are the whole surface — an
+-- addon cannot scale one sound's amplitude.  So "too subtle" has exactly three honest
+-- answers, and this table plus the `channel` knob are two of them:
+--
+--   1. CHANNEL.  Each channel is governed by its own volume slider, so the lever is
+--      picking one the player keeps up.  "Master" is the default here because it answers
+--      only to master volume — the slider least likely to be turned down — but Dialog is
+--      worth trying, since many players keep it high for quest VO.
+--   2. A LOUDER KIT (this table).
+--   3. SHIP OUR OWN FILE and normalise it hot.  The only route with real gain control,
+--      and the one a shipped feature should take — `sound file <path>` already plays it,
+--      and Media/ already ships the JetBrains font, so the path pattern is proven.
+--
+-- Deliberately NOT a fourth option: driving Sound_MasterVolume / Sound_SFXVolume by CVar.
+-- It would change the player's global settings for every sound in the game, and restoring
+-- it races the async playback.  Not acceptable in a shipped cue, so not offered as a dial.
+--
+-- LOUD_UI — the 235 SoundKit ids that are BOTH SoundType 2 (UI) AND VolumeFloat 1.0, the
+-- maximum authored volume, mined from the live `SoundKit` DB2 (12.0.7, wago.tools ->
+-- raw/wago/SoundKit.csv; most kits sit at 0.8).  VolumeFloat is not readable from Lua, so
+-- this pool cannot be computed in-game — it is precomputed data, and that provenance is
+-- the point: every id here is VERIFIED TO EXIST at max volume, unlike the SOUNDS names
+-- above, which are guesses.  What each one SOUNDS like is still unknown; `sound sweep`
+-- is how you find out, one keystroke per id.
+local SOUND_CHANNELS = { "Master", "SFX", "Dialog", "Ambience", "Music" }
+local LOUD_UI = {
+  62, 63, 65, 67, 68, 69, 72, 73, 75, 76, 77, 78,
+  79, 92, 93, 95, 96, 98, 99, 100, 101, 102, 103, 104,
+  105, 106, 121, 122, 123, 600, 602, 618, 619, 624, 688, 689,
+  1519, 3081, 3407, 4140, 4141, 4142, 4143, 4144, 4145, 4146, 4147, 8960,
+  20682, 20683, 31750, 33338, 34039, 34090, 34092, 34094, 37656, 37676, 38322, 38323,
+  38352, 38600, 39516, 39517, 39672, 39673, 43936, 50111, 51401, 71946, 74438, 89740,
+  89745, 89878, 89880, 89881, 113811, 113812, 113813, 114779, 114780, 118563, 119143, 129053,
+  137388, 138462, 145770, 148843, 148949, 161480, 161482, 161483, 161484, 161548, 161626, 161627,
+  161628, 161629, 161632, 161634, 161635, 161636, 161637, 161638, 161639, 161662, 161693, 161736,
+  161738, 161761, 161769, 161770, 161781, 161782, 161783, 161784, 161785, 161786, 161787, 161789,
+  161790, 161862, 161886, 161889, 161890, 161891, 161892, 161895, 161903, 161904, 161905, 161906,
+  161907, 161908, 161909, 161910, 161914, 161915, 161920, 161932, 162016, 162017, 162018, 162019,
+  162020, 162045, 162046, 162049, 162054, 162095, 162096, 162097, 162101, 162102, 162105, 162133,
+  162134, 162136, 162137, 162138, 162139, 162744, 162745, 162746, 162749, 162786, 162787, 162788,
+  162789, 162842, 162845, 162846, 162848, 162849, 166317, 166318, 166339, 166342, 166523, 167144,
+  167145, 167148, 167149, 168216, 168711, 169304, 170271, 170833, 171876, 171877, 171878, 171904,
+  173477, 173579, 173584, 177781, 182865, 191353, 191354, 194683, 196240, 210036, 216079, 217032,
+  217036, 217039, 217041, 219575, 219930, 232474, 232768, 232769, 237252, 237995, 254765, 258819,
+  277765, 286126, 286127, 287233, 287347, 292692, 292693, 293831, 309134, 311462, 317877, 323116,
+  325765, 326551, 331151, 331630, 333050, 359673, 361444,
+}
+
 -- "Master" rather than "SFX" on purpose: a rotation cue must not vanish because the
 -- player turned effects down to hear the boss.
 --
@@ -500,8 +551,9 @@ end
 -- `sound test`.  Silence with no readout is the failure mode this experiment cannot
 -- afford, because every one of those four causes looks identical from the chair.
 local function playCueSound()
-  if FX.soundFile then return PlaySoundFile(FX.soundFile, "Master") end
-  if FX.soundID then return PlaySound(FX.soundID, "Master") end
+  local ch = SOUND_CHANNELS[FX.channel] or "Master"
+  if FX.soundFile then return PlaySoundFile(FX.soundFile, ch) end
+  if FX.soundID then return PlaySound(FX.soundID, ch) end
   return nil
 end
 
@@ -702,7 +754,8 @@ local function fxStatus()
   ns.Printf("  atlas |cffffffff%s|r", a or "(Renderer.lua's GLOW_ATLAS)")
   ns.Printf("  pop   |cffffffff%s|r  ghost |cffffffff%s|r  (peak %.1fx over %.2fs)",
     FX.pop and "on" or "off", FX.ghost and "on" or "off", FX.peak, FX.secs)
-  ns.Printf("  sound |cffffffff%s|r%s", FX.soundLabel or "off",
+  ns.Printf("  sound |cffffffff%s|r  (channel %s)%s", FX.soundLabel or "off",
+    SOUND_CHANNELS[FX.channel] or "Master",
     (FX.soundID or FX.soundFile) and ""
       or "  |cffff8080<- OFF BY DEFAULT; `rt fx sound` picks one|r")
 end
@@ -805,6 +858,32 @@ local function fxCommand(words)
     if a1 == "test" then
       soundDiagnose()
       return true
+    elseif a1 == "channel" then
+      -- The nearest thing to a volume control: pick the slider that governs it.
+      if tonumber(a2) then
+        FX.channel = math.max(1, math.min(#SOUND_CHANNELS, math.floor(tonumber(a2))))
+      else
+        FX.channel = FX.channel % #SOUND_CHANNELS + 1
+      end
+      playCueSound()
+      ns.Printf("rt fx sound channel: |cffffffff%s|r  (of %d: Master SFX Dialog Ambience Music)",
+        SOUND_CHANNELS[FX.channel], #SOUND_CHANNELS)
+      return true
+    elseif a1 == "sweep" then
+      -- Walk the verified max-volume UI pool.  Bare = next; a number JUMPS to that
+      -- position (not that id), so a promising one can be re-found by index.
+      if tonumber(a2) then
+        FX.sweep = math.max(1, math.min(#LOUD_UI, math.floor(tonumber(a2)))) - 1
+      end
+      FX.sweep = FX.sweep % #LOUD_UI + 1
+      local id = LOUD_UI[FX.sweep]
+      selectSound(nil, id, nil, string.format("SoundKit id %d (loud pool %d/%d)",
+        id, FX.sweep, #LOUD_UI))
+      local willPlay = playCueSound()
+      ns.Printf("rt fx sweep |cffffffff%d/%d|r — id |cffffffff%d|r %s  (bare `sound sweep` = next)",
+        FX.sweep, #LOUD_UI, id,
+        willPlay == false and "|cffff4040[refused]|r" or "|cff88ff88[playing]|r")
+      return true
     elseif a1 == "off" then
       selectSound(nil, nil, nil, nil)
     elseif a1 == "list" then
@@ -816,7 +895,11 @@ local function fxCommand(words)
       end
       ns.Print("SOUNDKIT is named constants over |cffffffff333,671|r SoundKit ids — the")
       ns.Print("list is a shortcut, not the limit.  Reach the rest directly:")
-      ns.Print("usage: |cffffffff/cdmp rt fx sound|r (next) | <n> | id <kitID> | file <path> | off | list")
+      ns.Printf("|cffffd100no API scales one sound's volume|r — use |cffffffffsweep|r "
+        .. "(%d verified max-volume UI kits) or |cffffffffchannel|r, or ship our own file.",
+        #LOUD_UI)
+      ns.Print("usage: |cffffffff/cdmp rt fx sound|r (next) | <n> | id <kitID> | file <path>")
+      ns.Print("       |cffffffffsweep|r [n] | |cffffffffchannel|r [n] | test | off | list")
       return true
     elseif a1 == "id" and tonumber(a2) then
       -- ANY of the 333,671 kits, by raw id.  No name to resolve, so nothing to be absent.
@@ -847,7 +930,9 @@ local function fxCommand(words)
     ns.Print("  |cff88ff88atlas|r [n|reset|list]  swap the ring ART (rays are baked into it)")
     ns.Print("  |cff88ff88pop|r [peak]     one-shot scale on cue APPLICATION")
     ns.Print("  |cff88ff88ghost|r          one-shot scale+fade on cue REMOVAL")
-    ns.Print("  |cff88ff88sound|r [n|id <kitID>|file <path>|test|off|list]  cue SFX (bare = next)")
+    ns.Print("  |cff88ff88sound|r [n|id|file|sweep|channel|test|off|list]  cue SFX (bare = next)")
+    ns.Print("         |cffffd100no volume API|r — `sound sweep` walks the loud pool,")
+    ns.Print("         `sound channel` picks which slider governs it")
     ns.Print("  |cff88ff88status|r         print the current settings")
     ns.Print("pop/ghost/sound need a rising edge — watch them on |cffffffff/cdmp rt rotate|r")
     return true
