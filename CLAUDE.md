@@ -99,6 +99,19 @@ Design context + status live in the parent workspace at
   JUDGE/SEQUENCE tokens — `states` had already superseded `inventory`.)
   ⚠ It exercises `R:Draw` ONLY — the proc-glow squares are applied post-Draw by the test
   rig, and `HudVirtual`'s own panel is not in it at all.
+  - `rt fx` — ⚠ **EXPERIMENTAL, 2026-08-01**: the `states` card redrawn with four
+    candidate cue treatments layered ON TOP of `R:Draw`, chasing "the cues read more
+    subdued in play than in the render test". `bg` = a black backing disc under dot+ring
+    (contrast against busy icon art); `glow 1-4` = extra additive ring copies, since
+    `SetVertexColor` **cannot exceed 1.0** and re-drawing is the only way to add light;
+    `pop` / `ghost` = one-shot scale on cue application / removal; `sound` = a SOUNDKIT
+    audition stepper. **Every knob defaults OFF**, so a bare `rt fx` is pixel-identical to
+    `rt states` — that A/B is the point, turn one on at a time.
+    `pop`/`ghost`/`sound` need a rising edge: watch them on `rt rotate`.
+    ⚠ **`Renderer.lua` is untouched by this** — the FX layer reads the renderer
+    instance's own pools (`cueHolders`/`cueFrames`/`cueGlows`) after Draw. A winning
+    effect gets **promoted into the Renderer properly** (a token, a `GLOW_SPEC` field, a
+    one-shot channel); do not ship it from the rig.
 - `reset` — turn the HUD off.
 
 *(The `skin` / `resource` solid-colour-block directions were deleted in W4a
