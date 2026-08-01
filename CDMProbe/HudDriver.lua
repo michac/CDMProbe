@@ -242,6 +242,103 @@ local function dumpLayout()
 end
 
 --------------------------------------------------------------------------------
+-- Roster coverage (Phase 4) — does the CDM track every id the spec DECLARES?
+--------------------------------------------------------------------------------
+-- Two surfaces over one report (`ns.Coverage.Get`), mirroring `dumpLayout` above and the
+-- `hud layout` subcommand precedent: a one-line summary on `status`, and the full per-id
+-- table on its own subcommand.  The summary is RED only when something is genuinely
+-- blind — a report that shouts every login is a report nobody reads.
+--
+-- ⚠ "reported eligible", NEVER "cannot fire".  `GetValidAlertTypes` was measured
+-- UNDER-REPORTING (cid 164597 listed `PandemicTime` only, then raised an `OnAuraApplied`
+-- in the same session), so it is a LOWER BOUND on what a row can raise.  The footer says
+-- so on every dump; `ns.ReadValidAlertTypes`' own header carries the same rule and this
+-- readout must not contradict it.
+local VERDICT_TAG = {
+  blind    = "|cffff4040BLIND|r    ",
+  unknown  = "|cffffcc00unknown|r  ",
+  virtual  = "|cff88ccffour icon|r ",
+  expected = "|cff808080override|r ",
+  ok       = "|cff88ff88tracked|r  ",
+}
+
+local function coverageSummary(rep)
+  if not rep.ok then
+    return string.format("  roster coverage: |cff808080not scanned (%s)|r",
+      rep.reason or "unavailable")
+  end
+  local c = rep.counts
+  local blind = (c.blind > 0)
+    and string.format(" · |cffff4040%d BLIND|r", c.blind)
+    or  " · 0 blind"
+  return string.format("  roster coverage: %d tracked · %d our own icons · %d override-only%s%s%s"
+    .. "   |cffffffff(/cdmp hud coverage)|r",
+    c.ok, c.virtual, c.expected, blind,
+    c.unknown > 0 and string.format(" · |cffffcc00%d unknown|r", c.unknown) or "",
+    rep.stale and "   |cff808080(stale)|r" or "")
+end
+
+local function dumpCoverage()
+  local rep = ns.Coverage.Get()
+  ns.Heading("Roster coverage — every id the spec DECLARES vs what the CDM tracks")
+  if not rep.ok then
+    -- ⚠ THE WHOLESALE GUARD, SURFACED.  An empty scan is a refused read, not a blind
+    -- roster, so there is deliberately no per-id table to show here.
+    ns.Printf("  |cff808080no report: %s|r", rep.reason or "unavailable")
+    if rep.reason == "cdm-empty" then
+      ns.Print("  the CDM database read back EMPTY — that is a refused read, not a blind "
+        .. "roster. Are the Cooldown Manager viewers enabled?")
+    elseif rep.reason == "in-combat" then
+      ns.Print("  scanned out of combat only (the struct reads go secret in a pull). "
+        .. "Drop combat and ask again.")
+    end
+    return
+  end
+  for _, e in ipairs(rep.entries) do
+    -- The CLIENT's name, plus the roster's own label when it says something different —
+    -- the aliases ("Ruination (alt ID, unconfirmed)", "Immolate (cast-id alias)") carry
+    -- the author's reason for declaring the id at all, which is the whole context for
+    -- reading its verdict.
+    local name = ns.SpellName(e.spellID) or "?"
+    local label = (e.label and e.label ~= name) and ("   |cff808080" .. e.label .. "|r") or ""
+    ns.Printf("  %s %-7d %s%s%s",
+      VERDICT_TAG[e.verdict] or e.verdict, e.spellID, name, label,
+      e.known == false and "   |cff808080(not talented in this build)|r"
+        or (e.known == nil and "   |cffffcc00(knownness unreadable)|r" or ""))
+    for _, r in ipairs(e.rows) do
+      local alerts
+      if r.alerts then
+        alerts = #r.alerts > 0 and table.concat(r.alerts, ", ") or "(none)"
+      else
+        alerts = "|cffffcc00<" .. (r.alertsError or "unreadable") .. ">|r"
+      end
+      ns.Printf("      cd=%d %s via %s   reported eligible: %s",
+        r.cooldownID, r.category or "?", r.via, alerts)
+    end
+  end
+  local c = rep.counts
+  ns.Printf("  %d declared · %d tracked · %d our own icons · %d override-only · %s%s"
+    .. "   (%d CDM row(s) scanned%s)",
+    c.total, c.ok, c.virtual, c.expected,
+    (c.blind > 0) and ("|cffff4040" .. c.blind .. " BLIND|r") or "0 blind",
+    c.unknown > 0 and (" · |cffffcc00" .. c.unknown .. " unknown|r") or "",
+    rep.scanned,
+    (rep.unreadableRows or 0) > 0 and (", " .. rep.unreadableRows .. " refused their fields")
+      or "")
+  ns.Print("  |cff808080'reported eligible' is a LOWER BOUND: GetValidAlertTypes "
+    .. "under-reports (cid 164597 listed PandemicTime only, then raised an OnAuraApplied "
+    .. "in the same session). It never says 'cannot fire'.|r")
+  if c.blind > 0 then
+    ns.Print("  |cff808080read a BLIND row's knownness note first: an id we could not "
+      .. "confirm the character HAS is a weaker finding than one they do.|r")
+  end
+  if rep.stale then
+    ns.Print("  |cffffcc00stale|r — this is the last out-of-combat scan; we do not rescan "
+      .. "in a pull.")
+  end
+end
+
+--------------------------------------------------------------------------------
 -- Status readout
 --------------------------------------------------------------------------------
 local function status()
@@ -295,7 +392,12 @@ local function status()
         .. "If this persists out of combat, the bar scan is not seeing your bars.")
     end
   end
-  ns.Print("  |cffffffff/cdmp hud layout|r dumps the live Layout.")
+  -- ROSTER COVERAGE — the Phase-4 probe.  It replaces the visibility `pulse.dropped` gave
+  -- us (a declared id the CDM tracks NOWHERE is invisible to every other readout), so it
+  -- belongs on the one line the player already reads.  Cheap: cached per build.
+  ns.Print(coverageSummary(ns.Coverage.Get()))
+  ns.Print("  |cffffffff/cdmp hud layout|r dumps the live Layout; "
+    .. "|cffffffff/cdmp hud coverage|r the roster-coverage table.")
 end
 
 --------------------------------------------------------------------------------
@@ -303,6 +405,7 @@ end
 --------------------------------------------------------------------------------
 local function hudCommand(rest)
   rest = (rest or ""):lower()
+  if rest:find("coverage") then return dumpCoverage() end
   if rest:find("layout") then return dumpLayout() end
   if rest:find("status") then return status() end
   if rest:find("off") then return ns.SetHud(false) end
@@ -310,7 +413,7 @@ local function hudCommand(rest)
   ns.SetHud(not D.on)
 end
 ns.RegisterCommand("hud",
-  "the HUD — the W4 pipeline (State -> Coach -> Binder -> Renderer). 'hud on|off' set it; 'hud layout' dumps the live Layout; 'hud status' the readout.",
+  "the HUD — the W4 pipeline (State -> Coach -> Binder -> Renderer). 'hud on|off' set it; 'hud layout' dumps the live Layout; 'hud coverage' the roster-coverage table; 'hud status' the readout.",
   hudCommand)
 
 -- /cdmp reset — turn the HUD off.  The HUD is the only thing left to reset.
