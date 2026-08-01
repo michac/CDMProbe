@@ -3,8 +3,9 @@
 -- Identity chrome, deliberately OUTSIDE the cue contract: a keybind is not a rotation
 -- signal, it's how you know which icon is which button.
 --
--- Cost control: the 180-slot scan is CACHED,
--- DEBOUNCED, and only ever runs OUT OF COMBAT.  Anything that could invalidate
+-- Cost control: the 180-slot scan is CACHED, DEBOUNCED, and out of combat unless the
+-- cache is COLD (see the cold-cache exemption on `runScan` — the fence is a COST rule, and
+-- an empty cache has no churn to prevent).  Anything that could invalidate
 -- it (bindings changed, a slot's contents changed, spec swap, bar page flip)
 -- marks the cache dirty and arms a single timer; a rescan landing in combat is
 -- deferred to PLAYER_REGEN_ENABLED.  Nothing here runs on a hot path.
@@ -76,7 +77,8 @@ end
 -- Cache ------------------------------------------------------------------------
 B.map = {}        -- spellID -> short key string
 B.dirty = true
-B.stats = { slots = 0, bound = 0, scans = 0, deferred = 0, coalesced = 0, retried = 0 }
+B.stats = { slots = 0, bound = 0, scans = 0, deferred = 0, coalesced = 0,
+             retried = 0, cold = 0 }
 
 -- Returns true if the resolved map actually CHANGED.  Callers use that to skip
 -- re-attaching chrome across every item when nothing moved, which is the common
@@ -133,8 +135,8 @@ end
 -- A single city session logged 2085 scans (~375k GetActionInfo calls), which is
 -- exactly the hot-path rescan the design forbids.  Now: an event only marks the
 -- cache dirty and arms ONE timer; everything arriving inside the window is
--- swallowed.  Still never scans in combat — if the timer lands during a fight it
--- leaves the cache dirty and PLAYER_REGEN_ENABLED re-arms it.
+-- swallowed.  A timer landing during a fight leaves the cache dirty and
+-- PLAYER_REGEN_ENABLED re-arms it — UNLESS the cache is cold, see runScan.
 local DEBOUNCE = 0.5
 local scheduled = false
 
@@ -160,12 +162,29 @@ local scheduled = false
 local EMPTY_RETRIES = 12         -- ~6 s of cover at the debounce interval; then believe it
 local emptyRetries = 0
 
+-- ⚠ THE COLD-CACHE EXEMPTION (v0.32.51).  The combat fence is a COST rule, NOT a safety
+-- one: `GetActionInfo` / `GetBindingKey` are unprotected reads that taint nothing, and the
+-- reason for "never in combat" is the v0.6.0 story in the header — ~2000 full scans burned
+-- in one city session by rescanning on every ACTIONBAR_SLOT_CHANGED.
+--
+-- That reasoning does not survive an EMPTY cache.  With nothing cached there is no churn to
+-- prevent, and the fence buys nothing while costing everything: the whole HUD runs keyless.
+-- Field-found immediately after the login-race fix — a target-dummy session is CONTINUOUS
+-- COMBAT, so `/cdmp hud status` read `0 bound / 0 slot(s), 0 scan(s), deferred 3x`: the
+-- scan had never run once, and the combat exit it was waiting for was never going to come.
+--
+-- So: a COLD cache scans in combat, a WARM one still defers.  One 180-slot read beats an
+-- entire session with no key hints, and the retry cap above bounds it either way.
 local function runScan()
   scheduled = false
   if not B.dirty then return end
+  local cold = B.stats.bound == 0
   if InCombatLockdown() then
-    B.stats.deferred = B.stats.deferred + 1
-    return                       -- stays dirty; PLAYER_REGEN_ENABLED re-arms
+    if not cold then
+      B.stats.deferred = B.stats.deferred + 1
+      return                     -- stays dirty; PLAYER_REGEN_ENABLED re-arms
+    end
+    B.stats.cold = B.stats.cold + 1
   end
   -- Refresh the cache; the pipeline reads it live off State (State.readCd -> HudBinds.Get)
   -- each tick, so there is nothing to notify.
@@ -241,8 +260,14 @@ end
 local ev = CreateFrame("Frame")
 ev:SetScript("OnEvent", function(_, event)
   -- PLAYER_REGEN_ENABLED is only interesting if a rescan was owed; every other
-  -- registered event goes through the same debounce.
-  if event == "PLAYER_REGEN_ENABLED" and not B.dirty then return end
+  -- registered event goes through the same debounce.  ⚠ ...with one exception: leaving
+  -- combat on a COLD cache is always worth a scan, even when `dirty` was cleared by an
+  -- exhausted retry run — otherwise a session that started keyless stays keyless.  The
+  -- retry budget resets there too, since combat exit is a genuinely new chance.
+  if event == "PLAYER_REGEN_ENABLED" then
+    if not B.dirty and B.stats.bound > 0 then return end
+    emptyRetries = 0
+  end
   invalidate()
 end)
 
@@ -262,5 +287,6 @@ function B.Start()
   -- most needs the empty-scan retry above.  It used to call `scan()` raw.
   B.dirty = true
   emptyRetries = 0
-  if InCombatLockdown() then invalidate() else runScan() end
+  runScan()                      -- decides for itself: a COLD cache scans even in combat
+  if B.dirty and not scheduled then invalidate() end   -- deferred (warm + combat): re-arm
 end

@@ -183,12 +183,47 @@ describe("HudBinds — the login race", function()
     assert.equals("F", B.Resolve(nil, WITHER, IMMOLATE))
   end)
 
-  it("never scans in combat — it defers and stays dirty", function()
+  -- THE COLD-CACHE EXEMPTION.  Field-found straight after the login-race fix: a
+  -- target-dummy session is CONTINUOUS COMBAT, so `/cdmp hud status` read
+  -- `0 bound / 0 slot(s), 0 scan(s), deferred 3x` — the scan had never run once and the
+  -- combat exit it was waiting for was never coming.  The combat fence is a COST rule
+  -- (v0.6.0 burned ~2000 scans in a city session); an empty cache has no churn to prevent.
+  it("DOES scan in combat when the cache is cold — keyless beats the cost", function()
     H.bar[1] = { id = IMMOLATE }
     H.bindings["ACTIONBUTTON1"] = "3"
     H.setCombat(true)
     B.Start()
-    assert.equals(0, B.stats.scans, "the 180-slot scan must not run in combat")
+    assert.equals("3", B.Get(IMMOLATE), "a cold cache must not wait for a combat exit")
+    assert.equals(1, B.stats.scans)
+    assert.equals(1, B.stats.cold)
+    assert.is_false(B.dirty)
+  end)
+
+  it("still defers in combat once the cache is WARM", function()
+    H.bar[1] = { id = IMMOLATE }
+    H.bindings["ACTIONBUTTON1"] = "3"
+    B.Start()                                  -- warm it out of combat
+    assert.equals(1, B.stats.scans)
+    H.setCombat(true)
+    H.bindings["ACTIONBUTTON1"] = "9"          -- a change we must NOT burn a scan on
+    B.Start()
+    assert.equals(1, B.stats.scans, "a warm cache defers — the v0.6.0 cost rule stands")
+    assert.equals(0, B.stats.cold)
+    assert.equals(1, B.stats.deferred)
+    assert.equals("3", B.Get(IMMOLATE), "and serves the stale value meanwhile")
     assert.is_true(B.dirty)
+  end)
+
+  -- Leaving combat has to re-arm even when `dirty` was cleared by an exhausted retry run,
+  -- or a session that started keyless stays keyless.
+  it("re-arms on leaving combat while the cache is still cold", function()
+    H.setCombat(true)
+    B.Start()                                   -- cold + combat: scans, finds nothing
+    B.dirty = false                             -- stand in for the retry budget running out
+    H.setCombat(false)
+    H.bar[1] = { id = IMMOLATE }
+    H.bindings["ACTIONBUTTON1"] = "3"
+    H.lastFrame():Fire("OnEvent", "PLAYER_REGEN_ENABLED")
+    assert.is_true(B.dirty, "combat exit on a cold cache must owe a rescan")
   end)
 end)
