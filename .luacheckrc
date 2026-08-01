@@ -30,7 +30,7 @@ stds.wow = {
     "DEFAULT_CHAT_FRAME", "GetMacroSpell", "GetMacroInfo",
     "GetBindingKey", "GetBindingText", "SecureButton_GetModifiedAttribute",
     "GetCVar", "GetCVarBool", "InterfaceOptions_AddCategory",
-    "STANDARD_TEXT_FONT", "SOUNDKIT", "PlaySound", "date",
+    "STANDARD_TEXT_FONT", "SOUNDKIT", "PlaySound", "PlaySoundFile", "date",
     "IsInInstance", "IsPlayerSpell", "IsSpellKnown", "GetBuildInfo",
     -- Power / unit reads -------------------------------------------------------
     "UnitPower", "UnitPowerMax", "UnitExists", "UnitGUID", "UnitClass",

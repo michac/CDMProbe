@@ -282,7 +282,10 @@ local FX = {
   ghost   = false,  -- one-shot scale+fade on removal
   peak    = 2.0,    -- pop/ghost peak scale ("double in size")
   secs    = 0.28,   -- pop duration
-  sound   = nil,    -- index into SOUNDS; nil = silent
+  sound   = nil,    -- index into SOUNDS (the stepper's position); nil = not from the list
+  soundID = nil,    -- the numeric SoundKit id actually played; nil + no file = silent
+  soundFile = nil,  -- ...or a file path, played with PlaySoundFile instead
+  soundLabel = nil, -- what `status` should call it
   holders = {},     -- key -> our own frame (never culled by the Renderer)
   bgs     = {},     -- key -> backing disc
   stacks  = {},     -- key -> { extra glow copies }
@@ -396,9 +399,19 @@ local function playGhost(key, holder, glow, size)
   t._g:Play()
 end
 
--- Curated audition list.  Resolved through SOUNDKIT BY NAME at call time and skipped if
--- absent — a hardcoded numeric id that shifted between builds would play the wrong
--- sound (or nothing) with no way to tell which.  `rt fx sound list` reports what resolved.
+-- ⚠ THE LIST IS A STARTING POINT, NOT A VERIFIED SET.  These names were written from
+-- memory of the WoW API; only `MAP_PING` is corroborated against Blizzard source
+-- (knowledge/addon-dev/api-events-and-discovery.md:366 ->
+-- Blizzard_Minimap/Mainline/Minimap.lua:150).  They CANNOT be verified offline: the
+-- `SoundKit` DB2 carries 333,671 ids and NO name column, and there is no `SoundKitName`
+-- table at all — the names exist only in FrameXML's hand-maintained constants file.  So
+-- resolution happens through SOUNDKIT BY NAME at call time and reports `[absent]` when a
+-- name is not there; `rt fx sound list` in-game IS the verification step.
+--
+-- AND THE LIST IS NOT THE LIMIT.  `sound id <n>` reaches any of those 333,671 kits
+-- directly (SOUNDKIT is just named constants over a small slice of that space), and
+-- `sound file <path>` plays any sound file — including one we ship ourselves, the way
+-- Media/JetBrainsMono.ttf is already shipped.
 local SOUNDS = {
   { "UI_POWER_AURA_GENERIC",          "power-aura ping (the classic proc ding)" },
   { "IG_MAINMENU_OPTION_CHECKBOX_ON", "checkbox tick (dry, very short)" },
@@ -419,8 +432,13 @@ end
 -- "Master" rather than "SFX" on purpose: a rotation cue must not vanish because the
 -- player turned effects down to hear the boss.
 local function playCueSound()
-  local id = FX.sound and soundID(FX.sound)
-  if id then PlaySound(id, "Master") end
+  if FX.soundFile then PlaySoundFile(FX.soundFile, "Master")
+  elseif FX.soundID then PlaySound(FX.soundID, "Master") end
+end
+
+-- Point the cue sound at a list entry / a raw kit id / a file, and report what it is.
+local function selectSound(idx, id, file, label)
+  FX.sound, FX.soundID, FX.soundFile, FX.soundLabel = idx, id, file, label
 end
 
 -- Decorate whatever `R:Draw` just drew.  `activeKeys` = the handles carrying a cue this
@@ -532,8 +550,7 @@ local function fxStatus()
     FX.stack, FX.stack - 1, FX.stack == 2 and "y" or "ies")
   ns.Printf("  pop   |cffffffff%s|r  ghost |cffffffff%s|r  (peak %.1fx over %.2fs)",
     FX.pop and "on" or "off", FX.ghost and "on" or "off", FX.peak, FX.secs)
-  local s = FX.sound and SOUNDS[FX.sound]
-  ns.Printf("  sound |cffffffff%s|r", s and (s[1] .. " — " .. s[2]) or "off")
+  ns.Printf("  sound |cffffffff%s|r", FX.soundLabel or "off")
 end
 
 --------------------------------------------------------------------------------
@@ -592,29 +609,40 @@ local function fxCommand(words)
   elseif verb == "ghost" then
     FX.ghost = not FX.ghost
   elseif verb == "sound" then
+    local a2 = words[4]
     if a1 == "off" then
-      FX.sound = nil
+      selectSound(nil, nil, nil, nil)
     elseif a1 == "list" then
-      ns.Heading("rt fx sound — the audition list")
+      ns.Heading("rt fx sound — the audition list (a starting point, NOT a verified set)")
       for i, e in ipairs(SOUNDS) do
         local id = soundID(i)
         ns.Printf("  %d. |cffffffff%s|r — %s %s", i, e[1], e[2],
-          id and ("|cff88ff88[" .. id .. "]|r") or "|cffff4040[absent]|r")
+          id and ("|cff88ff88[" .. id .. "]|r") or "|cffff4040[absent on this build]|r")
       end
-      ns.Print("usage: |cffffffff/cdmp rt fx sound|r (next) | <n> | off | list")
+      ns.Print("SOUNDKIT is named constants over |cffffffff333,671|r SoundKit ids — the")
+      ns.Print("list is a shortcut, not the limit.  Reach the rest directly:")
+      ns.Print("usage: |cffffffff/cdmp rt fx sound|r (next) | <n> | id <kitID> | file <path> | off | list")
       return true
+    elseif a1 == "id" and tonumber(a2) then
+      -- ANY of the 333,671 kits, by raw id.  No name to resolve, so nothing to be absent.
+      local id = math.floor(tonumber(a2))
+      selectSound(nil, id, nil, "SoundKit id " .. id)
+    elseif a1 == "file" and a2 then
+      -- ANY sound file — a game asset by path/FileDataID, or one we ship in Media/.
+      selectSound(nil, nil, a2, "file " .. a2)
     elseif tonumber(a1) then
-      FX.sound = math.max(1, math.min(#SOUNDS, math.floor(tonumber(a1))))
+      local i = math.max(1, math.min(#SOUNDS, math.floor(tonumber(a1))))
+      selectSound(i, soundID(i), nil, i .. ". " .. SOUNDS[i][1] .. " — " .. SOUNDS[i][2])
     else
-      FX.sound = (FX.sound or 0) % #SOUNDS + 1          -- bare `sound` = audition the next
+      local i = (FX.sound or 0) % #SOUNDS + 1            -- bare `sound` = audition the next
+      selectSound(i, soundID(i), nil, i .. ". " .. SOUNDS[i][1] .. " — " .. SOUNDS[i][2])
     end
-    local e = FX.sound and SOUNDS[FX.sound]
-    if e and not soundID(FX.sound) then
-      ns.Printf("|cffff4040%s is not in SOUNDKIT on this build|r — try another", e[1])
+    if FX.sound and not FX.soundID then
+      ns.Printf("|cffff4040%s is not in SOUNDKIT on this build|r — try another, or "
+        .. "|cffffffffsound id <kitID>|r", SOUNDS[FX.sound][1])
     end
     playCueSound()                                       -- hear it right now
-    ns.Printf("rt fx sound: |cffffffff%s|r",
-      e and (FX.sound .. ". " .. e[1] .. " — " .. e[2]) or "off")
+    ns.Printf("rt fx sound: |cffffffff%s|r", FX.soundLabel or "off")
     return true
   else
     ns.Heading("rt fx — experimental cue treatments")
@@ -622,7 +650,7 @@ local function fxCommand(words)
     ns.Print("  |cff88ff88glow|r [1-4]     additive ring copies — 2 = literally doubled")
     ns.Print("  |cff88ff88pop|r [peak]     one-shot scale on cue APPLICATION")
     ns.Print("  |cff88ff88ghost|r          one-shot scale+fade on cue REMOVAL")
-    ns.Print("  |cff88ff88sound|r [n|off|list]  audition a cue SFX (bare = next)")
+    ns.Print("  |cff88ff88sound|r [n|id <kitID>|file <path>|off|list]  cue SFX (bare = next)")
     ns.Print("  |cff88ff88status|r         print the current settings")
     ns.Print("pop/ghost/sound need a rising edge — watch them on |cffffffff/cdmp rt rotate|r")
     return true
