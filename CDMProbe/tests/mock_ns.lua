@@ -434,15 +434,16 @@ function H.fresh()
     Reset     = function() end,     -- ResolveActiveSpec calls this DIRECTLY on a spec swap
   }
 
-  -- The keybind cache State stitches onto every row.  ⚠ Stubbed here ONLY so State can be
-  -- driven in isolation — per the v0.32.25 doctrine a stub proves the CALLER works given the
-  -- collaborator, never that the collaborator exists.  `viewers_spec`'s shipped-symbol gate
-  -- is the companion that loads the REAL HudBinds.lua and asserts `Get` is really there.
-  ns.HudBinds = {
-    Get        = function(spellID) return fx.keybind[spellID] end,
-    Start      = function() end,
-    Invalidate = function() end,
-  }
+  -- The keybind resolver State reads for every row.  The REAL module (Phase 3): it is pure
+  -- over its own cache, and the thing worth testing through it — `B.Resolve`'s RUNG LADDER
+  -- — is exactly what a hand-written stub would have to duplicate and could then get right
+  -- while the shipping code got it wrong.  So the fixture supplies the CACHE (`B.map` is
+  -- pointed at `fx.keybind` below, once fx exists) and everything above it is shipping
+  -- code: the secret guard, the SpecBindAlias fallback, the ladder.
+  -- ⚠ `Start` is stubbed back out: the real one scans 180 action slots through
+  -- `GetActionInfo`, which no test has a client for, and `St.Acquire` calls it unguarded.
+  H.load("HudBinds.lua")
+  ns.HudBinds.Start = function() end
 
   -- Static activation is gone (Phase 5) — activate via the REAL resolver so every spec
   -- ships with ns.ActiveSpec = Demo exactly as before, transparently to the 137 tests.
@@ -472,6 +473,12 @@ function H.fresh()
     cd = {}, charges = {}, auras = {}, auraByID = {}, auraThrows = {}, glow = {},
   }
   H.fx = fx
+
+  -- The fixture IS the resolved action-bar cache — `world.keybind[spellID]` in a CDM case,
+  -- `H.fx.keybind[…]` elsewhere.  Same shape as what `scan()` would have produced, so the
+  -- real `B.Get`/`B.Resolve` run over it unmodified.
+  ns.HudBinds.map = fx.keybind
+  ns.HudBinds.dirty = false
 
   -- Override the two RUNTIME readers (the real ones ask C_Spell on a live client);
   -- everything else in Util stays the shipping code.

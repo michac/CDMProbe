@@ -129,10 +129,15 @@
 --     currently ask.  (cooldown-manager.md §7 Tier 2 / §9)
 --   * (`item.auraDataUnit` and `item.PandemicIcon` WERE listed here.  They are now the
 --     §3.10 group in axes D and G — the DoT's presence and refresh-window channels.)
---   * `C_CooldownViewer.GetValidAlertTypes` — the roster coverage probe, Phase 4.  It
---     currently lives only in AlertTape.lua, the file scheduled for deletion.
---   * `item:GetLinkedSpell()` — the ELECTED rung-2 link.  Phase 3, blocked on §9's first
---     open question (whether a fresh struct read carries the election at all).
+--   * `C_CooldownViewer.GetValidAlertTypes` — the roster coverage probe, Phase 4.  The
+--     READ was promoted out of AlertTape.lua to `ns.ReadValidAlertTypes` (Util.lua) in
+--     Phase 3 so it survives that file's deletion; nothing in State consumes it yet, so
+--     there is still no St.Build-level case to write.  ⚠ It UNDER-REPORTS (a row raised an
+--     OnAuraApplied it did not list), so it is a lower bound — a consumer must say "not
+--     reported eligible", never "cannot fire".
+--   * `item:GetLinkedSpell()` — the ELECTED rung-2 link.  ✅ ANSWERED 2026-07-31: nil on
+--     every frame, 0 of 72 rows in a fresh struct read.  Nothing runs the election, so
+--     rung 2 came OUT of Phase 3's keybind ladder rather than into it.
 --
 -- ══════════════════════════════════════════════════════════════════════════════
 local ABSENT = setmetatable({}, { __tostring = function() return "<ABSENT>" end })
@@ -146,7 +151,12 @@ local SHADOW_BOLT   = 686
 local SOUL_FIRE     = 6353
 local IMMOLATE_CAST = 348         -- cid 164597, Essential  (cooldown-manager.md §2.7)
 local IMMOLATE_AURA = 157736      -- cid 133441, TrackedBuff
+-- ⚠ WITHER IS TWO IDS, exactly as Immolate is 348 (cast) / 157736 (aura) — which refutes
+-- the one-id reading in cooldown-manager.md §2.7.  Measured 2026-07-31: on Hellcaller the
+-- Essential row cid 164597 carries `overrideSpellID = 445468` (the CAST, and what sits on
+-- the action bar), while 445474 is the pool-aura id that appears in `linkedSpellIDs`.
 local WITHER        = 445474      -- the pool's Hellcaller candidate (§2.7)
+local WITHER_CAST   = 445468      -- …and the id the bar actually holds
 local IMP_LORD      = 1276452     -- Demonology; cid 182891 carries tooltip 1288945
 local SINGE_MAGIC   = 132411      -- the pet dispel that takes over the Grimoire button
 local TYRANT        = 265187
@@ -429,6 +439,69 @@ local B = {
     },
   },
 
+  --------------------------------------------------------------------------------
+  -- THE KEYBIND LADDER (Phase 3 §4.1).  A separate question from identity: identity asks
+  -- "what is this row", the keybind asks "which button on my bar is this".  They are
+  -- allowed to disagree — the ladders are deliberately different, and the keybind one runs
+  -- with NO spec fences, because an id that is not on a bar simply yields nothing.
+  --------------------------------------------------------------------------------
+  {
+    name = "identity/the-keybind-follows-the-override-when-the-bar-holds-it",
+    status = "pinned-defect",
+    fixes = "phase3 §4.1",
+    spec = 3,
+    pins = "THE HELLCALLER SHAPE, and the one a player feels.  The row's base is Immolate "
+        .. "348 on both hero trees; on Hellcaller the bar holds WITHER, which arrives as "
+        .. "`overrideSpellID`.  Blizzard displays the override, so the key hint on that "
+        .. "icon has to be the override's key — resolving off the base alone finds no "
+        .. "binding at all and the icon shows NO key.",
+    ref = "cooldown-manager.md §2 rung 4 + §2.7 — the Hellcaller Immolate/Wither row",
+    rows = {
+      { cid = 164597, category = "Essential", frame = {},
+        info = { spellID = IMMOLATE_CAST, isKnown = true, overrideSpellID = WITHER_CAST } },
+    },
+    -- Only Wither is on the bar; Immolate is not bound at all, which is the real shape —
+    -- you slot the spell you actually cast.
+    world = { keybind = { [WITHER_CAST] = "2" } },
+    expect = { raw = { ["164597.keybind"] = "2" } },
+  },
+
+  {
+    name = "identity/the-keybind-falls-back-to-the-base-when-nothing-overrides",
+    status = "green",
+    spec = 3,
+    pins = "The other hero tree, and the no-regression half of the pair: on Diabolist the "
+        .. "same row carries no override, so the bottom rung is the answer.  A ladder that "
+        .. "reached past a bound base would break the case that already worked.",
+    ref = "cooldown-manager.md §2 rung 5 — cooldownInfo.spellID",
+    rows = {
+      { cid = 164597, category = "Essential", frame = {},
+        info = { spellID = IMMOLATE_CAST, isKnown = true } },
+    },
+    world = { keybind = { [IMMOLATE_CAST] = "3" } },
+    expect = { raw = { ["164597.keybind"] = "3" } },
+  },
+
+  {
+    name = "identity/the-keybind-ladder-takes-rung3-over-rung4-over-the-base",
+    status = "pinned-defect",
+    fixes = "phase3 §4.1",
+    spec = 3,
+    pins = "Rung ORDER, with all three candidates bound to DIFFERENT keys so the winner "
+        .. "names itself: `GetSpellID()` tries overrideTooltipSpellID before "
+        .. "overrideSpellID before the base, and the keybind ladder follows the same order. "
+        .. "⚠ It is NOT the same ladder as `readCharge`'s, which is rungs 4 + 5 only (§3.2) "
+        .. "— that one mirrors Blizzard's charge ladder, a different question.",
+    ref = "cooldown-manager.md §2 — the rung order of GetSpellID(), ItemData.lua:174-196",
+    rows = {
+      { cid = 66181, category = "Essential", frame = {},
+        info = { spellID = SHADOW_BOLT, isKnown = true,
+                 overrideSpellID = CHAOS_BOLT, overrideTooltipSpellID = INCINERATE } },
+    },
+    world = { keybind = { [INCINERATE] = "3", [CHAOS_BOLT] = "4", [SHADOW_BOLT] = "5" } },
+    expect = { raw = { ["66181.keybind"] = "3" } },
+  },
+
   {
     name = "identity/an-observed-override-event-stands-in-for-the-frame-only-rungs",
     status = "green",
@@ -570,8 +643,12 @@ local B = {
     pins = "the POOL is consumed (State.lua's aura-id list), the ELECTION is not: "
         .. "`GetCooldownViewerCooldownInfo` returns `linkedSpellIDs` (plural, static) and "
         .. "NOT the elected singular `linkedSpellID`, which lives on the provider's shared "
-        .. "cached record.  Whether a fresh read carries it at all is §9's first open "
-        .. "question, and it blocks Phase 3's Hellcaller/Wither keybind ladder",
+        .. "cached record.  ✅ MEASURED 2026-07-31 — and the answer is that NOTHING RUNS "
+        .. "THE ELECTION: 0 of 72 rows carried it in a fresh struct read, and "
+        .. "`item:GetLinkedSpell()` returned nil on EVERY frame too, so this was never a "
+        .. "struct-vs-frame divergence.  Rung 2 is therefore OUT of Phase 3's keybind "
+        .. "ladder entirely (which runs 3 -> 4 -> 5), not merely unreachable — and the "
+        .. "Hellcaller case it was supposed to serve is served by rung 4 instead",
     ref = "cooldown-manager.md §2.1 / §2.2 / §2.5 [gap] — ItemData.lua:12-43, :126-150",
     rows = {},
   },
@@ -583,7 +660,9 @@ local B = {
     pins = "the asymmetry that makes rung 2 worth having: OnUnitAuraRemovedEvent ALWAYS "
         .. "clears rung 1, but clears rung 2 only if it was the same spell — so a link "
         .. "elected through the cooldown-event path survives auras coming and going "
-        .. "indefinitely.  Unreachable for the same reason as the election itself",
+        .. "indefinitely.  Unreachable for the same reason as the election itself — and "
+        .. "the 2026-07-31 measurement (see the case above) says the election never runs "
+        .. "at all, so this stays a statement about Blizzard's code, not about ours",
     ref = "cooldown-manager.md §2.3 — CooldownViewer.lua:194-202",
     rows = {},
   },
