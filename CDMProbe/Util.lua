@@ -183,13 +183,23 @@ local function readCharges(spellID)
   return c
 end
 
--- ns.ReadCharges — live (current, max) charges for a spellID, guarded, or nil.
+-- ns.ReadCharges — live (current, max, recharge) charges for a spellID, guarded, or nil.
 -- The public door over the same secret-aware read `rawCooldown` uses internally,
 -- exposed for State (W4 Phase 1): a charged ability's readiness is "a charge
 -- banked", not "the recharge timer", and State reports both so the Coach can
 -- decide.  Same discipline as every read here — a secret or an unreadable table
 -- returns nil ("we don't know"), never a poisoned number.  Combat-gated like
 -- ns.ReadCooldown: GetSpellCharges reads secret in restricted combat.
+--
+-- THE THIRD RETURN, `recharge`, is `cooldownDuration` — how long ONE charge takes to come
+-- back.  Added 2026-07-31 for the charge napkin's GAIN FLOOR (see State.lua's chargeGain):
+-- it is the only number that says how fast charges *can* arrive, and there is no fallback
+-- for it.  A charged spell's cooldown lives on its CHARGE CATEGORY, not the spell —
+-- Conflagrate 17962 is `RecoveryTime = 0` / `ChargeCategory = 672` [DB2 @ 12.0.7] — so
+-- `GetSpellBaseCooldown` yields nothing to count down from.  This OOC read is it.
+--
+-- ⚠ It is 0 (not nil) at full charges, because nothing is recharging.  Callers must treat
+-- "0" as "no measurement this time" and keep the last positive one, NOT overwrite with 0.
 function ns.ReadCharges(spellID)
   if type(spellID) ~= "number" or ns.IsSecret(spellID) then return nil end
   if InCombatLockdown() then return nil end
@@ -197,14 +207,20 @@ function ns.ReadCharges(spellID)
   local ok, info = pcall(C_Spell.GetSpellCharges, spellID)
   if not ok or type(info) ~= "table" then return nil end
   if ns.IsSecretTable(info) then return nil end
-  local cur, max
+  local cur, max, recharge
   if not pcall(function()
     cur = info.currentCharges or info.charges
     max = info.maxCharges
+    recharge = info.cooldownDuration
   end) then return nil end
   if ns.IsSecret(cur) or ns.IsSecret(max) then return nil end
   if type(cur) ~= "number" or type(max) ~= "number" then return nil end
-  return cur, max
+  -- `recharge` is BEST-EFFORT and must never cost us the count: a secret or absent
+  -- duration drops to nil and the caller simply keeps whatever floor it already had.
+  if ns.IsSecret(recharge) or type(recharge) ~= "number" or recharge <= 0 then
+    recharge = nil
+  end
+  return cur, max, recharge
 end
 
 -- ns.ReadGCD — the global cooldown's own (duration, startTime), read ONCE.

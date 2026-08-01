@@ -281,12 +281,63 @@ St.dotEdge = {}          -- cooldownID -> { state = "pandemic"|"fresh"|"absent",
 -- cues a press that will fail); an UNDERCOUNT only under-presses.  So every unresolvable
 -- case biases DOWN, and the estimate is surfaced with `source = "napkin"` so the brain can
 -- tell an estimate from a measurement.
-local chargeEst = {}     -- cooldownID -> { cur, max }
+--
+-- ⚠ AND `ChargeGained` IS NOT "+1 CHARGE".  Corrected 2026-07-31 after a live pull where
+-- Conflagrate won 702 of 1272 decisions and was cued while genuinely on cooldown.  The
+-- alert is an edge on a PREDICTION QUEUE, not on a charge counter
+-- [T1 src: Blizzard_CooldownViewer/CooldownViewer.lua]:
+--
+--   * `AddChargeGainedAlertTime(count, time)` `[:591-594]` writes into
+--     `chargeGainedAlertTimes`, a table keyed by PREDICTED CHARGE COUNT.
+--   * TWO producers write it: a PREDICTOR — `CheckCacheCooldownValuesFromCharges` `[:886]`
+--     registers `currentCharges + 1` at a FUTURE timestamp on every refresh while a
+--     recharge runs — and an OBSERVER, `SetCachedChargeValues` `[:992-993]`, which
+--     registers the new count at `GetTime()` whenever the cached count actually rose.
+--   * `ShouldTriggerChargeGainedAlert` `[:596-605]` drains at most ONE due entry per call
+--     (it `return`s on the first hit) and is polled once per frame from `OnUpdate`
+--     `[:100-101]`.
+--
+-- So a backlog of two due entries fires as two alerts on CONSECUTIVE FRAMES, and one real
+-- charge restore can raise the alert twice.  Measured: a 0 -> 1 -> 2 climb in 200 ms, plus
+-- gains 1.9 s and 4.0 s apart on an ability whose recharge is several seconds.  Crediting
+-- +1 per alert therefore OVERCOUNTS — the one direction the honesty rule above forbids,
+-- because it cues a press that will fail.  (It can undercount too: `OnCooldownIDCleared`
+-- `[:722]` nils `previousCooldownChargesCount`, so the first rise after any re-resolve is
+-- swallowed.  That direction is safe and self-corrects on the next OOC re-seed.)
+--
+-- THE FIX IS A GAIN FLOOR, not a smarter counter.  A charge cannot come back faster than
+-- its recharge, and `ns.ReadCharges` reads that duration OOC (the only source — see its
+-- header).  A credit inside the floor is refused.  Duplicate drains are absorbed; genuine
+-- restores still land; and the cases this gets wrong (a true cooldown-RESET proc granting
+-- a charge early) bias DOWN, which is the allowed direction.
+local chargeEst = {}     -- cooldownID -> { cur, max, recharge, lastGain }
 local chargeCid = {}     -- base spellID -> the cooldownID of its CHARGED row (spend needs it)
 
-local function chargeSeed(cooldownID, cur, max)
+-- Fraction of the measured recharge a second credit must clear.  Not 1.0: haste and CDR
+-- make a real restore land EARLIER than the OOC-measured duration, and refusing those
+-- would undercount every hasted pull.  Half is comfortably above the duplicate-drain
+-- window (consecutive frames) and comfortably below a hasted genuine recharge.
+local CHARGE_GAIN_FLOOR_FRACTION = 0.5
+-- The floor when no recharge has ever been measured (never seeded OOC).  Deliberately
+-- tiny: it only catches the pathological consecutive-frame double-drain, and stays below
+-- any real charge recharge in the game, so it cannot suppress a legitimate gain.
+local CHARGE_GAIN_FLOOR_MIN = 1.0
+
+local function chargeSeed(cooldownID, cur, max, recharge)
   if not (cooldownID and type(cur) == "number") then return end
-  chargeEst[cooldownID] = { cur = cur, max = (type(max) == "number") and max or nil }
+  local prev = chargeEst[cooldownID]
+  chargeEst[cooldownID] = {
+    cur = cur,
+    max = (type(max) == "number") and max or nil,
+    -- KEEP the last positive measurement.  `cooldownDuration` reads 0 at full charges, and
+    -- the OOC re-seed most often happens exactly there — overwriting would erase the floor
+    -- precisely when we are about to enter combat and need it.
+    recharge = (type(recharge) == "number" and recharge > 0) and recharge
+               or (prev and prev.recharge) or nil,
+    -- An exact read is ground truth, so it also clears the debounce: whatever the queue
+    -- did before this measurement is no longer something we need to guard against.
+    lastGain = nil,
+  }
 end
 
 local function chargeRead(cooldownID)
@@ -307,12 +358,28 @@ end
 -- An observed ChargeGained edge: credit one, clamped to max when we know it.  An unknown
 -- max cannot clamp, so it is left uncapped rather than clamped against a guessed cap —
 -- the edge itself is an observation, so crediting it is not speculation.
-local function chargeGain(cooldownID)
+--
+-- ⚠ GATED BY THE GAIN FLOOR (see the block comment above).  The alert is a queue drain,
+-- not a charge, so a second credit inside the floor is refused as a duplicate.  `now`
+-- defaults to GetTime() so the alert path and the specs share one clock.
+local function chargeGain(cooldownID, now)
   local e = cooldownID and chargeEst[cooldownID]
   if not e then return end
+  now = (type(now) == "number") and now or GetTime()
+
+  local floor = e.recharge and (e.recharge * CHARGE_GAIN_FLOOR_FRACTION) or CHARGE_GAIN_FLOOR_MIN
+  if floor < CHARGE_GAIN_FLOOR_MIN then floor = CHARGE_GAIN_FLOOR_MIN end
+  if e.lastGain and (now - e.lastGain) < floor then
+    -- A duplicate drain. Record nothing: `lastGain` deliberately does NOT advance, so a
+    -- burst of drains cannot ratchet the window forward and starve a real later gain.
+    e.refused = (e.refused or 0) + 1
+    return
+  end
+
   local n = e.cur + 1
   if e.max then n = math.min(e.max, n) end
   e.cur = n
+  e.lastGain = now
 end
 
 -- Test seam (the C2 spec drives the whole loop off synthetic pulses).
@@ -482,11 +549,13 @@ end
 -- read and filed under the base ability's key).  Both ladders exclude the *live* override
 -- for that reason; they differ only on rung 3.
 local function readCharge(chargeIdent, hasCharges, cooldownID)
-  local cur, max = ns.ReadCharges(chargeIdent)
+  local cur, max, recharge = ns.ReadCharges(chargeIdent)
   if cur ~= nil then
     if type(max) == "number" and max > 1 then
       -- The exact read ALWAYS wins, and re-seeds the napkin (the combat-exit correction).
-      chargeSeed(cooldownID, cur, max)
+      -- `recharge` rides along: this OOC read is the ONLY place the gain floor can be
+      -- measured, so seeding the count and seeding the floor are the same event.
+      chargeSeed(cooldownID, cur, max, recharge)
       return { readable = true, cur = ns.Stash(cur), max = ns.Stash(max),
                source = "live", charged = true }
     end
@@ -913,8 +982,10 @@ local function onAlert(item, event)
   end
 
   -- CHARGES (field-fix C2) — the only in-combat charge information there is.
+  -- `now` is the alert's own timestamp, so the gain floor is measured on the same clock
+  -- the edge arrived on rather than a re-read of GetTime().
   if event == A.ChargeGained then
-    chargeGain(cid)
+    chargeGain(cid, now)
     pushEvent({ kind = "charge_gained", cooldownID = cid, at = now })
   end
 end

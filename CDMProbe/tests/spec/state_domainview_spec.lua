@@ -886,11 +886,96 @@ describe("State charge napkin (field-fix C2)", function()
   end)
 
   it("the full loop: seed, press, press, recharge, recharge", function()
+    -- ⚠ CONTRACT CHANGE 2026-07-31: the two gains are now separated by a real recharge
+    -- interval.  They used to be back-to-back with no clock advance, which is precisely
+    -- the DUPLICATE-DRAIN shape the gain floor refuses — `ChargeGained` is an edge on
+    -- Blizzard's prediction queue, not on a charge (see State.lua's chargeGain).  A test
+    -- that credits two charges in zero elapsed time was asserting the bug.
     St.Charges.Bind(17962, CONF_CID)
-    St.Charges.Seed(CONF_CID, 2, 2)
+    St.Charges.Seed(CONF_CID, 2, 2, 12)
     St.Charges.Spend(17962);                                   assert.equals(1, (St.Charges.Read(CONF_CID)))
     St.Charges.Spend(17962);                                   assert.equals(0, (St.Charges.Read(CONF_CID)))
+    H.advance(12)
     St.OnAlert({ cooldownID = CONF_CID }, A.ChargeGained);     assert.equals(1, (St.Charges.Read(CONF_CID)))
+    H.advance(12)
+    St.OnAlert({ cooldownID = CONF_CID }, A.ChargeGained);     assert.equals(2, (St.Charges.Read(CONF_CID)))
+  end)
+
+  it("a DUPLICATE queue drain does not credit a charge it did not gain", function()
+    -- The live defect, reduced: Blizzard drains at most one due entry per frame from a
+    -- table two producers write, so one real restore can raise ChargeGained twice on
+    -- consecutive frames.  Measured 2026-07-31: a 0 -> 1 -> 2 climb in 200 ms.
+    St.Charges.Bind(17962, CONF_CID)
+    St.Charges.Seed(CONF_CID, 2, 2, 12)      -- 12 s recharge -> a 6 s floor
+    St.Charges.Spend(17962); St.Charges.Spend(17962)
+    assert.equals(0, (St.Charges.Read(CONF_CID)))
+
+    H.advance(12)
+    St.OnAlert({ cooldownID = CONF_CID }, A.ChargeGained)
+    assert.equals(1, (St.Charges.Read(CONF_CID)))   -- the real restore lands
+
+    H.advance(0.2)                                  -- the consecutive-frame duplicate
+    St.OnAlert({ cooldownID = CONF_CID }, A.ChargeGained)
+    assert.equals(1, (St.Charges.Read(CONF_CID)))   -- REFUSED — this is the whole fix
+  end)
+
+  it("a burst of duplicates cannot ratchet the window past a real later gain", function()
+    -- `lastGain` deliberately does not advance on a refusal.  If it did, a stream of
+    -- drains would keep pushing the window forward and starve the next genuine restore —
+    -- trading an overcount for an unbounded undercount.
+    St.Charges.Bind(17962, CONF_CID)
+    St.Charges.Seed(CONF_CID, 2, 2, 12)
+    St.Charges.Spend(17962); St.Charges.Spend(17962)
+    H.advance(12)
+    St.OnAlert({ cooldownID = CONF_CID }, A.ChargeGained);     assert.equals(1, (St.Charges.Read(CONF_CID)))
+    for _ = 1, 5 do
+      H.advance(0.5)
+      St.OnAlert({ cooldownID = CONF_CID }, A.ChargeGained)
+    end
+    assert.equals(1, (St.Charges.Read(CONF_CID)))   -- all five refused (2.5 s < 6 s floor)
+    H.advance(4)                                    -- now 6.5 s past the REAL gain
+    St.OnAlert({ cooldownID = CONF_CID }, A.ChargeGained)
+    assert.equals(2, (St.Charges.Read(CONF_CID)))   -- and the genuine one still lands
+  end)
+
+  it("an exact OOC re-read clears the debounce as well as the count", function()
+    -- Ground truth outranks the estimate in both fields: after a measurement there is
+    -- nothing left to guard against, so the next edge must not be refused as a duplicate.
+    St.Charges.Bind(17962, CONF_CID)
+    St.Charges.Seed(CONF_CID, 2, 2, 12)
+    St.Charges.Spend(17962); St.Charges.Spend(17962)
+    H.advance(12)
+    St.OnAlert({ cooldownID = CONF_CID }, A.ChargeGained);     assert.equals(1, (St.Charges.Read(CONF_CID)))
+    St.Charges.Seed(CONF_CID, 0, 2)                            -- combat exit, exact read
+    St.OnAlert({ cooldownID = CONF_CID }, A.ChargeGained)
+    assert.equals(1, (St.Charges.Read(CONF_CID)))              -- credited, not debounced
+  end)
+
+  it("a seed with no duration KEEPS the last measured recharge", function()
+    -- `cooldownDuration` reads 0 at full charges, and the OOC re-seed most often happens
+    -- exactly there.  Overwriting would erase the floor right before combat entry.
+    St.Charges.Bind(17962, CONF_CID)
+    St.Charges.Seed(CONF_CID, 2, 2, 12)   -- floor measured at 6 s
+    St.Charges.Seed(CONF_CID, 2, 2)       -- full charges: no duration this time
+    St.Charges.Spend(17962); St.Charges.Spend(17962)
+    H.advance(12)
+    St.OnAlert({ cooldownID = CONF_CID }, A.ChargeGained);     assert.equals(1, (St.Charges.Read(CONF_CID)))
+    H.advance(2)                                               -- inside the RETAINED 6 s
+    St.OnAlert({ cooldownID = CONF_CID }, A.ChargeGained)
+    assert.equals(1, (St.Charges.Read(CONF_CID)))
+  end)
+
+  it("with NO recharge ever measured, only the pathological drain is refused", function()
+    -- The unseeded-floor case: 1 s, deliberately below any real charge recharge, so it
+    -- catches the consecutive-frame duplicate without suppressing a legitimate gain.
+    St.Charges.Bind(17962, CONF_CID)
+    St.Charges.Seed(CONF_CID, 2, 2)       -- no duration, ever
+    St.Charges.Spend(17962); St.Charges.Spend(17962)
+    H.advance(5)
+    St.OnAlert({ cooldownID = CONF_CID }, A.ChargeGained);     assert.equals(1, (St.Charges.Read(CONF_CID)))
+    H.advance(0.2)
+    St.OnAlert({ cooldownID = CONF_CID }, A.ChargeGained);     assert.equals(1, (St.Charges.Read(CONF_CID)))
+    H.advance(2)                                               -- clears the 1 s floor
     St.OnAlert({ cooldownID = CONF_CID }, A.ChargeGained);     assert.equals(2, (St.Charges.Read(CONF_CID)))
   end)
 

@@ -2051,6 +2051,75 @@ local F = {
                         overrideTooltipSpellID = INCINERATE, charges = true } } },
     expect = { asked = { charges = { [SHADOW_BOLT] = true, [INCINERATE] = false } } },
   },
+
+  {
+    name = "flags/a-duplicate-ChargeGained-drain-is-not-a-charge",
+    status = "green",
+    fixed = "phase2.1 the gain floor",
+    spec = 3,
+    pins = "`ChargeGained` is an edge on a PREDICTION QUEUE, not on a charge counter. "
+        .. "`AddChargeGainedAlertTime(count, time)` writes `chargeGainedAlertTimes`, keyed "
+        .. "by predicted charge count, and TWO producers write it: a predictor "
+        .. "(`CheckCacheCooldownValuesFromCharges` registers `currentCharges + 1` at a "
+        .. "FUTURE time on every refresh while a recharge runs) and an observer "
+        .. "(`SetCachedChargeValues` registers the new count at GetTime() when the cached "
+        .. "count actually rose).  `ShouldTriggerChargeGainedAlert` drains at most ONE due "
+        .. "entry per call and is polled once per frame, so a backlog of two fires as two "
+        .. "alerts on CONSECUTIVE FRAMES and one real restore raises the alert twice.  "
+        .. "Crediting +1 per alert therefore OVERCOUNTS — the direction the napkin's "
+        .. "honesty rule forbids, because it cues a press that will fail.  Measured "
+        .. "[client] 2026-07-31: Conflagrate won 702 of 1272 decisions, with a 0->1->2 "
+        .. "climb in 200 ms.  The floor is half the OOC-measured recharge: duplicates are "
+        .. "refused, hasted genuine restores still land, and a true reset proc granting a "
+        .. "charge early biases DOWN, which is allowed.",
+    ref = "api-events-and-discovery.md §2.8 — CooldownViewer.lua:591-594, :596-605, "
+       .. ":886, :992-993, :100-101",
+    rows = { { cid = 903, category = "Essential", frame = {},
+               info = { spellID = CONFLAGRATE, isKnown = true, charges = true } } },
+    -- `cooldownDuration` is the per-charge recharge, and the ONLY source for it: a charged
+    -- spell's cooldown sits on its charge category, so GetSpellBaseCooldown reads nothing.
+    world = { charges = { [CONFLAGRATE] = { currentCharges = 2, maxCharges = 2,
+                                            cooldownDuration = 12 } } },
+    script = { { build = true },
+               { cast = CONFLAGRATE, phase = "succeeded" },
+               { cast = CONFLAGRATE, phase = "succeeded" },   -- both charges spent
+               { combat = true },
+               { advance = 12 }, { alert = "ChargeGained", cid = 903 },   -- the real one
+               { advance = 0.2 }, { alert = "ChargeGained", cid = 903 },  -- the duplicate
+               { build = true } },
+    expect = {
+      abilities = { [CONFLAGRATE] = { charge = { readable = false, cur = 1, max = 2,
+                                                 source = "napkin", charged = true } } },
+    },
+  },
+
+  {
+    name = "flags/a-genuine-restore-after-the-floor-still-credits",
+    status = "green",
+    fixed = "phase2.1 the gain floor",
+    spec = 3,
+    pins = "The other half of the floor, and the one that keeps it honest: refusing "
+        .. "duplicates must not cost a real charge.  Same script as the case above with "
+        .. "the second alert moved past the floor (half of a 12 s recharge = 6 s), and "
+        .. "the count reaches 2.  Without this, 'refuse everything' would pass the "
+        .. "duplicate case and silently trade an overcount for an unbounded undercount.",
+    ref = "api-events-and-discovery.md §2.8 — CooldownViewer.lua:596-605",
+    rows = { { cid = 903, category = "Essential", frame = {},
+               info = { spellID = CONFLAGRATE, isKnown = true, charges = true } } },
+    world = { charges = { [CONFLAGRATE] = { currentCharges = 2, maxCharges = 2,
+                                            cooldownDuration = 12 } } },
+    script = { { build = true },
+               { cast = CONFLAGRATE, phase = "succeeded" },
+               { cast = CONFLAGRATE, phase = "succeeded" },
+               { combat = true },
+               { advance = 12 }, { alert = "ChargeGained", cid = 903 },
+               { advance = 12 }, { alert = "ChargeGained", cid = 903 },
+               { build = true } },
+    expect = {
+      abilities = { [CONFLAGRATE] = { charge = { readable = false, cur = 2, max = 2,
+                                                 source = "napkin", charged = true } } },
+    },
+  },
 }
 
 --------------------------------------------------------------------------------
