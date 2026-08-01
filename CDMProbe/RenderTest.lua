@@ -303,6 +303,14 @@ local FX = {
   soundLabel = nil, -- what `status` should call it
   channel = 1,      -- index into SOUND_CHANNELS; the closest thing to a volume dial
   sweep   = 0,      -- position in LOUD_UI while auditioning the loud pool
+  -- ONE PLAY IS NOT AUDITIONABLE.  In the world there is always ambient noise, so a
+  -- single short UI blip cannot be picked out of it — you hear "something happened", not
+  -- WHAT happened.  A short burst of the SAME sound is distinctive in a way one hit is
+  -- not: the rhythm is the signature, and it survives a noisy background.  Hence 3 by
+  -- default, which is an audition setting -- a shipped cue would use 1.
+  rep     = 3,      -- plays per audition
+  repGap  = 0.22,   -- seconds between them
+  loop    = false,  -- keep replaying until told to stop (listen against live ambience)
   holders = {},     -- key -> our own frame (never culled by the Renderer)
   bgs     = {},     -- key -> backing disc
   stacks  = {},     -- key -> { extra glow copies }
@@ -557,6 +565,130 @@ local function playCueSound()
   return nil
 end
 
+-- Point the cue sound at a list entry / a raw kit id / a file, and label it for `status`.
+-- Defined up here because the audition panel's sweepTo calls it — keep it above that.
+local function selectSound(idx, id, file, label)
+  FX.sound, FX.soundID, FX.soundFile, FX.soundLabel = idx, id, file, label
+end
+
+-- A BURST of the current sound: `rep` plays spaced `repGap` apart.  Returns the FIRST
+-- play's willPlay so callers keep their diagnostic signal.  C_Timer.After rather than a
+-- ticker — a burst is finite and must not need cancelling.
+local function playCueBurst()
+  local willPlay = playCueSound()
+  for i = 2, FX.rep do
+    C_Timer.After((i - 1) * FX.repGap, playCueSound)
+  end
+  return willPlay
+end
+
+-- LOOP — replay the burst on a ticker, so you can sit in the world and pick the sound out
+-- of whatever is going on around you rather than judging it from one pass.  Cancelled by
+-- any view change (`rt off`, another fixture) as well as by toggling it off, because a
+-- sound still firing after you cleared the render test is the rig outliving its view.
+local function stopSoundLoop()
+  if ns._renderTestSoundTicker then
+    ns._renderTestSoundTicker:Cancel()
+    ns._renderTestSoundTicker = nil
+  end
+  FX.loop = false
+end
+
+local function startSoundLoop()
+  stopSoundLoop()
+  FX.loop = true
+  local period = math.max(1.0, FX.rep * FX.repGap + 0.9)
+  playCueBurst()
+  ns._renderTestSoundTicker = C_Timer.NewTicker(period, playCueBurst)
+end
+
+--------------------------------------------------------------------------------
+-- The AUDITION PANEL — 235 candidates is a CLICKING job, not a typing one.
+--------------------------------------------------------------------------------
+-- `/cdmp rt fx sound sweep` is 24 characters to advance ONE step through a 235-entry
+-- pool.  That is not a usable audition loop however good the pool is: the interaction
+-- cost swamps the thing being tested, and you end up judging "can I face another one"
+-- rather than "does this cut through".  So the pool gets a mouse — prev / replay / next /
+-- loop as buttons, with the id and position on screen.  The slash verbs all still work;
+-- this just makes the common one free.
+local PANEL_W, PANEL_H = 268, 92
+local sweepTo   -- fwd: the buttons drive it, and it refreshes the panel
+
+local function updatePanel()
+  local p = ns._renderTestSoundPanel
+  if not p then return end
+  p.title:SetText(string.format("|cff88ff88%d|r / %d   id |cffffffff%s|r",
+    FX.sweep, #LOUD_UI, tostring(LOUD_UI[FX.sweep] or "-")))
+  p.sub:SetText(string.format("channel |cffffffff%s|r   x%d burst   %s",
+    SOUND_CHANNELS[FX.channel] or "Master", FX.rep,
+    FX.loop and "|cff88ff88LOOPING|r" or "loop off"))
+  p.loopBtn:SetText(FX.loop and "stop" or "loop")
+end
+
+local function ensureSoundPanel()
+  local p = ns._renderTestSoundPanel
+  if p then return p end
+  local f = CreateFrame("Frame", nil, UIParent)
+  f:SetSize(PANEL_W, PANEL_H)
+  f:SetPoint("CENTER", UIParent, "CENTER", 0, -160)
+  f:SetFrameStrata("DIALOG")
+  f:EnableMouse(true)
+  f:SetMovable(true)
+  f:RegisterForDrag("LeftButton")
+  f:SetScript("OnDragStart", function(self) self:StartMoving() end)
+  f:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
+  local bg = f:CreateTexture(nil, "BACKGROUND")
+  bg:SetAllPoints(f)
+  bg:SetColorTexture(0.04, 0.05, 0.06, 0.92)
+  local edge = f:CreateTexture(nil, "BORDER")
+  edge:SetPoint("TOPLEFT", f, "TOPLEFT", -1, 1)
+  edge:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", 1, -1)
+  edge:SetColorTexture(0.30, 1.00, 0.48, 0.55)
+
+  local title = f:CreateFontString(nil, "OVERLAY")
+  ns.SetFont(title, 15, "OUTLINE")
+  title:SetPoint("TOP", f, "TOP", 0, -9)
+  local sub = f:CreateFontString(nil, "OVERLAY")
+  ns.SetFont(sub, 11, "")
+  sub:SetPoint("TOP", title, "BOTTOM", 0, -5)
+
+  local function button(label, w, x, onClick)
+    local b = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+    b:SetSize(w, 22)
+    b:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", x, 9)
+    b:SetText(label)
+    b:SetScript("OnClick", onClick)
+    return b
+  end
+  button("<", 34, 10, function() sweepTo(FX.sweep - 1) end)
+  button("replay", 62, 48, function() playCueBurst(); updatePanel() end)
+  button(">", 34, 114, function() sweepTo(FX.sweep + 1) end)
+  local loopBtn = button("loop", 52, 152, function()
+    if FX.loop then stopSoundLoop() else startSoundLoop() end
+    updatePanel()
+  end)
+  button("x", 34, 210, function() stopSoundLoop(); f:Hide() end)
+
+  p = { frame = f, title = title, sub = sub, loopBtn = loopBtn }
+  ns._renderTestSoundPanel = p
+  return p
+end
+
+-- Move to an absolute pool position (wrapping), select it, play it, refresh the panel.
+-- THE ONE DOOR for advancing: the slash verb and all three buttons route through it, so
+-- they cannot drift apart.
+sweepTo = function(pos)
+  FX.sweep = ((pos - 1) % #LOUD_UI) + 1
+  local id = LOUD_UI[FX.sweep]
+  selectSound(nil, id, nil, string.format("SoundKit id %d (loud pool %d/%d)",
+    id, FX.sweep, #LOUD_UI))
+  local willPlay
+  if FX.loop then startSoundLoop()          -- re-arms on the NEW sound, and plays it
+  else willPlay = playCueBurst() end
+  updatePanel()
+  return id, willPlay
+end
+
 -- The `I hear nothing` decision tree, answered in one line each.
 local function soundDiagnose()
   ns.Heading("rt fx sound — diagnosis")
@@ -584,11 +716,6 @@ local function soundDiagnose()
     ns.Print("  request          |cffff4040REFUSED (willPlay=false) — bad id for this build|r")
     ns.Print("  |cffffffff=> try a different id|r")
   end
-end
-
--- Point the cue sound at a list entry / a raw kit id / a file, and report what it is.
-local function selectSound(idx, id, file, label)
-  FX.sound, FX.soundID, FX.soundFile, FX.soundLabel = idx, id, file, label
 end
 
 -- Decorate whatever `R:Draw` just drew.  `activeKeys` = the handles carrying a cue this
@@ -871,18 +998,30 @@ local function fxCommand(words)
       return true
     elseif a1 == "sweep" then
       -- Walk the verified max-volume UI pool.  Bare = next; a number JUMPS to that
-      -- position (not that id), so a promising one can be re-found by index.
-      if tonumber(a2) then
-        FX.sweep = math.max(1, math.min(#LOUD_UI, math.floor(tonumber(a2)))) - 1
-      end
-      FX.sweep = FX.sweep % #LOUD_UI + 1
-      local id = LOUD_UI[FX.sweep]
-      selectSound(nil, id, nil, string.format("SoundKit id %d (loud pool %d/%d)",
-        id, FX.sweep, #LOUD_UI))
-      local willPlay = playCueSound()
-      ns.Printf("rt fx sweep |cffffffff%d/%d|r — id |cffffffff%d|r %s  (bare `sound sweep` = next)",
+      -- POSITION (not that id), so a promising one can be re-found by index.  Opens the
+      -- panel on the way through: the whole point is that step 2 onward is a click.
+      ensureSoundPanel().frame:Show()
+      local id, willPlay = sweepTo(tonumber(a2) and math.floor(tonumber(a2)) or (FX.sweep + 1))
+      ns.Printf("rt fx sweep |cffffffff%d/%d|r — id |cffffffff%d|r %s  (now use the panel)",
         FX.sweep, #LOUD_UI, id,
         willPlay == false and "|cffff4040[refused]|r" or "|cff88ff88[playing]|r")
+      return true
+    elseif a1 == "panel" then
+      local p = ensureSoundPanel()
+      if p.frame:IsShown() then stopSoundLoop(); p.frame:Hide() else p.frame:Show() end
+      updatePanel()
+      return true
+    elseif a1 == "loop" then
+      if FX.loop then stopSoundLoop() else startSoundLoop() end
+      updatePanel()
+      ns.Printf("rt fx sound loop: |cffffffff%s|r", FX.loop and "on" or "off")
+      return true
+    elseif a1 == "rep" then
+      FX.rep = math.max(1, math.min(8, math.floor(tonumber(a2 or "") or 3)))
+      if words[5] then FX.repGap = tonumber(words[5]) or FX.repGap end
+      updatePanel()
+      playCueBurst()
+      ns.Printf("rt fx sound rep: |cffffffffx%d|r every %.2fs", FX.rep, FX.repGap)
       return true
     elseif a1 == "off" then
       selectSound(nil, nil, nil, nil)
@@ -919,7 +1058,8 @@ local function fxCommand(words)
       ns.Printf("|cffff4040%s is not in SOUNDKIT on this build|r — try another, or "
         .. "|cffffffffsound id <kitID>|r", SOUNDS[FX.sound][1])
     end
-    playCueSound()                                       -- hear it right now
+    playCueBurst()                                       -- hear it right now, as a burst
+    updatePanel()
     ns.Printf("rt fx sound: |cffffffff%s|r", FX.soundLabel or "off")
     return true
   else
@@ -978,6 +1118,7 @@ function ns.RenderTest(arg)
   stopRotate()                               -- any view change cancels a live rotate
   clearProcGlow()                            -- ...and drops any native proc glow
   if words[1] == "fx" then return fxCommand(words) end
+  stopSoundLoop()                            -- ...and silences an audition still looping
   clearFX()                                  -- ...and any experimental chrome
   if arg == "off" then
     if ns._renderTestRig then
