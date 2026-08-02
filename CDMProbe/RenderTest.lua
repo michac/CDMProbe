@@ -1192,7 +1192,7 @@ local RTFX_MAX = 60   -- a bounded ring; two full ladder walks and change
 
 -- Everything numeric, read off the LIVE widgets through the same guarded reader the
 -- printed dump uses.  Nothing here is computed from what the code SHOULD have done.
-local function captureFx(renderer, activeKeys)
+local function sampleFx(renderer, activeKeys, settled)
   if not (ns.db and renderer and activeKeys) then return end
   local ring = ns.db.rtfx
   if type(ring) ~= "table" then ring = {}; ns.db.rtfx = ring end
@@ -1233,6 +1233,13 @@ local function captureFx(renderer, activeKeys)
   end
   ring[#ring + 1] = {
     t = GetTime(),
+    -- ⚠ `settled` IS THE WHOLE POINT OF THE SECOND SAMPLE.  The immediate one is taken the
+    -- instant after Draw, when a just-started pop has not moved anything yet — so it can
+    -- say the pop RAN but never what the pop LEFT.  The settled sample is taken well after
+    -- the 0.28s pop has finished, so the pair answers "does the cue layer come back to
+    -- scale 1?" — which is the difference between a one-shot flourish and a frame that is
+    -- permanently enlarged with a spinning ring inside it.
+    settled = settled and 1 or 0,
     -- The inputs that produced this sample.  `layers` is the headline: the whole point is
     -- to diff one rung against another, and against the same rung reached another way.
     layers = FX.layers, noPop = FX.noPop and 1 or 0,
@@ -1244,6 +1251,13 @@ local function captureFx(renderer, activeKeys)
     cues = cues,
   }
   while #ring > RTFX_MAX do table.remove(ring, 1) end
+end
+
+-- Two samples per view change: one NOW, one after everything one-shot has finished.
+local SETTLE_SECS = 0.6   -- comfortably past POP_SECS (0.28) plus a frame or two
+local function captureFx(renderer, activeKeys)
+  sampleFx(renderer, activeKeys, false)
+  C_Timer.After(SETTLE_SECS, function() sampleFx(renderer, activeKeys, true) end)
 end
 
 -- Decorate whatever `R:Draw` just drew.  `activeKeys` = the handles carrying a cue this
