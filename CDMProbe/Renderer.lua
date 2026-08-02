@@ -499,6 +499,16 @@ local GLOW_SCALE = 3.34
 -- proportion to its symmetry order.  (`/cdmp rt fx spin <n>` is how to re-dial it.)
 local SPIN_SECS  = 12.0   -- one full rotation
 
+-- THE BREATHE.  A SECOND continuous motion on the same texture, and the one nobody has
+-- ever dialled: it predates the `rt fx` rig, which shipped no knob for it, so every
+-- judgement about "how fast do the cues move" has actually been a judgement about
+-- rotation + this, with only the rotation adjustable.  `SetLooping("BOUNCE")` means the
+-- FULL cycle is 2 x PULSE_SECS.  ⚠ It multiplies with the ring's vertex alpha, so after
+-- the light split the ring breathes between 0.45 x floor and 0.45 — the RATIO is what
+-- the eye reads, and the ratio is unchanged by the split.
+local PULSE_SECS  = 0.60  -- half-cycle; 1.2s there and back
+local PULSE_FLOOR = 0.55  -- dims to this fraction, then back to full
+
 -- THE OUTER ECHO — reach without brightness (`rt fx rays 1.5 @55%`).  A ring cannot be
 -- stretched radially: a texture is a quad and tex-coords are rectangular, so there is no
 -- transform that lengthens the rays while holding the inner radius.  The reach of a ray is
@@ -559,12 +569,15 @@ function R:setDotGlow(key, layer, dot, col, size, gs)
     spinGroup:SetLooping("REPEAT")
     local pulseGroup = g:CreateAnimationGroup() -- breathe (BOUNCE) — own group
     local a = pulseGroup:CreateAnimation("Alpha")
-    a:SetFromAlpha(0.55)
+    a:SetFromAlpha(PULSE_FLOOR)
     a:SetToAlpha(1.00)
-    a:SetDuration(0.60)
+    a:SetDuration(PULSE_SECS)
     a:SetOrder(1)
     pulseGroup:SetLooping("BOUNCE")
     g.spin, g.pulse = spinGroup, pulseGroup
+    -- Exposed like `g.rot`, so `/cdmp rt fx` can re-time the breathe live.  It could not
+    -- before, which is why the first round of dialling never questioned it.
+    g.pulseAnim, g.pulseSecs = a, PULSE_SECS
     self.cueGlows[key] = g
   end
   local d     = size or 12

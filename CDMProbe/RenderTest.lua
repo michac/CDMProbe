@@ -328,6 +328,23 @@ local FX = {
   raysAlpha = 0.55, -- the echo's share of the light
   art       = nil,  -- index into GLOW_ART; nil = whatever Renderer.lua's GLOW_ART is
                     -- (entry 8, star_07, since the promotion)
+  -- THE TWO MOTIONS THIS RIG WAS BLIND TO, and the reason a "too fast" reading survived a
+  -- whole dialling session plus a spin retune.  Everything above dials the RING; but the
+  -- ring is only one of THREE things moving on a cue, and the other two had no knob:
+  --   * the PULSE — a BOUNCE alpha breathe, 0.60s each way, so a 1.2s cycle at a ~2:1
+  --     swing.  Older than this rig and never questioned by it.
+  --   * the ECHO/base MOIRÉ — two 8-fold sprites counter-rotating.  They align 8x per
+  --     relative revolution, so at 30 deg/s + 12 deg/s that is a ~1 Hz shimmer over the
+  --     whole ring, independent of how slow either one turns.
+  -- Both dial the SHIPPED layers (unlike every knob above, which adds a layer on top),
+  -- and both default neutral.
+  pulseMul  = 1.0,  -- multiplier on the Renderer's PULSE_SECS
+  pulseFloor= nil,  -- override the breathe's floor alpha; nil = Renderer's (0.55).
+                    -- 1.0 = no breathe at all, which is the real A/B
+  pulseOff  = false,-- stop the breathe outright
+  echoOff   = false,-- hide the Renderer's OWN echo (the `rays` knob adds another one)
+  echoMul   = 1.0,  -- multiplier on the Renderer's echo period (kills the moiré as it
+                    -- approaches the base's, since in-phase = no relative slide)
   stack   = 1,      -- additive glow copies: 1 = stock, 2 = "doubled"
   pop     = false,  -- one-shot scale on application.  ⚠ A SECOND one: the Renderer pops
   ghost   = false,  -- ...and ghosts natively now, on its own CUE LAYER frame.  These
@@ -761,6 +778,15 @@ local function updatePanel()
                       FX.rays, FX.raysAlpha * 100) or "|cff808080off|r")
   local ae = FX.art and GLOW_ART[FX.art]
   p.artVal:SetText(ae and ("|cffffffff" .. FX.art .. ".|r " .. ae.label) or "|cff808080stock|r")
+  -- Absolute seconds, not just the multiplier: the whole point of this row is that nobody
+  -- knew the breathe was a 1.2s cycle.
+  p.motionVal:SetText(string.format("pulse %s  echo %s%s",
+    FX.pulseOff and "|cffff8080off|r"
+      or (FX.pulseFloor == 1.0 and "|cffffcc00flat|r"
+          or string.format("|cffffffff%.1fs|r cyc", 0.60 * FX.pulseMul * 2)),
+    FX.echoOff and "|cffff8080off|r" or string.format("|cffffffff%.2fx|r", FX.echoMul),
+    (FX.pulseMul == 1.0 and not FX.pulseOff and not FX.pulseFloor and not FX.echoOff
+      and FX.echoMul == 1.0) and "  |cff808080(shipped)|r" or ""))
   p.popVal:SetText(string.format("%s   ghost %s",
     FX.pop and "|cff88ff88on|r" or "|cff808080off|r",
     FX.ghost and "|cff88ff88on|r" or "|cff808080off|r"))
@@ -786,7 +812,7 @@ end
 local function ensureFxPanel()
   local p = ns._renderTestFxPanel
   if p then return p end
-  local rows = 8
+  local rows = 9
   local f = CreateFrame("Frame", nil, UIParent)
   f:SetSize(PANEL_W, 34 + rows * ROW_H2 + 30)
   f:SetPoint("CENTER", UIParent, "CENTER", 0, -190)
@@ -878,6 +904,23 @@ local function ensureFxPanel()
   btn(">", 24, 66, y, bump(function() FX.art = (FX.art or 0) % #GLOW_ART + 1 end))
   btn("stock", 46, 96, y, bump(function() FX.art = nil end))
   local artVal = value(y)
+  -- motion: the SHIPPED pulse + the SHIPPED echo (everything else adds a layer; these
+  -- two re-dial one the Renderer already draws).  This row is the one that was missing.
+  y = y - ROW_H2
+  label("motion", y)
+  btn("slow", 40, 40, y, bump(function()
+    FX.pulseMul = FX.pulseMul >= 4.0 and 1.0 or FX.pulseMul + 0.5
+  end))
+  btn("flat", 34, 84, y, bump(function()
+    -- 1.0 = no breathe at all; cycling back to nil restores the Renderer's own floor.
+    FX.pulseFloor = FX.pulseFloor and nil or 1.0
+  end))
+  btn("echo", 36, 122, y, bump(function() FX.echoOff = not FX.echoOff end))
+  btn("sync", 34, 160, y, bump(function()
+    -- Toward 1.0 the echo locks in phase with the base and the moiré disappears.
+    FX.echoMul = FX.echoMul <= 0.45 and 1.0 or FX.echoMul - 0.15
+  end))
+  local motionVal = value(y)
   -- pop / ghost
   y = y - ROW_H2
   label("pop", y)
@@ -925,13 +968,15 @@ local function ensureFxPanel()
     FX.stack, FX.rays, FX.raysAlpha, FX.art = 1, 1.0, 0.55, nil
     FX.scale, FX.spinMul = 1.0, 1.0
     FX.desync, FX.counter = 2.5, true
+    FX.pulseMul, FX.pulseFloor, FX.pulseOff = 1.0, nil, false
+    FX.echoOff, FX.echoMul = false, 1.0
     FX.pop, FX.ghost, FX.peak = false, false, 2.0
     stopSoundLoop(); selectSound(nil, nil, nil, nil)
   end))
   btn("close", 60, 86, y, function() stopSoundLoop(); f:Hide() end)
 
   p = { frame = f, bgVal = bgVal, glowVal = glowVal, ringVal = ringVal,
-        raysVal = raysVal, artVal = artVal,
+        raysVal = raysVal, artVal = artVal, motionVal = motionVal,
         popVal = popVal, sndVal = sndVal, sweepVal = sweepVal, loopBtn = loopBtn }
   ns._renderTestFxPanel = p
   return p
@@ -978,6 +1023,15 @@ local function soundDiagnose()
     ns.Print("  request          |cffff4040REFUSED (willPlay=false) — bad id for this build|r")
     ns.Print("  |cffffffff=> try a different id|r")
   end
+end
+
+-- Read a widget getter that may not exist on this build / this stub.  Sits ABOVE its
+-- first caller on purpose: a `local function` declared later resolves as a nil GLOBAL.
+local function safeCall(obj, method, dflt)
+  if not (obj and obj[method]) then return dflt end
+  local ok, v = pcall(obj[method], obj)
+  if ok and v ~= nil then return v end
+  return dflt
 end
 
 -- Decorate whatever `R:Draw` just drew.  `activeKeys` = the handles carrying a cue this
@@ -1028,6 +1082,36 @@ local function applyFX(renderer, activeKeys, newOnly)
         if glow._fxSpin ~= want then
           glow._fxSpin = want
           glow.rot:SetDuration(want)
+        end
+      end
+      -- THE SHIPPED PULSE + THE SHIPPED ECHO, re-dialled in place.  These write back into
+      -- the Renderer's own layers rather than decorating around them — the same
+      -- unavoidable exception the atlas override below makes, and for the same reason:
+      -- "the same motion, slower" is the experiment.  `R:Draw` re-asserts size/colour/
+      -- points every draw but never re-times a group it thinks is already correct, so
+      -- these stick until the emphasis changes.
+      if glow and glow.pulseAnim then
+        local want = (glow.pulseSecs or 0.60) * FX.pulseMul
+        if glow._fxPulse ~= want then
+          glow._fxPulse = want
+          glow.pulseAnim:SetDuration(want)
+        end
+        if FX.pulseFloor then glow.pulseAnim:SetFromAlpha(FX.pulseFloor) end
+        if FX.pulseOff then
+          glow.pulse:Stop()
+        elseif not safeCall(glow.pulse, "IsPlaying", false) then
+          glow.pulse:Play()
+        end
+      end
+      local shipped = renderer.cueEchoes and renderer.cueEchoes[key]
+      if shipped then
+        if FX.echoOff then shipped:Hide() else shipped:Show() end
+        if shipped.rot and shipped._spinSecs and FX.echoMul ~= 1.0 then
+          local want = shipped._spinSecs * FX.echoMul
+          if shipped._fxEcho ~= want then
+            shipped._fxEcho = want
+            shipped.rot:SetDuration(want)
+          end
         end
       end
       local baseA, echoA = echoAlpha()
@@ -1159,13 +1243,6 @@ end
 -- LATE looks different: the answer has to come off the live widgets, because every guess
 -- so far has been about numbers nobody had measured.  Reports, per cue: the base ring's
 -- real size and spin, and every extra layer's size/period/direction/playing state.
-local function safeCall(obj, method, dflt)
-  if not (obj and obj[method]) then return dflt end
-  local ok, v = pcall(obj[method], obj)
-  if ok and v ~= nil then return v end
-  return dflt
-end
-
 local function describeLayer(tag, tex)
   if not tex then return end
   local rot = tex._rot
@@ -1204,8 +1281,14 @@ local function fxDump()
         safeCall(glow.rot, "GetDuration", 0),
         tostring(safeCall(glow.rot, "GetDegrees", 0)),
         safeCall(glow.spin, "IsPlaying", false) and "|cff88ff88playing|r" or "|cffff4040STOPPED|r")
-      ns.Printf("      %-8s pulse %s", "",
-        safeCall(glow.pulse, "IsPlaying", false) and "|cff88ff88playing|r" or "stopped")
+      -- THE BREATHE, with its ACTUAL period — the field that would have caught the "still
+      -- too fast" reading in one command instead of two builds.  BOUNCE, so the cycle is
+      -- twice the duration.
+      local ps = safeCall(glow.pulseAnim, "GetDuration", 0)
+      ns.Printf("      %-8s pulse %s  period |cffffffff%.2fs|r (cycle |cffffffff%.2fs|r)  "
+        .. "floor |cffffffff%.2f|r", "",
+        safeCall(glow.pulse, "IsPlaying", false) and "|cff88ff88playing|r" or "stopped",
+        ps, ps * 2, safeCall(glow.pulseAnim, "GetFromAlpha", 0))
     else
       ns.Print("      |cffff4040no base ring|r")
     end
@@ -1254,6 +1337,16 @@ local function fxStatus()
   local ae = FX.art and GLOW_ART[FX.art]
   ns.Printf("  art   |cffffffff%s|r", ae and (FX.art .. ". " .. ae.label)
     or "(Renderer.lua's GLOW_ATLAS)")
+  -- A CUE HAS THREE MOTIONS, not one.  Printed together because judging "how fast do the
+  -- cues move" against only the ring is what let a 1.2s breathe and a ~1 Hz moiré sit
+  -- unquestioned through a whole dialling session AND a spin retune.
+  ns.Printf("  pulse |cffffffff%s|r  — the SHIPPED breathe, %s",
+    FX.pulseOff and "off" or (FX.pulseFloor == 1.0 and "flat"
+      or string.format("%.2fs cycle", 0.60 * FX.pulseMul * 2)),
+    FX.pulseMul == 1.0 and "at the shipped period" or ("x" .. FX.pulseMul))
+  ns.Printf("  echo  |cffffffff%s|r  — the SHIPPED echo. Counter-rotating 8-fold sprites "
+    .. "align 8x per relative turn: a ~1 Hz shimmer whatever the periods are",
+    FX.echoOff and "off" or string.format("period x%.2f", FX.echoMul))
   ns.Printf("  pop   |cffffffff%s|r  ghost |cffffffff%s|r  (peak %.1fx over %.2fs)",
     FX.pop and "on" or "off", FX.ghost and "on" or "off", FX.peak, FX.secs)
   ns.Printf("  sound |cffffffff%s|r  (channel %s)%s", FX.soundLabel or "off",
@@ -1364,6 +1457,19 @@ local function fxCommand(words)
       ns.Printf("|cffff4040'%s' is not an atlas on this build|r — the ring will draw "
         .. "NOTHING; try another or |cffffffffart reset|r", e.id)
     end
+  elseif verb == "pulse" then
+    -- The SHIPPED breathe: `pulse` cycles the period, `pulse flat` removes it entirely
+    -- (the real A/B), `pulse off` stops the group.
+    if a1 == "flat" then FX.pulseFloor = FX.pulseFloor and nil or 1.0
+    elseif a1 == "off" then FX.pulseOff = not FX.pulseOff
+    elseif tonumber(a1) then FX.pulseMul = math.max(0.25, math.min(6.0, tonumber(a1)))
+    else FX.pulseMul = FX.pulseMul >= 4.0 and 1.0 or FX.pulseMul + 0.5 end
+  elseif verb == "echo" then
+    -- The SHIPPED echo (`rays` adds a SECOND one on top).  `echo sync <n>` walks its
+    -- period toward the base's, which is what kills the counter-rotation moiré.
+    if a1 == "sync" then
+      FX.echoMul = tonumber(words[4]) or (FX.echoMul <= 0.45 and 1.0 or FX.echoMul - 0.15)
+    else FX.echoOff = not FX.echoOff end
   elseif verb == "glow" then
     FX.stack = math.max(1, math.min(4, math.floor(tonumber(a1 or "") or (FX.stack + 1))))
     if not a1 and FX.stack >= 4 then FX.stack = 1 end   -- bare `glow` cycles 1..4
@@ -1468,6 +1574,10 @@ local function fxCommand(words)
     ns.Print("         (LATE already runs 1.4x bigger + 2.5x faster than the rest)")
     ns.Print("  |cff88ff88rays|r [n] [a]   outer ring echo — the REACH knob, light-compensated")
     ns.Print("  |cff88ff88art|r [n|reset|list]  swap the ring ART — incl. our CC0 TGAs")
+    ns.Print("  |cff88ff88pulse|r [n|flat|off]  the SHIPPED breathe — |cffffd100the other")
+    ns.Print("         continuous motion|r, a 1.2s cycle nothing here could dial before")
+    ns.Print("  |cff88ff88echo|r [sync <n>]   the SHIPPED echo: off, or walk its period")
+    ns.Print("         toward the base's — |cffffd100that is what kills the moiré|r")
     ns.Print("  |cff88ff88pop|r [peak]     one-shot scale on cue APPLICATION")
     ns.Print("  |cff88ff88ghost|r          one-shot scale+fade on cue REMOVAL")
     ns.Print("  |cff88ff88sound|r [n|id|file|sweep|channel|test|off|list]  cue SFX (bare = next)")
