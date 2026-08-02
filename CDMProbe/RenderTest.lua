@@ -400,9 +400,19 @@ local LAYER_NAMES = {
   [2] = "+ ring (still)",
   [3] = "+ ring SPIN",
   [4] = "+ ring BREATHE",
-  [5] = "+ outer echo  = the shipped cue",
+  -- ⚠ THE ECHO IS THREE CHOICES, NOT ONE, and bundling them is why "rung 5 goes wrong"
+  -- could not say WHICH part of it is wrong.  It is a second draw of the SAME sprite:
+  -- bigger, brighter, and separately rotating.  Split so each rung moves ONE variable —
+  -- and note the BASE ring is deliberately left untouched across 4..7, so nothing else
+  -- changes underneath while you step.
+  [5] = "+ echo, STATIC and dim (does reach help at all?)",
+  [6] = "+ echo at its full light share (is BRIGHTNESS what breaks it?)",
+  [7] = "+ echo's own rotation  = the shipped cue",
 }
-local LAYER_MAX = 5
+local LAYER_MAX = 7
+-- What rung 5 dims the echo to.  A whisper: enough to see whether the extra reach reads,
+-- far too little to dominate.  Rung 6 hands it back whatever the Renderer actually set.
+local ECHO_PROBE_LIGHT = 0.15
 
 
 -- Our own per-icon holder, parented to the ICON (not to the Renderer's holder, which
@@ -1100,7 +1110,7 @@ end
 -- them: the ladder is the more explicit instruction.  Writes into the Renderer's own
 -- pools, like the other in-place knobs — `R:Draw` re-shows everything each draw, and the
 -- rig redraws once per click, so a suppression holds exactly as long as the view does.
-local function applyLadder(renderer, key, glow, shippedEcho, safe)
+local function applyLadder(renderer, key, glow, echo, r, g, b, safe)
   local L = FX.layers
   if not L then return end
   local disc = renderer.cueDiscs and renderer.cueDiscs[key]
@@ -1123,8 +1133,26 @@ local function applyLadder(renderer, key, glow, shippedEcho, safe)
       end
     end
   end
-  if shippedEcho then
-    if L >= LAYER_MAX then shippedEcho:Show() else shippedEcho:Hide() end
+  -- THE ECHO'S THREE RUNGS.  Its shipped light share is READ off the texture rather than
+  -- restated here (R:Draw sets it every pass, and the `echo light` knob may have moved
+  -- it), so this can never drift from what the Renderer actually does.
+  if echo then
+    local shippedA = select(4, echo:GetVertexColor())
+    if L < 5 then
+      echo:Hide()
+      if echo.spin then echo.spin:Stop() end
+    else
+      echo:Show()
+      echo:SetVertexColor(r or 1, g or 1, b or 1,
+                          (L >= 6) and (shippedA or 0.55) or ECHO_PROBE_LIGHT)
+      if echo.spin then
+        if L >= 7 then
+          if not safe(echo.spin, "IsPlaying", false) then echo.spin:Play() end
+        else
+          echo.spin:Stop()
+        end
+      end
+    end
   end
 end
 
@@ -1217,7 +1245,6 @@ local function applyFX(renderer, activeKeys, newOnly)
           end
         end
       end
-      applyLadder(renderer, key, glow, shipped, safeCall)
       local baseA, echoA = echoAlpha()
       local r, g2, b = 1, 1, 1
       if glow then r, g2, b = glow:GetVertexColor() end
@@ -1226,12 +1253,20 @@ local function applyFX(renderer, activeKeys, newOnly)
       -- one place this layer writes back into the renderer's pool rather than decorating
       -- around it — unavoidable, since "same ring, different art / dimmer" is the
       -- experiment.  `R:Draw` re-asserts atlas-independent state (size, colour, points)
-      -- every draw but never re-sets the atlas after creation, so the override sticks;
-      -- the alpha DOES get reset to 1 by the renderer's SetVertexColor, which is why it is
-      -- re-applied here on every pass rather than once.
+      -- every draw but never re-sets the atlas after creation, so the override sticks.
+      --
+      -- ⚠ THE ALPHA IS ONLY WRITTEN WHEN THIS RIG ADDS ITS OWN ECHO, and that guard is a
+      -- BUG FIX (2026-08-01).  It used to write unconditionally, from a era when the
+      -- Renderer left the ring at full alpha and only this file ever dimmed it.  The
+      -- Renderer now OWNS the ring's light (RING_LIGHT 0.45), so writing `echoAlpha()`'s
+      -- rays-off value of 1.0 over the top silently drew the base ring at MORE THAN TWICE
+      -- its shipped brightness — meaning `rt fx` was not the faithful baseline it claims
+      -- to be, and every judgement made in it was made against a hotter ring than the HUD
+      -- draws.  Leave the Renderer's value alone unless we are actually splitting light
+      -- with an FX-owned echo.
       if glow then
         if FX.art then applyArt(glow, FX.art) end
-        glow:SetVertexColor(r, g2, b, baseA)
+        if FX.rays > 1.0 then glow:SetVertexColor(r, g2, b, baseA) end
       end
       -- THE ECHO'S OTHER TWO VARIABLES — size and light share — re-dialled in place, AFTER
       -- the base ring's colour is set above, because sliding the share has to move BOTH
@@ -1247,6 +1282,9 @@ local function applyFX(renderer, activeKeys, newOnly)
           if glow then glow:SetVertexColor(r, g2, b, 1 - FX.echoLight) end
         end
       end
+      -- LAST, so the ladder wins over every knob above it: when you are stepping rungs you
+      -- want the rung's definition on screen, not a leftover from an earlier click.
+      applyLadder(renderer, key, glow, shipped, r, g2, b, safeCall)
       -- 1. BACKING DISC.  Sized off the ring's OUTERMOST drawn extent (the echo, when one
       -- is on), not off the base ring — otherwise turning `rays` up leaves the echo
       -- hanging off an undersized disc.
