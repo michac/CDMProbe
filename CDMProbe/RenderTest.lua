@@ -338,6 +338,13 @@ local FX = {
   --     whole ring, independent of how slow either one turns.
   -- Both dial the SHIPPED layers (unlike every knob above, which adds a layer on top),
   -- and both default neutral.
+  -- THE LAYER LADDER — the answer to "we have been judging four simultaneous motions as
+  -- one lump".  A shipped cue is dot + backing disc + ring + spin + breathe + echo, all
+  -- at once, and three rounds of "it moves too fast" could not say WHICH.  `layers <n>`
+  -- suppresses everything above rung n, so you start at a bare coloured dot and add one
+  -- thing at a time — the first rung that looks wrong IS the culprit, with no arithmetic
+  -- and no guessing.  nil = the shipped stack (all rungs).
+  layers    = nil,
   pulseMul  = 1.0,  -- multiplier on the Renderer's PULSE_SECS
   pulseFloor= nil,  -- override the breathe's floor alpha; nil = Renderer's (0.55).
                     -- 1.0 = no breathe at all, which is the real A/B
@@ -374,6 +381,20 @@ local FX = {
   lastOn  = {},     -- key -> true if it carried a cue on the PREVIOUS draw
 }
 ns._renderTestFX = FX
+
+-- The ladder's rungs, lowest first.  Rung 0 is a bare coloured dot: the simplest thing
+-- that is still a cue.  Each successive rung adds exactly ONE visual element or ONE
+-- motion, so "which layer is wrong" is answered by stepping until it looks wrong.
+local LAYER_NAMES = {
+  [0] = "dot only",
+  [1] = "+ backing disc",
+  [2] = "+ ring (still)",
+  [3] = "+ ring SPIN",
+  [4] = "+ ring BREATHE",
+  [5] = "+ outer echo  = the shipped cue",
+}
+local LAYER_MAX = 5
+
 
 -- Our own per-icon holder, parented to the ICON (not to the Renderer's holder, which
 -- `R:Draw` hides on cull — the ghost has to outlive exactly that).  One frame level
@@ -766,6 +787,9 @@ local drawFxView    -- fwd: every click redraws the view (defined with the fx vi
 local function updatePanel()
   local p = ns._renderTestFxPanel
   if not p then return end
+  p.layersVal:SetText(FX.layers
+    and string.format("|cffffffff%d/%d|r  %s", FX.layers, LAYER_MAX, LAYER_NAMES[FX.layers])
+    or "|cff808080all — the shipped cue|r")
   p.bgVal:SetText(FX.bg and string.format("|cff88ff88on|r  a%.2f s%.2f", FX.bgAlpha, FX.bgScale)
                         or "|cff808080off|r")
   p.glowVal:SetText(string.format("|cffffffffx%d|r  desync |cffffffff%.1f|r%s%s",
@@ -812,7 +836,7 @@ end
 local function ensureFxPanel()
   local p = ns._renderTestFxPanel
   if p then return p end
-  local rows = 9
+  local rows = 10
   local f = CreateFrame("Frame", nil, UIParent)
   f:SetSize(PANEL_W, 34 + rows * ROW_H2 + 30)
   f:SetPoint("CENTER", UIParent, "CENTER", 0, -190)
@@ -860,7 +884,20 @@ local function ensureFxPanel()
   end
 
   local y = -32
+  -- THE LADDER, first because it is where you should start: strip to a bare dot, then
+  -- add one layer at a time until it looks wrong.
+  label("|cffffd100layers|r", y)
+  btn("<", 24, 56, y, bump(function()
+    FX.layers = math.max(0, (FX.layers or LAYER_MAX + 1) - 1)
+  end))
+  btn(">", 24, 82, y, bump(function()
+    local n = (FX.layers or -1) + 1
+    FX.layers = n > LAYER_MAX and nil or n   -- past the top rung = back to the shipped cue
+  end))
+  btn("all", 34, 112, y, bump(function() FX.layers = nil end))
+  local layersVal = value(y)
   -- bg
+  y = y - ROW_H2
   label("bg", y); btn("on/off", 46, 40, y, bump(function() FX.bg = not FX.bg end))
   btn("-", 24, 90, y, bump(function() FX.bgScale = math.max(0.3, FX.bgScale - 0.05); FX.bg = true end))
   btn("+", 24, 116, y, bump(function() FX.bgScale = math.min(2.5, FX.bgScale + 0.05); FX.bg = true end))
@@ -969,14 +1006,14 @@ local function ensureFxPanel()
     FX.scale, FX.spinMul = 1.0, 1.0
     FX.desync, FX.counter = 2.5, true
     FX.pulseMul, FX.pulseFloor, FX.pulseOff = 1.0, nil, false
-    FX.echoOff, FX.echoMul = false, 1.0
+    FX.echoOff, FX.echoMul, FX.layers = false, 1.0, nil
     FX.pop, FX.ghost, FX.peak = false, false, 2.0
     stopSoundLoop(); selectSound(nil, nil, nil, nil)
   end))
   btn("close", 60, 86, y, function() stopSoundLoop(); f:Hide() end)
 
   p = { frame = f, bgVal = bgVal, glowVal = glowVal, ringVal = ringVal,
-        raysVal = raysVal, artVal = artVal, motionVal = motionVal,
+        raysVal = raysVal, artVal = artVal, motionVal = motionVal, layersVal = layersVal,
         popVal = popVal, sndVal = sndVal, sweepVal = sweepVal, loopBtn = loopBtn }
   ns._renderTestFxPanel = p
   return p
@@ -1022,6 +1059,38 @@ local function soundDiagnose()
   else
     ns.Print("  request          |cffff4040REFUSED (willPlay=false) — bad id for this build|r")
     ns.Print("  |cffffffff=> try a different id|r")
+  end
+end
+
+-- Suppress every shipped layer above rung `L`.  Runs AFTER the knobs above and overrides
+-- them: the ladder is the more explicit instruction.  Writes into the Renderer's own
+-- pools, like the other in-place knobs — `R:Draw` re-shows everything each draw, and the
+-- rig redraws once per click, so a suppression holds exactly as long as the view does.
+local function applyLadder(renderer, key, glow, shippedEcho, safe)
+  local L = FX.layers
+  if not L then return end
+  local disc = renderer.cueDiscs and renderer.cueDiscs[key]
+  if disc then if L >= 1 then disc:Show() else disc:Hide() end end
+  if glow then
+    if L >= 2 then glow:Show() else glow:Hide() end
+    if glow.spin then
+      if L >= 3 then
+        if not safe(glow.spin, "IsPlaying", false) then glow.spin:Play() end
+      else
+        glow.spin:Stop()
+      end
+    end
+    if glow.pulse then
+      if L >= 4 then
+        if not safe(glow.pulse, "IsPlaying", false) then glow.pulse:Play() end
+      else
+        glow.pulse:Stop()
+        glow:SetAlpha(1)   -- a stopped breathe leaves the alpha wherever it stalled
+      end
+    end
+  end
+  if shippedEcho then
+    if L >= LAYER_MAX then shippedEcho:Show() else shippedEcho:Hide() end
   end
 end
 
@@ -1114,6 +1183,7 @@ local function applyFX(renderer, activeKeys, newOnly)
           end
         end
       end
+      applyLadder(renderer, key, glow, shipped, safeCall)
       local baseA, echoA = echoAlpha()
       local r, g2, b = 1, 1, 1
       if glow then r, g2, b = glow:GetVertexColor() end
@@ -1322,6 +1392,10 @@ end
 
 local function fxStatus()
   ns.Heading("rt fx — experimental cue treatments")
+  ns.Printf("  layers|cffffffff%s|r", FX.layers
+    and string.format(" %d/%d — %s  |cff808080(every higher layer suppressed)|r",
+                      FX.layers, LAYER_MAX, LAYER_NAMES[FX.layers])
+    or " all — the shipped cue")
   ns.Printf("  bg    |cffffffff%s|r  (alpha %.2f, size %.2fx the ring's texture bounds)",
     FX.bg and "|cff88ff88on|r" or "off", FX.bgAlpha, FX.bgScale)
   ns.Printf("  glow  |cffffffffx%d|r  (%d additive cop%s — the BRIGHTNESS knob)",
@@ -1457,6 +1531,21 @@ local function fxCommand(words)
       ns.Printf("|cffff4040'%s' is not an atlas on this build|r — the ring will draw "
         .. "NOTHING; try another or |cffffffffart reset|r", e.id)
     end
+  elseif verb == "layers" or verb == "layer" then
+    if a1 == "all" or a1 == "off" then FX.layers = nil
+    elseif tonumber(a1) then
+      FX.layers = math.max(0, math.min(LAYER_MAX, math.floor(tonumber(a1))))
+    else
+      local n = (FX.layers or -1) + 1
+      FX.layers = n > LAYER_MAX and nil or n
+    end
+    ns.Heading("rt fx layers — build the cue up one layer at a time")
+    for i = 0, LAYER_MAX do
+      ns.Printf("  %s%d.|r %s", FX.layers == i and "|cff88ff88" or "|cff808080",
+        i, LAYER_NAMES[i])
+    end
+    ns.Printf("now: |cffffffff%s|r", FX.layers
+      and (FX.layers .. " — " .. LAYER_NAMES[FX.layers]) or "all (the shipped cue)")
   elseif verb == "pulse" then
     -- The SHIPPED breathe: `pulse` cycles the period, `pulse flat` removes it entirely
     -- (the real A/B), `pulse off` stops the group.
@@ -1566,6 +1655,9 @@ local function fxCommand(words)
   else
     ns.Heading("rt fx — experimental cue treatments")
     ns.Print("  |cff88ff88(bare)|r        open the PANEL — every knob as a button")
+    ns.Print("  |cffffd100layers|r [n|all]  |cffffd100START HERE.|r Strip the cue to a bare dot and")
+    ns.Print("         add ONE layer at a time — disc, ring, spin, breathe, echo.")
+    ns.Print("         The first rung that looks wrong IS the culprit.")
     ns.Print("  |cff88ff88bg|r [size <n>|alpha <n>]  black backing disc (contrast)")
     ns.Print("  |cff88ff88glow|r [1-4]     additive ring copies — the BRIGHTNESS knob")
     ns.Print("  |cff88ff88desync|r [n] [off]  extra layers' spin ratio vs the base ring —")

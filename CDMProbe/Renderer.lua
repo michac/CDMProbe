@@ -515,15 +515,31 @@ local PULSE_FLOOR = 0.55  -- dims to this fraction, then back to full
 -- baked into the art.  So the ring is drawn AGAIN, larger — and because additive light
 -- STACKS, the light is SPLIT between the two rather than added, so only the REACH grows.
 --
--- COUNTER-ROTATING, and at a LONGER period expressed as a RATIO of whatever the base ring
--- is actually doing.  Two copies turning together read as one thicker ring; opposed
--- rotation keeps the spokes crossing, which is what makes the extra reach legible as rays.
--- The ratio (rather than an absolute period) is what gives LATE the same relationship for
--- free: 4.0s -> 10.0s for everything else, 1.6s -> 4.0s there.
+-- ⚠ LOCKED IN PHASE WITH THE BASE RING — same direction, same period — AND THE REASON IS
+-- THE MOST EXPENSIVE THING LEARNED IN THIS WHOLE ROUND.  It shipped counter-rotating at
+-- 2.5x the base period, inherited from the rig's `desync` knob, on the argument that
+-- opposed rotation keeps the spokes crossing and makes the extra reach legible as rays.
+-- That argument was formed against Blizzard's ring, which is a swept gradient with almost
+-- no angular structure.  Against an 8-FOLD sprite it is wrong, and expensively so:
+--
+--   TWO N-FOLD PATTERNS IN RELATIVE ROTATION PRODUCE A MOIRÉ, and it beats at N x the
+--   RELATIVE angular velocity — 8 alignments per relative revolution here.  At the
+--   original 4.0s/10.0s that beat sat near 2.8 Hz, above flicker fusion, so it read as
+--   texture and nobody questioned it.  Slowing the base to 12.0s (the art-symmetry retune
+--   above) dragged the beat down to ~0.93 Hz, straight into the band where the eye TRACKS
+--   it — and a tracked moiré stalls at each alignment and races between them.  Reported
+--   from the chair as "the spin slows like a rubber band, then speeds up, forever".
+--
+-- So the slowdown did not CREATE the interference, it made it visible; the interference
+-- was there from the first build.  Locked in phase there is no relative motion at all and
+-- the pair reads as ONE ring with longer reach — which is the only thing the echo was ever
+-- for.  ⚠ Any future value other than 1.0 / -360 reintroduces a beat at 8 x the relative
+-- velocity: check it against the ART's symmetry order, not by eye at one speed.
+-- (`/cdmp rt fx echo sync <n>` walks it back out if that is ever wanted deliberately.)
 local ECHO_SCALE      = 1.5    -- echo diameter, relative to the base ring
 local ECHO_LIGHT      = 0.55   -- the echo's share of the light; the base ring keeps 0.45
-local ECHO_SPIN_RATIO = 2.5    -- echo period = base period x this
-local ECHO_DEGREES    = 360    -- ...the OTHER way (the base ring turns -360)
+local ECHO_SPIN_RATIO = 1.0    -- echo period = base period x this.  1.0 = locked, no moiré
+local ECHO_DEGREES    = -360   -- ...the SAME way as the base ring.  See above.
 
 -- THE BACKING DISC — contrast, not light.  The rings are additive over busy icon art, so
 -- they wash out against it; punching a dark hole behind them gives the added light

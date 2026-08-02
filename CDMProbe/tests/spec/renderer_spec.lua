@@ -383,22 +383,28 @@ describe("Renderer", function()
     assert.is_true(disc._color[1] == 0 and disc._color[2] == 0 and disc._color[3] == 0)
   end)
 
-  it("counter-rotates the echo at a RATIO of whatever the base ring's period is", function()
-    -- The ratio (not an absolute period) is what makes the effect survive a retune and
-    -- gives LATE the same relationship for free.  Two copies turning TOGETHER read as one
-    -- thicker ring; opposed rotation is what makes the extra reach legible as rays.
+  it("LOCKS the echo in phase with the base ring — no relative motion, no moiré", function()
+    -- ⚠ THIS TEST USED TO ASSERT THE OPPOSITE, and the reversal is the point.  The echo
+    -- shipped counter-rotating at 2.5x the base period, on the argument that crossing
+    -- spokes make the extra reach legible as rays — an argument formed against Blizzard's
+    -- near-featureless ring.  Against an 8-FOLD sprite two patterns in relative rotation
+    -- MOIRÉ, beating at 8 x the relative angular velocity; once the base slowed to 12s
+    -- that beat fell to ~0.93 Hz, inside the band the eye tracks, and the cue visibly
+    -- stalled and raced.  Locked, the pair reads as one ring with longer reach, which is
+    -- the only thing the echo was ever for.
     local r = rigged(2)
     r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" },
                       { anchorTo = "fake2", emphasis = "LATE" } } })
     for _, key in ipairs({ "fake1", "fake2" }) do
       local base, echo = r.cueGlows[key].rot, r.cueEchoes[key].rot
-      assert.is_true(near(echo._duration, base._duration * 2.5),
+      assert.is_true(near(echo._duration, base._duration),
         key .. ": the echo is not timed off the base ring's own period")
-      assert.is_true(base._degrees * echo._degrees < 0,
-        key .. ": the echo turns the SAME way as the base ring — it will read as one ring")
+      assert.equals(base._degrees, echo._degrees,
+        key .. ": the echo turns against the base ring — that is a moiré, not rays")
     end
-    -- ...and that is a real difference, not both rings sitting at the same number.
+    -- Still timed off the base rather than an absolute, so LATE tracks it for free.
     assert.is_not.equals(r.cueGlows["fake1"].rot._duration, r.cueGlows["fake2"].rot._duration)
+    assert.is_not.equals(r.cueEchoes["fake1"].rot._duration, r.cueEchoes["fake2"].rot._duration)
   end)
 
   it("keeps LATE's ring ~1.39x the base after the GLOW_SCALE retune", function()
@@ -427,7 +433,7 @@ describe("Renderer", function()
     assert.is_true(near(base / late, 2.5),
       "LATE's spin escalation drifted to " .. (base / late) .. "x (want 2.5)")
     -- ...and the echo tracks whichever period each one ended up with, for free.
-    assert.is_true(near(r.cueEchoes["fake2"].rot._duration, late * 2.5))
+    assert.is_true(near(r.cueEchoes["fake2"].rot._duration, late))
   end)
 
   ------------------------------------------------------------------------------
