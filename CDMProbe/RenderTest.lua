@@ -352,6 +352,15 @@ local FX = {
   echoOff   = false,-- hide the Renderer's OWN echo (the `rays` knob adds another one)
   echoMul   = 1.0,  -- multiplier on the Renderer's echo period (kills the moiré as it
                     -- approaches the base's, since in-phase = no relative slide)
+  -- ⚠ THE ECHO HAS THREE INDEPENDENT VARIABLES AND ONLY ONE OF THEM HAS EVER BEEN TESTED.
+  -- Phase was found and fixed (the moiré).  These are the other two, and the second is
+  -- the suspicious one: the echo ships carrying 0.55 of the light while the ring it
+  -- echoes keeps 0.45 — a copy that is BOTH 1.5x bigger AND brighter than its original
+  -- is not an echo, it is the main event.  Nothing could dial either until now, which is
+  -- why "take the echo out" was reached for before "find out which part of it is wrong".
+  echoScale = nil,  -- echo diameter x the base ring; nil = the Renderer's 1.5
+  echoLight = nil,  -- echo's share of the light; nil = the Renderer's 0.55.  The base
+                    -- ring gets 1-this, so the pair's total stays flat as you slide it
   stack   = 1,      -- additive glow copies: 1 = stock, 2 = "doubled"
   pop     = false,  -- one-shot scale on application.  ⚠ A SECOND one: the Renderer pops
   ghost   = false,  -- ...and ghosts natively now, on its own CUE LAYER frame.  These
@@ -804,13 +813,19 @@ local function updatePanel()
   p.artVal:SetText(ae and ("|cffffffff" .. FX.art .. ".|r " .. ae.label) or "|cff808080stock|r")
   -- Absolute seconds, not just the multiplier: the whole point of this row is that nobody
   -- knew the breathe was a 1.2s cycle.
-  p.motionVal:SetText(string.format("pulse %s  echo %s%s",
+  p.motionVal:SetText(string.format("pulse %s%s   echo %s",
     FX.pulseOff and "|cffff8080off|r"
       or (FX.pulseFloor == 1.0 and "|cffffcc00flat|r"
           or string.format("|cffffffff%.1fs|r cyc", 0.60 * FX.pulseMul * 2)),
-    FX.echoOff and "|cffff8080off|r" or string.format("|cffffffff%.2fx|r", FX.echoMul),
-    (FX.pulseMul == 1.0 and not FX.pulseOff and not FX.pulseFloor and not FX.echoOff
-      and FX.echoMul == 1.0) and "  |cff808080(shipped)|r" or ""))
+    (FX.pulseMul == 1.0 and not FX.pulseOff and not FX.pulseFloor)
+      and "  |cff808080(shipped)|r" or "",
+    FX.echoOff and "|cffff8080hidden|r" or "|cff88ff88on|r"))
+  -- The echo's three variables side by side, with the SHIPPED value in brackets, because
+  -- the whole point is that two of them had never been moved off it.
+  p.echoVal:SetText(string.format("light |cffffffff%.2f|r%s  size |cffffffff%.2fx|r%s  spin |cffffffff%.2fx|r",
+    FX.echoLight or 0.55, FX.echoLight and "" or "|cff808080(stock)|r",
+    FX.echoScale or 1.5, FX.echoScale and "" or "|cff808080(stock)|r",
+    FX.echoMul))
   p.popVal:SetText(string.format("%s   ghost %s",
     FX.pop and "|cff88ff88on|r" or "|cff808080off|r",
     FX.ghost and "|cff88ff88on|r" or "|cff808080off|r"))
@@ -836,7 +851,7 @@ end
 local function ensureFxPanel()
   local p = ns._renderTestFxPanel
   if p then return p end
-  local rows = 10
+  local rows = 11
   local f = CreateFrame("Frame", nil, UIParent)
   f:SetSize(PANEL_W, 34 + rows * ROW_H2 + 30)
   f:SetPoint("CENTER", UIParent, "CENTER", 0, -190)
@@ -953,11 +968,28 @@ local function ensureFxPanel()
     FX.pulseFloor = FX.pulseFloor and nil or 1.0
   end))
   btn("echo", 36, 122, y, bump(function() FX.echoOff = not FX.echoOff end))
-  btn("sync", 34, 160, y, bump(function()
+  local motionVal = value(y)
+  -- THE ECHO'S TWO UNTESTED VARIABLES, on their own row because troubleshooting it is
+  -- the open question.  `dim` walks its light share DOWN (it ships at 0.55, i.e. brighter
+  -- than the ring it echoes — start here); `size` walks its diameter down from 1.5x.
+  y = y - ROW_H2
+  label("echo", y)
+  btn("dim", 34, 40, y, bump(function()
+    FX.echoLight = (FX.echoLight or 0.55) - 0.10
+    if FX.echoLight < 0.05 then FX.echoLight = nil end   -- past the bottom = back to stock
+  end))
+  btn("size", 36, 78, y, bump(function()
+    FX.echoScale = (FX.echoScale or 1.5) - 0.15
+    if FX.echoScale < 1.05 then FX.echoScale = nil end
+  end))
+  btn("sync", 34, 118, y, bump(function()
     -- Toward 1.0 the echo locks in phase with the base and the moiré disappears.
     FX.echoMul = FX.echoMul <= 0.45 and 1.0 or FX.echoMul - 0.15
   end))
-  local motionVal = value(y)
+  btn("stock", 40, 156, y, bump(function()
+    FX.echoLight, FX.echoScale, FX.echoMul = nil, nil, 1.0
+  end))
+  local echoVal = value(y)
   -- pop / ghost
   y = y - ROW_H2
   label("pop", y)
@@ -1007,6 +1039,7 @@ local function ensureFxPanel()
     FX.desync, FX.counter = 2.5, true
     FX.pulseMul, FX.pulseFloor, FX.pulseOff = 1.0, nil, false
     FX.echoOff, FX.echoMul, FX.layers = false, 1.0, nil
+    FX.echoLight, FX.echoScale = nil, nil
     FX.pop, FX.ghost, FX.peak = false, false, 2.0
     stopSoundLoop(); selectSound(nil, nil, nil, nil)
   end))
@@ -1014,6 +1047,7 @@ local function ensureFxPanel()
 
   p = { frame = f, bgVal = bgVal, glowVal = glowVal, ringVal = ringVal,
         raysVal = raysVal, artVal = artVal, motionVal = motionVal, layersVal = layersVal,
+        echoVal = echoVal,
         popVal = popVal, sndVal = sndVal, sweepVal = sweepVal, loopBtn = loopBtn }
   ns._renderTestFxPanel = p
   return p
@@ -1198,6 +1232,20 @@ local function applyFX(renderer, activeKeys, newOnly)
       if glow then
         if FX.art then applyArt(glow, FX.art) end
         glow:SetVertexColor(r, g2, b, baseA)
+      end
+      -- THE ECHO'S OTHER TWO VARIABLES — size and light share — re-dialled in place, AFTER
+      -- the base ring's colour is set above, because sliding the share has to move BOTH
+      -- ends of it or the total light drifts as you dial.  This is the pair that had no
+      -- knob, and the pair most likely to explain "the echo is the layer that goes wrong".
+      if shipped and (FX.echoScale or FX.echoLight) then
+        if FX.echoScale then
+          local d = ring * FX.echoScale
+          shipped:SetSize(d, d)
+        end
+        if FX.echoLight then
+          shipped:SetVertexColor(r, g2, b, FX.echoLight)
+          if glow then glow:SetVertexColor(r, g2, b, 1 - FX.echoLight) end
+        end
       end
       -- 1. BACKING DISC.  Sized off the ring's OUTERMOST drawn extent (the echo, when one
       -- is on), not off the base ring — otherwise turning `rays` up leaves the echo
@@ -1418,9 +1466,12 @@ local function fxStatus()
     FX.pulseOff and "off" or (FX.pulseFloor == 1.0 and "flat"
       or string.format("%.2fs cycle", 0.60 * FX.pulseMul * 2)),
     FX.pulseMul == 1.0 and "at the shipped period" or ("x" .. FX.pulseMul))
-  ns.Printf("  echo  |cffffffff%s|r  — the SHIPPED echo. Counter-rotating 8-fold sprites "
-    .. "align 8x per relative turn: a ~1 Hz shimmer whatever the periods are",
-    FX.echoOff and "off" or string.format("period x%.2f", FX.echoMul))
+  ns.Printf("  echo  |cffffffff%s|r  light |cffffffff%.2f|r%s  size |cffffffff%.2fx|r%s  spin |cffffffff%.2fx|r",
+    FX.echoOff and "hidden" or "on",
+    FX.echoLight or 0.55, FX.echoLight and "" or " (stock)",
+    FX.echoScale or 1.5, FX.echoScale and "" or " (stock)", FX.echoMul)
+  ns.Print("        |cffffd100the echo ships BRIGHTER (0.55) than the ring it echoes (0.45)|r "
+    .. "— `echo light` is the variable that has never been moved")
   ns.Printf("  pop   |cffffffff%s|r  ghost |cffffffff%s|r  (peak %.1fx over %.2fs)",
     FX.pop and "on" or "off", FX.ghost and "on" or "off", FX.peak, FX.secs)
   ns.Printf("  sound |cffffffff%s|r  (channel %s)%s", FX.soundLabel or "off",
@@ -1556,8 +1607,17 @@ local function fxCommand(words)
   elseif verb == "echo" then
     -- The SHIPPED echo (`rays` adds a SECOND one on top).  `echo sync <n>` walks its
     -- period toward the base's, which is what kills the counter-rotation moiré.
+    local a2 = tonumber(words[4])
     if a1 == "sync" then
-      FX.echoMul = tonumber(words[4]) or (FX.echoMul <= 0.45 and 1.0 or FX.echoMul - 0.15)
+      FX.echoMul = a2 or (FX.echoMul <= 0.45 and 1.0 or FX.echoMul - 0.15)
+    elseif a1 == "light" or a1 == "dim" then
+      FX.echoLight = a2 or ((FX.echoLight or 0.55) - 0.10)
+      if FX.echoLight < 0.05 then FX.echoLight = nil end
+    elseif a1 == "size" then
+      FX.echoScale = a2 or ((FX.echoScale or 1.5) - 0.15)
+      if FX.echoScale < 1.05 then FX.echoScale = nil end
+    elseif a1 == "stock" then
+      FX.echoLight, FX.echoScale, FX.echoMul = nil, nil, 1.0
     else FX.echoOff = not FX.echoOff end
   elseif verb == "glow" then
     FX.stack = math.max(1, math.min(4, math.floor(tonumber(a1 or "") or (FX.stack + 1))))
@@ -1668,8 +1728,9 @@ local function fxCommand(words)
     ns.Print("  |cff88ff88art|r [n|reset|list]  swap the ring ART — incl. our CC0 TGAs")
     ns.Print("  |cff88ff88pulse|r [n|flat|off]  the SHIPPED breathe — |cffffd100the other")
     ns.Print("         continuous motion|r, a 1.2s cycle nothing here could dial before")
-    ns.Print("  |cff88ff88echo|r [sync <n>]   the SHIPPED echo: off, or walk its period")
-    ns.Print("         toward the base's — |cffffd100that is what kills the moiré|r")
+    ns.Print("  |cff88ff88echo|r [light|size|sync|stock]  the SHIPPED echo. |cffffd100light is the")
+    ns.Print("         untested one|r — it ships at 0.55, BRIGHTER than the 0.45 ring it")
+    ns.Print("         echoes; size walks 1.5x down; sync walks its period to the base's")
     ns.Print("  |cff88ff88pop|r [peak]     one-shot scale on cue APPLICATION")
     ns.Print("  |cff88ff88ghost|r          one-shot scale+fade on cue REMOVAL")
     ns.Print("  |cff88ff88sound|r [n|id|file|sweep|channel|test|off|list]  cue SFX (bare = next)")
