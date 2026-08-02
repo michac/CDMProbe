@@ -466,6 +466,15 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   eligible", never "cannot fire" (lower bound).
     DecisionLog.lua               the decision log: one greppable `S{} G{} B{}` line
                                   per decision change -> CDMProbeDB.decisionlog.
+                                  ⚠ Plus the EDGE MARKERS `# config` and (v0.32.75)
+                                  `# combat start`/`# combat end`. The combat one is
+                                  stamped ABOVE the change-only dedup and that placement
+                                  is load-bearing: pulling from an idle bar does not move
+                                  the decision, so a marker below the dedup would be
+                                  swallowed exactly when it matters. It exists because
+                                  `w:-` is only meaningful IN a pull, and entries are
+                                  stored PRE-RENDERED — so combat can never be recovered
+                                  from an older capture.
                                   Short-codes come from per-spec `abbr`/`spec.log`.
                                   ⚠ The `PW:` field reads guidance.resourceBars (Phase 6),
                                   NOT pulse.power — the bar carries both `value` and

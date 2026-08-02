@@ -282,6 +282,10 @@ function H.installGlobals()
   -- they ask, so every refusal path below runs the real code.
   _G.issecrettable    = function(t) return H.secretTable[t] == true end
   _G.hooksecurefunc   = function() end
+  -- `date` — a FIXED stamp, because the harness clock is fixed.  DecisionLog.Record calls it
+  -- once per session header; a real date() would make a session header non-deterministic and
+  -- there is nothing to learn from the wall clock in a unit test.
+  _G.date             = function() return "2026-01-01 00:00:00" end
   -- POWER, both rails (Phase 6.2).  `UnitPower(unit, type, unmodified)` returns the game's
   -- INTERNAL units when the flag is set — Soul Shards are stored as 0-50 fragments and
   -- displayed as 0-5 whole shards — and State reads BOTH.  Driven off `fx.power[type]`:

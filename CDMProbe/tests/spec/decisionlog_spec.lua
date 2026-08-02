@@ -1,10 +1,16 @@
--- decisionlog_spec.lua — the decision-log RENDER gate.
+-- decisionlog_spec.lua — the decision-log RENDER gate, plus Record's EDGE MARKERS.
 --
--- Only ns.DecisionLog.Render (PURE) is unit-tested: it takes hand-built pulse/guidance/
--- drawList and emits the `S{…} G{…} B{…}` string.  Record (session push, date(),
--- ns.version, the ring) is NOT tested — mock_ns provides no `date` and doesn't load
--- Core.lua, so ns.version is unset; all that clock/db/version logic lives in Record,
--- out of Render, precisely so this spec needs none of it.
+-- ns.DecisionLog.Render (PURE) is the bulk of it: hand-built pulse/guidance/drawList in,
+-- the `S{…} G{…} B{…}` string out.
+--
+-- ⚠ RECORD IS NOW PARTLY TESTED TOO, and the reason it was not is worth stating because it
+-- expired rather than being wrong.  The old note here said Record is "session push, date(),
+-- ns.version, the ring" — pure bookkeeping deliberately kept OUT of Render so this spec
+-- needed no `date`/`ns.db` fakes.  That held until Record grew a **correctness rule**: the
+-- combat-edge marker must be stamped ABOVE the change-only dedup, because a pull that starts
+-- while the decision happens not to move would otherwise be swallowed.  A rule whose whole
+-- content is "this code is above that code" is exactly the kind a refactor silently breaks,
+-- so it gets a test — and the harness gaps turned out to be one `date` fake and a table.
 --
 -- What it asserts: a normal winner line, the no-winner (`w:-`) case, the dropped-cue
 -- (`×`) case, shard/proc/cast/readiness encodings, and DETERMINISM (two pairs()-orders
@@ -67,7 +73,9 @@ local function build(f)
   if f.core then buffs[ID.CORE] = true end
 
   return {
-    at = 1000, combat = true,
+    -- `f.combat` defaults TRUE, so every existing call site is unchanged; the Record block
+    -- at the bottom of this file drives it both ways for the combat-edge marker.
+    at = 1000, combat = (f.combat ~= false),
     -- Raw power, as State emits it.  ⚠ The log's PW field does NOT read this any more —
     -- since roster-state-plan Phase 6 it reads guidance.resourceBars, the one place that
     -- carries BOTH halves of the string (see `bars` on the guidance helper below).
@@ -304,5 +312,106 @@ describe("DecisionLog.Render", function()
     g2.cues[ID.DREAD]     = { draw = true, emphasis = "SOON" }
     local dl = drawList{ CID.TYRANT, CID.DREAD, CID.IMPLOSION }
     assert.are.equal(ns.DecisionLog.Render(pulse, g1, dl), ns.DecisionLog.Render(pulse, g2, dl))
+  end)
+end)
+
+--------------------------------------------------------------------------------
+-- DecisionLog.Record — the EDGE MARKERS (`# combat`, `# config`) and the ring.
+--------------------------------------------------------------------------------
+-- The v0.32.36 re-fly's acceptance is `w:-` (no winner) ≈ 0 % **in a pull**, and out of
+-- combat "no winner" is the CORRECT answer — so without a combat split the ratio is
+-- unreadable, which is exactly what happened to the 2026-08-01 capture (53.6 % across
+-- 21,048 lines, meaningless). These markers are the split.
+describe("DecisionLog.Record (the edge markers)", function()
+  local ns, DL
+
+  -- The entries of the one live session.
+  local function entries()
+    return ns.db.decisionlog[#ns.db.decisionlog].entries
+  end
+
+  local function combatMarks()
+    local out = {}
+    for _, e in ipairs(entries()) do
+      local m = e:match("# combat (%a+)")
+      if m then out[#out + 1] = m end
+    end
+    return out
+  end
+
+  -- Drive one tick. `content` varies the decision so a caller can hold it FIXED on purpose.
+  local function tick(facts, cues)
+    DL.Record(build(facts), guidance(cues or { [ID.SB] = "ROTATION" }), { cues = {} })
+  end
+
+  before_each(function()
+    ns = H.fresh()
+    ns.db = {}                 -- Record refuses to run without it (pre-ADDON_LOADED guard)
+    H.load("DecisionLog.lua")
+    DL = ns.DecisionLog
+    DL.session, DL.t0, DL.lastContent, DL.lastConfig, DL.lastCombat = nil, nil, nil, nil, nil
+  end)
+
+  it("stamps the session's opening combat state as a BASELINE, not an edge", function()
+    tick({ combat = false })
+    assert.same({ "end" }, combatMarks())   -- "from here, out of combat"
+  end)
+
+  it("says so when a session BEGINS in combat (a login inside a pull)", function()
+    tick({ combat = true })
+    assert.same({ "start" }, combatMarks())
+  end)
+
+  -- ⚠ THE LOAD-BEARING ONE, AND THE MUTATION CHECK FOR THE WHOLE FEATURE.  Both ticks below
+  -- render byte-identical content (same facts, same cues, fixed clock), so the change-only
+  -- dedup drops the second one entirely. If the combat stamp is ever moved BELOW that dedup,
+  -- the edge vanishes and this goes red — which is the only thing standing between the
+  -- marker and the failure mode it exists to prevent: pulling from an idle bar, where the
+  -- recommended press does not change at the moment combat begins.
+  it("stamps a combat edge even when the DECISION does not change", function()
+    tick({ combat = false })
+    local before = #entries()
+    tick({ combat = true })                 -- identical decision, different combat state
+    assert.same({ "end", "start" }, combatMarks())
+    -- ...and it really was deduped: the edge marker is the ONLY thing appended.
+    assert.equals(before + 1, #entries())
+    assert.truthy(entries()[#entries()]:find("# combat start", 1, true))
+  end)
+
+  it("stamps the exit edge too", function()
+    tick({ combat = true })
+    tick({ combat = false })
+    assert.same({ "start", "end" }, combatMarks())
+  end)
+
+  it("does not re-stamp while the combat state holds", function()
+    tick({ combat = true })
+    tick({ combat = true, shards = 1 })     -- content moves, combat does not
+    tick({ combat = true, shards = 2 })
+    assert.same({ "start" }, combatMarks())
+  end)
+
+  it("marks a full pull cycle in order, so a reader can slice the session", function()
+    tick({ combat = false })
+    tick({ combat = true,  shards = 1 })
+    tick({ combat = false, shards = 2 })
+    tick({ combat = true,  shards = 3 })
+    assert.same({ "end", "start", "end", "start" }, combatMarks())
+  end)
+
+  it("still stamps the config line, and the decision line, around it", function()
+    tick({ combat = true })
+    local joined = table.concat(entries(), "\n")
+    assert.truthy(joined:find("# combat start", 1, true))
+    assert.truthy(joined:find("# config", 1, true))
+    assert.truthy(joined:find("S{CD:", 1, true))
+  end)
+
+  -- The ring is bounded, and the marker path appends too — so it has to trim as well, or a
+  -- long session with many combat edges grows past the cap on a path nobody was watching.
+  it("keeps the entry ring bounded across the marker path", function()
+    for i = 1, 40 do tick({ combat = (i % 2 == 0), shards = i % 5 }) end
+    assert.is_true(#entries() <= 5000)
+    assert.is_true(#entries() > 0)
   end)
 end)

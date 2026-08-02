@@ -21,8 +21,11 @@
 --   * Render(pulse, guidance, drawList) -> string is PURE — no frames, no db, no clock.
 --     Builds the `S{…} G{…} B{…}` content.  This is the busted-testable core.
 --   * Record(...) is the stateful wrapper — lazy session, the change-only dedup, the
---     ring trim, the clock/date/version.  Kept OUT of Render so the tests need no
---     `date`/`ns.version` (mock_ns provides neither).
+--     ring trim, the clock/date/version, and the EDGE MARKERS (`# combat`, `# config`).
+--     The split still earns its place: Render stays pure and is the bulk of the test
+--     surface.  ⚠ But Record is no longer untested — the combat marker carries a rule
+--     ("stamped ABOVE the dedup") that a refactor could silently break, so
+--     decisionlog_spec drives it through a `date` fake and a table for `ns.db`.
 --
 -- SPEC-PARAMETERIZED (multi-spec Phase 4).  The log holds NO spell constants of its own:
 -- per-ability short codes ride `abbr` on each ns.SpecInfo(id) entry, and the non-per-
@@ -393,6 +396,7 @@ DL.session     = nil   -- in-memory handle; nil ⇒ first Record of this load st
 DL.t0          = nil
 DL.lastContent = nil
 DL.lastConfig  = nil   -- last "<spec> tracked:<codes>" stamped into this session
+DL.lastCombat  = nil   -- last combat state stamped into this session (nil ⇒ none yet)
 
 function DL.Record(pulse, guidance, drawList)
   if not ns.db then return end   -- pre-ADDON_LOADED; nothing to persist to
@@ -410,14 +414,52 @@ function DL.Record(pulse, guidance, drawList)
     log[#log + 1] = sess
     while #log > SESSIONS do table.remove(log, 1) end
     DL.session, DL.t0, DL.lastContent, DL.lastConfig = sess, GetTime(), nil, nil
+    DL.lastCombat = nil
+  end
+
+  local entries = DL.session.entries
+  local function append(line)
+    entries[#entries + 1] = line
+    while #entries > CAP do table.remove(entries, 1) end
+  end
+
+  -- ── COMBAT EDGE ────────────────────────────────────────────────────────────
+  -- ⚠ STAMPED **ABOVE** THE CHANGE-ONLY DEDUP, AND THAT PLACEMENT IS THE WHOLE POINT.
+  -- Combat state is NOT part of `content`, so a combat edge that does not happen to move
+  -- the decision — idling at a full bar and pulling, which is the normal way a pull starts —
+  -- would be swallowed by the `content == DL.lastContent` early return below.  A transition
+  -- the log exists to mark must not be conditional on something else changing.
+  --
+  -- WHY THE LOG NEEDS THIS AT ALL.  The v0.32.36 re-fly's acceptance is `w:-` (no winner)
+  -- ≈ 0 % **in a pull**, and out of combat "no winner" is the CORRECT answer — so idle time
+  -- inflates the ratio without anything being wrong.  The 2026-08-01 capture measured 53.6 %
+  -- across 21,048 lines and that number is simply unreadable for the purpose: a line carried
+  -- no combat flag, and its clock is session-relative (`GetTime() - DL.t0`), so it could not
+  -- be correlated with the flight ring's absolute `GetTime()` stamps either.  This marker is
+  -- the split, and `wowkb.cdmp decisionlog --split` computes the ratio from it.
+  --
+  -- ⚠ AND IT COULD NOT BE RECOVERED RETROACTIVELY.  `entries` holds PRE-RENDERED STRINGS —
+  -- the string IS the record — so no extractor change can put combat back into a capture
+  -- taken before this shipped.  docs/status.md claimed the old log could be re-read "with no
+  -- new flying"; that was wrong, and the capture on disk is spent for this purpose.
+  --
+  -- ⚠ THE FIRST `# combat` LINE OF A SESSION IS A BASELINE, NOT AN EDGE.  `lastCombat` starts
+  -- nil, so the first Record always stamps the state it observes — usually `end` at t0.0,
+  -- meaning "from here, out of combat".  That is deliberate: a session that BEGINS in combat
+  -- (a login inside a pull) then says so, instead of leaving the reader to assume.
+  --
+  -- (`# config` deliberately stays BELOW the dedup: a spec or hero swap always moves the
+  -- tracked set, hence always moves `content`, so it cannot be swallowed the way this can.)
+  local inCombat = pulse.combat and true or false
+  if inCombat ~= DL.lastCombat then
+    DL.lastCombat = inCombat
+    append(string.format("t%.1f # combat %s", GetTime() - DL.t0, inCombat and "start" or "end"))
   end
 
   -- Change-only: skip a tick whose whole decision is byte-identical to the last logged.
   local content = DL.Render(pulse, guidance, drawList)
   if content == DL.lastContent then return end
   DL.lastContent = content
-
-  local entries = DL.session.entries
 
   -- CONFIG RE-STAMP.  The session header records the tracked set at the session's FIRST
   -- record, which is accurate for t0.0 and MISLEADING for everything after any later
@@ -432,9 +474,8 @@ function DL.Record(pulse, guidance, drawList)
     .. " tracked:" .. trackedCodes(pulse)
   if config ~= DL.lastConfig then
     DL.lastConfig = config
-    entries[#entries + 1] = string.format("t%.1f # config %s", GetTime() - DL.t0, config)
+    append(string.format("t%.1f # config %s", GetTime() - DL.t0, config))
   end
 
-  entries[#entries + 1] = string.format("t%.1f %s", GetTime() - DL.t0, content)
-  while #entries > CAP do table.remove(entries, 1) end
+  append(string.format("t%.1f %s", GetTime() - DL.t0, content))
 end
