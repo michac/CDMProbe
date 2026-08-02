@@ -38,6 +38,12 @@ local DEFAULTS = {
   -- across a whole in-game pass; read by `wowkb.cdmp flight`, which turns it into a
   -- PASS/FAIL report.  Wiped on every arm — a flight is one session.
   flight = {},
+  -- The `/cdmp rt fx` CAPTURE — one sample per view change, recording what is ACTUALLY on
+  -- each cue (the cue layer's scale, the ring's period/direction/alpha, the echo's) plus
+  -- the knob state that produced it.  Read by `wowkb.cdmp rtfx`.  Exists because dialling
+  -- a visual by copy-pasting a screenful of chat per rung costs more than the judgement —
+  -- the same complaint that turned the acceptance pass into `/cdmp flight`.  Bounded ring.
+  rtfx = {},
   -- The moveable virtual-icon panel's saved point (HudVirtual.lua, `/cdmp panel`):
   -- `{ point, relPoint, x, y }`.  The EMPTY table means "no saved position" — RestorePosition
   -- detects that via the absent `point` and falls back to the default anchor, exactly as

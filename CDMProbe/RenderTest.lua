@@ -1173,6 +1173,79 @@ local function safeCall(obj, method, dflt)
   return dflt
 end
 
+
+--------------------------------------------------------------------------------
+-- THE FX CAPTURE — the dump, recorded instead of printed.
+--------------------------------------------------------------------------------
+-- WHY: reading the dump out of chat means copying a screenful per rung, and a ladder is
+-- EIGHT rungs across TWO paths.  The transcription cost swamped the experiment, which is
+-- the same complaint that turned `/cdmp flight` from a ten-command checklist into a
+-- recorder.  So this is that shape again, applied to the render test: every view change
+-- snapshots what is ACTUALLY on each cue into `CDMProbeDB.rtfx`, and
+-- `uv run python -m wowkb.cdmp rtfx` reads it on the desktop.
+--
+-- IT FIRES ON EVERY REDRAW, not on a `dump` verb — so walking the rungs IS the recording
+-- and there is nothing extra to remember to type.  The knob state that produced each
+-- sample rides along, because a measurement without its inputs is not a measurement.
+-- ⚠ SavedVariables only flush on **/reload**.
+local RTFX_MAX = 60   -- a bounded ring; two full ladder walks and change
+
+-- Everything numeric, read off the LIVE widgets through the same guarded reader the
+-- printed dump uses.  Nothing here is computed from what the code SHOULD have done.
+local function captureFx(renderer, activeKeys)
+  if not (ns.db and renderer and activeKeys) then return end
+  local ring = ns.db.rtfx
+  if type(ring) ~= "table" then ring = {}; ns.db.rtfx = ring end
+  local cues = {}
+  for key, emph in pairs(activeKeys) do
+    local lay  = renderer.cueLayers and renderer.cueLayers[key]
+    local glow = renderer.cueGlows and renderer.cueGlows[key]
+    local echo = renderer.cueEchoes and renderer.cueEchoes[key]
+    local dot  = renderer.cueFrames and renderer.cueFrames[key]
+    cues[#cues + 1] = {
+      key = tostring(key), emphasis = tostring(emph),
+      dotW = safeCall(dot, "GetWidth", 0),
+      -- THE CUE LAYER: the frame the ring is parented to.  Its scale is what the arrival
+      -- pop animates, and a rotating texture inside a scaled/non-uniform frame is the
+      -- shape of every "the spin surges" report.
+      layW = lay and safeCall(lay, "GetWidth", 0) or nil,
+      layH = lay and safeCall(lay, "GetHeight", 0) or nil,
+      layScale = lay and safeCall(lay, "GetScale", 1) or nil,
+      layEff   = lay and safeCall(lay, "GetEffectiveScale", 1) or nil,
+      popPlaying = (lay and lay.pop) and (safeCall(lay.pop, "IsPlaying", false) and 1 or 0) or nil,
+      ringW = glow and safeCall(glow, "GetWidth", 0) or nil,
+      ringH = glow and safeCall(glow, "GetHeight", 0) or nil,
+      ringShown = glow and (glow:IsShown() and 1 or 0) or nil,
+      spinSecs = glow and safeCall(glow.rot, "GetDuration", 0) or nil,
+      spinDeg  = glow and safeCall(glow.rot, "GetDegrees", 0) or nil,
+      spinPlay = glow and (safeCall(glow.spin, "IsPlaying", false) and 1 or 0) or nil,
+      pulseSecs = glow and safeCall(glow.pulseAnim, "GetDuration", 0) or nil,
+      pulsePlay = glow and (safeCall(glow.pulse, "IsPlaying", false) and 1 or 0) or nil,
+      ringAlpha = glow and (select(4, glow:GetVertexColor()) or 1) or nil,
+      regionAlpha = glow and safeCall(glow, "GetAlpha", 1) or nil,
+      echoW = echo and safeCall(echo, "GetWidth", 0) or nil,
+      echoShown = echo and (echo:IsShown() and 1 or 0) or nil,
+      echoSecs = echo and safeCall(echo.rot, "GetDuration", 0) or nil,
+      echoDeg  = echo and safeCall(echo.rot, "GetDegrees", 0) or nil,
+      echoPlay = echo and (safeCall(echo.spin, "IsPlaying", false) and 1 or 0) or nil,
+      echoAlpha = echo and (select(4, echo:GetVertexColor()) or 1) or nil,
+    }
+  end
+  ring[#ring + 1] = {
+    t = GetTime(),
+    -- The inputs that produced this sample.  `layers` is the headline: the whole point is
+    -- to diff one rung against another, and against the same rung reached another way.
+    layers = FX.layers, noPop = FX.noPop and 1 or 0,
+    scale = FX.scale, spinMul = FX.spinMul, rays = FX.rays, stack = FX.stack,
+    bg = FX.bg and 1 or 0, art = FX.art,
+    pulseMul = FX.pulseMul, pulseFloor = FX.pulseFloor, pulseOff = FX.pulseOff and 1 or 0,
+    echoOff = FX.echoOff and 1 or 0, echoMul = FX.echoMul,
+    echoLight = FX.echoLight, echoScale = FX.echoScale,
+    cues = cues,
+  }
+  while #ring > RTFX_MAX do table.remove(ring, 1) end
+end
+
 -- Decorate whatever `R:Draw` just drew.  `activeKeys` = the handles carrying a cue this
 -- frame; everything else gets its FX hidden and (if it just dropped) a ghost.
 -- `newOnly` limits the pop + sound to RISING EDGES, so a static fixture redraw doesn't
@@ -1406,6 +1479,7 @@ local function applyFX(renderer, activeKeys, newOnly)
   FX.lastOn = {}
   for key in pairs(activeKeys) do FX.lastOn[key] = true end
   FX.lastKeys, FX.lastRenderer = activeKeys, renderer   -- for `rt fx dump`
+  captureFx(renderer, activeKeys)                       -- ...and for the desktop
 end
 
 -- LAYER DUMP — read back what is ACTUALLY on screen, per handle, instead of reasoning
