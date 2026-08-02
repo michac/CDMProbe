@@ -1939,11 +1939,18 @@ function ns.RenderTest(arg)
     end
     ns.Print("  |cff88ff88rotate|r — one cue hopping across 5 panels (live)")
     ns.Print("  |cff88ff88fx|r — the states card + the EXPERIMENTAL treatments (`rt fx` for knobs)")
-    ns.Print("usage: |cffffffff/cdmp rt <name>|r | fx | rotate | off")
+    ns.Print("  |cff88ff88lab|r — the RENDER LAB: three blind implementations of the "
+      .. "spinning ring, side by side (`rt lab 1|2|3` magnifies one)")
+    ns.Print("usage: |cffffffff/cdmp rt <name>|r | fx | lab | rotate | off")
     return
   end
   stopRotate()                               -- any view change cancels a live rotate
   clearProcGlow()                            -- ...and drops any native proc glow
+  -- THE RENDER LAB (RenderLab.lua) is a clean-slate experiment that shares nothing with
+  -- this file — but it still goes through this one door, so `/cdmp rt off` tears it down
+  -- with everything else and no second teardown path can drift from this one.
+  if words[1] == "lab" then return ns.RenderLab(words[2]) end
+  ns.RenderLabHide()                         -- ...and any other view drops the lab
   if words[1] == "fx" then return fxCommand(words) end
   stopSoundLoop()                            -- ...and silences an audition still looping
   clearFX()                                  -- ...and any experimental chrome
