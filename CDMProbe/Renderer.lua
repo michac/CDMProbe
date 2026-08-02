@@ -294,19 +294,38 @@ end
 -- play, 60 % of them SWAPS), so without a transient a swap reads as "the ring was always
 -- there".  The pop is that transient, on both halves of the swap.
 --
--- ⚠ WRITTEN FRESH, DELIBERATELY NOT RECOVERED.  v1 had a pop too
--- (archive/cue-treatment-v1.lua) and `popPlaying` was the ONE field that differed between
--- the code path which reproduced the old "the spin rubber-bands forever" artefact and the
--- path that did not.  That makes v1's pop a suspect, so none of it was copied: different
--- peak, different structure, and the ordering rules below were re-derived rather than
--- inherited.  Do not "restore" it from the archive.
+-- ⚠⚠ THE POP IS THE CONFIRMED CAUSE OF THE SPIN ARTEFACT — REPRODUCED TWICE, IN TWO
+-- INDEPENDENT IMPLEMENTATIONS (2026-08-02, in play).  Read this before touching POP_PEAK.
 --
--- ⚠ GENTLER THAN v1's 2.0x ON PURPOSE.  v1 DOUBLED the cue.  1.35x is less likely to
--- interact with the rings it is scaling, and it is a one-number dial afterwards:
--- POP_PEAK = 1.0 disables the visual half outright while leaving every bit of the
--- bookkeeping below intact — the first thing to try if the rings ever look stuck after a
--- cue arrives.
-local POP_PEAK = 1.35
+-- v1 had a pop, and `popPlaying` was the ONE field that differed between the code path
+-- which reproduced "the spin slows like a rubber band, then races, forever" and the path
+-- which did not (archive/cue-treatment-v1.lua).  That was a suspect off a SavedVariables
+-- capture, not a cause.  So v2's pop was WRITTEN FRESH and shares almost nothing with it:
+-- different peak (1.35x vs 2.0x), different duration, ONE animation for both edges instead
+-- of a pop plus a ghost, ordering rules re-derived, bookkeeping rewritten.  **It brought
+-- the artefact straight back.**  Two implementations with nothing in common but their
+-- SHAPE is no longer a suspect — it is a reproduction, and it indicts the shape:
+--
+--     A `Scale` ANIMATION RUNNING ON AN ANCESTOR FRAME OF THE ROTATING TEXTURES.
+--
+-- ⚠ AND NOTE WHAT DID *NOT* CATCH IT.  renderer_spec pins that a pop never calls Play() on
+-- either ring's Rotation group, and that assertion is TRUE and still passes — so the
+-- mechanism is not a restart.  An off-game harness records what a widget was TOLD; this is
+-- about what the renderer DOES with a transform, so no source gate here can see it.  Do
+-- not add a test and believe the question is closed.
+--
+-- POP_PEAK IS CURRENTLY 1.0 — THE VISUAL HALF IS OFF, ON PURPOSE.  This is a BISECTION,
+-- not a fix: every other thing the pop added is still live (the group exists, still Plays
+-- and Stops, still fires OnFinished, `leaving` still holds a departing cue's art on screen
+-- for POP_SECS, the holder cull still has its third term).  Only the scale is now 1 -> 1.
+--   * artefact GONE at 1.0  ⇒ it is the ancestor SCALE itself, and the fix is to pop
+--     something that is not an ancestor of the rings (the dot, on its own child frame).
+--   * artefact PRESENT at 1.0 ⇒ it is not the scaling at all, and the suspects are the
+--     mere presence of a second animation group on the layer, or the departure bookkeeping
+--     that keeps a spinning ring alive past the draw that dropped it.
+-- Whichever way it lands, put the answer here — this comment is the record of a question
+-- that has now cost seven builds.
+local POP_PEAK = 1.0     -- ⚠ 1.35 is the intended value; see the bisection note above
 local POP_SECS = 0.18
 
 -- ⚠ THE SETTER NAME IS GENUINELY AMBIGUOUS, AND A SILENT MISS IS THE ONE UNACCEPTABLE

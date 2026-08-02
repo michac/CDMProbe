@@ -706,10 +706,13 @@ describe("Renderer", function()
     r:Draw({ cues = {} })                            -- the departure rebuilds the pop
     assert.is_not_nil(layer.pop, "no pop built from the legacy spelling")
     assert.is_true(layer.pop._playing)
-    -- Two symmetric halves: 1 -> peak, then peak -> 1.
+    -- Two SYMMETRIC halves: 1 -> peak, then peak -> 1.  ⚠ This asserts the SHAPE and
+    -- deliberately not that peak > 1: POP_PEAK is dialled to 1.0 while the spin-artefact
+    -- bisection runs (see the header at POP_PEAK), and a test that forbids that setting
+    -- would have to be edited to run the experiment — which is how a guard becomes noise.
+    assert.equals(4, #seen)
     assert.same({ seen[1], seen[4] }, { 1, 1 })
-    assert.equals(seen[2], seen[3])
-    assert.is_true(seen[2] > 1, "the pop never grows")
+    assert.equals(seen[2], seen[3], "the two halves do not meet at the same peak")
   end)
 
   it("SAYS SO when NEITHER spelling exists — and still clears the cue", function()
