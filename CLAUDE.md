@@ -250,10 +250,19 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   have no live consumer in v1, so this file omits them).
                                   Same SoulShards power rendered `discrete`, so Destruction
                                   touches NEITHER Renderer generalization point.
-                                  SpecPowerDelta projects SPENDERS ONLY: Destruction
-                                  generates in FRAGMENTS into a bar State reads in whole
-                                  shards, so faking integer `generates` would make the
-                                  in-flight projection lie by up to a shard per filler cast.
+                                  ⚠ SpecPowerDelta projects BUILDERS AND SPENDERS since
+                                  Phase 6.2 (2026-08-01), in FRAGMENTS (0-50, the game's
+                                  internal Soul Shard unit). The old "spenders only" fence
+                                  existed because State could read whole shards only; it
+                                  reads the exact rail now, so `generatesFrags` carries real
+                                  integer yields (Incinerate 2, Conflagrate 5, Soul Fire 10,
+                                  Infernal Bolt 20) — BASE values, never crit bonuses, since
+                                  over-crediting promises a cast you cannot make. Diabolic
+                                  Embers (387173) is the one conditional, read via
+                                  C_SpellBook.IsSpellKnown and cached through the registry's
+                                  `Invalidate` seam (the first spec to use it). ⚠ ns.ShardCost
+                                  returns WHOLE SHARDS (the client pre-applies the divisor),
+                                  so the cost is multiplied UP here — one unit boundary.
     -- The W4 pipeline (State -> Coach -> Binder -> Renderer), driven each tick by
     -- HudDriver.  See docs/architecture.md.
     State.lua                     ingestion + State.Build: folds the CDM rows into
@@ -261,7 +270,13 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   power); Secret-Value-guarded, napkin + edge
                                   fused for honest readiness. The pipeline's INPUT.
                                   ⚠ `power` is RAW — value/max/readable per
-                                  Enum.PowerType NAME, no `incoming`. The in-flight
+                                  Enum.PowerType NAME, no `incoming` — PLUS the EXACT rail
+                                  (Phase 6.2): `unmodified`/`unmodifiedMax`/`modifier` from
+                                  `UnitPower(unit, type, true)`, which returns the game's
+                                  internal units (Soul Shards: 0-50 fragments vs a displayed
+                                  0-5) and WORKS IN COMBAT. Purely additive, ABSENT never
+                                  zero on a refusal, and spec-agnostic by vocabulary
+                                  (`unmodified`, not "fragments"). The in-flight
                                   projection lived here until roster-state-plan Phase 6
                                   moved it to ns.Coach.InflightPower; that took the
                                   `ns.SpecPowerDelta` injection, BOTH
@@ -606,7 +621,7 @@ put `~/.luarocks/bin` on PATH.
   `SpecDemonology`) + the multi-spec seam (`SpecRegistry`/`ResolveActiveSpec`, the
   resource-array projection) + the **Destruction** rotation gate + **State's domain-view
   fold** + State's hero-tree resolution + the **CDM edge inventory** (see `tests/fixtures/`
-  below). **643 tests / 4 pending.** The harness is
+  below). **689 tests / 4 pending.** The harness is
   **`CDMProbe/tests/mock_ns.lua`**: a chainable `CreateFrame`/FontString/animation
   stub, a **settable `GetTime` fake clock**, global fakes
   (`wipe`/`InCombatLockdown`/`issecretvalue`/`C_Timer`/`Enum`/`GetSpecialization`/…),

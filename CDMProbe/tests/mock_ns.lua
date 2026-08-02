@@ -282,8 +282,22 @@ function H.installGlobals()
   -- they ask, so every refusal path below runs the real code.
   _G.issecrettable    = function(t) return H.secretTable[t] == true end
   _G.hooksecurefunc   = function() end
-  _G.UnitPower        = function() return 0 end
-  _G.UnitPowerMax     = function() return 0 end
+  -- POWER, both rails (Phase 6.2).  `UnitPower(unit, type, unmodified)` returns the game's
+  -- INTERNAL units when the flag is set — Soul Shards are stored as 0-50 fragments and
+  -- displayed as 0-5 whole shards — and State reads BOTH.  Driven off `fx.power[type]`:
+  --   { value = n, max = n, unmodified = n, unmodifiedMax = n }
+  -- Omitting a field makes THAT read refuse (returns nil), which is how the "absent, never
+  -- zero" contract is exercised.  Default: no entry => max 0 => the power is not reported
+  -- at all, exactly as before this fake grew a body.
+  local function powerFake(field, exactField)
+    return function(_, powerType, unmodified)
+      local e = H.fx and H.fx.power and H.fx.power[powerType]
+      if not e then return 0 end
+      return e[unmodified and exactField or field]
+    end
+  end
+  _G.UnitPower        = powerFake("value", "unmodified")
+  _G.UnitPowerMax     = powerFake("max", "unmodifiedMax")
   _G.CreateColor      = function(r, g, b, a)
     return { r = r, g = g, b = b, a = a, GetRGB = function() return r, g, b end }
   end
@@ -303,7 +317,16 @@ function H.installGlobals()
                  NewTimer  = function() return { Cancel = function() end } end,
                  NewTicker = function() return { Cancel = function() end } end }
   _G.C_Spell = { GetSpellName = function(id) return "Spell:" .. tostring(id) end,
-                 GetSpellTexture = function(id) return "Interface\\Icons\\Spell_" .. tostring(id) end }
+                 GetSpellTexture = function(id) return "Interface\\Icons\\Spell_" .. tostring(id) end,
+                 -- The COST list, verbatim in the client's shape: an array of
+                 -- { type = <Enum.PowerType>, cost = n, name = "…" }.  ns.PowerCost filters it
+                 -- by type and ns.ShardCost passes the survivor through untouched; both are
+                 -- SHIPPING code, so a spec that drives this fake tests the real ladder.
+                 -- ⚠ The client PRE-APPLIES the display divisor (Chaos Bolt's DB2 cost of 20
+                 -- fragments arrives as 2), so a fixture cost is in WHOLE SHARDS.
+                 GetSpellPowerCost = function(id)
+                   return (H.fx and H.fx.powerCost and H.fx.powerCost[id]) or {}
+                 end }
 
   ------------------------------------------------------------------------------
   -- THE REAL CLIENT SURFACE (default-INERT).
@@ -517,7 +540,10 @@ function H.fresh()
     --   auraByID[id]  = <aura table>                      -- GetPlayerAuraBySpellID
     --   auraThrows[id]= true                              -- …and its per-id refusal
     --   glow[id]      = bool                              -- IsSpellOverlayed
+    --   power[type]   = { value, max, unmodified, unmodifiedMax }  -- UnitPower(Max)
+    --   powerCost[id] = { { type = <PowerType>, cost = n, name = "…" }, … }
     cd = {}, charges = {}, auras = {}, auraByID = {}, auraThrows = {}, glow = {},
+    power = {}, powerCost = {},
   }
   H.fx = fx
 

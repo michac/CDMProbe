@@ -185,4 +185,41 @@ describe("multi-power resource seam (Phase 3 full-seam proof)", function()
       assert.equals("discrete", guidance.resourceBars[1].display)
     end)
   end)
+
+  ----------------------------------------------------------------------------
+  -- THE EXACT RAIL IS ADDITIVE AND OPT-IN (Phase 6.2).
+  ----------------------------------------------------------------------------
+  -- Soul Shards have a display divisor of 10 (0-50 fragments drawn as 0-5 pips); most powers
+  -- have none.  The seam must stay neutral about that: a spec that carries no exact rail
+  -- must come out of the shell exactly as it went in, with the fields ABSENT rather than
+  -- defaulted to zero — zero would read as a measurement nobody took.
+  describe("a spec with no exact rail (modifier 1) is a no-op", function()
+    before_each(function()
+      ns.RegisterSpec(900, makeDualSpec())
+      ns.SetActiveSpec(900)
+      H.load("Coach.lua")
+    end)
+
+    it("passes the exact fields through as ABSENT, never zero", function()
+      local state = { at = 0,
+        power = { Energy = { value = 40, max = 100 }, ComboPoints = { value = 3, max = 5 } },
+        history = { inflight(FIRE_ID) } }
+      local byToken = {}
+      for _, b in ipairs(ns.Coach.New():Compute(state).resourceBars) do byToken[b.powerType] = b end
+      assert.is_nil(byToken.ENERGY.valueExact)
+      assert.is_nil(byToken.ENERGY.maxExact)
+      assert.is_nil(byToken.ENERGY.modifier)
+    end)
+
+    it("leaves `incoming` unscaled — no divisor, no division", function()
+      local state = { at = 0,
+        power = { Energy = { value = 40, max = 100 }, ComboPoints = { value = 3, max = 5 } },
+        history = { inflight(FIRE_ID) } }
+      local byToken = {}
+      for _, b in ipairs(ns.Coach.New():Compute(state).resourceBars) do byToken[b.powerType] = b end
+      assert.equals(2, byToken.ENERGY.incoming)   -- the spec's own delta, verbatim
+      assert.equals(40, byToken.ENERGY.value)
+      assert.equals(100, byToken.ENERGY.max)
+    end)
+  end)
 end)

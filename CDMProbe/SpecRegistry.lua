@@ -20,13 +20,16 @@ ns.Specs = ns.Specs or {}
 -- Because the field names are identical to today's global names, the rebind is a straight
 -- `ns[k] = spec[k]` copy — no per-field translation.
 ns.SpecFields = {
-  "SpecGroups", "SpecIDs", "SpecBindAlias", "SHARD_CAP", "Spec",
+  -- ⚠ `SHARD_CAP` became `FRAG_CAP` in Phase 6.2 — same seam, different UNIT (50 fragments,
+  -- not 5 shards).  The rename is the point: a stale `ns.SHARD_CAP` reader now gets nil and
+  -- fails loudly rather than comparing a fragment count against 5.
+  "SpecGroups", "SpecIDs", "SpecBindAlias", "FRAG_CAP", "Spec",
   "SpecNoCue", "SpecProcGlow", "SpecStacks", "SpecOpener", "SpecBurst",
   "SpecInfo", "SpecColor", "SpecPole", "SpecGhost", "SpecPowerDelta",
 }
 -- NOTE: `spec.powers` (the Phase-3 resource array) is deliberately NOT a SpecField —
 -- State reads it off ns.ActiveSpec.powers directly (the same object-read pattern Phase 2
--- used for self.SHARD_CAP), so ns stays uncluttered by a rarely-read array.
+-- used for self.FRAG_CAP), so ns stays uncluttered by a rarely-read array.
 
 -- Register a spec object under its numeric specID.  Called at load by each spec file.
 function ns.RegisterSpec(specID, spec)
@@ -51,10 +54,11 @@ end
 -- registered spec's cache, not just the active one, so swapping away and back cannot
 -- resurrect a stale answer.  pcall'd: it runs from event handlers, where a throw must
 -- never wedge the resolver.
--- ⚠ No spec implements `Invalidate` today — Destruction's hero-tree cache moved into
--- State (invalidated on SPELLS_CHANGED with the rest of the client reads).  The seam is
--- kept because it is the sanctioned place for the next build-scoped cache; if you add
--- one, this is already wired to the two events that can move it.
+-- ⚠ ONE SPEC IMPLEMENTS IT: SpecDestruction's Diabolic-Embers (387173) known-spell cache,
+-- added in Phase 6.2 — a TALENT decides whether an in-flight Incinerate projects 2 fragments
+-- or 4, and a hero/talent swap moves that answer without changing the spec.  (Destruction's
+-- hero-tree cache is NOT here — it moved into State, invalidated on SPELLS_CHANGED with the
+-- rest of the client reads.)  This was left wired for exactly this case.
 function ns.InvalidateSpecCaches()
   for _, spec in pairs(ns.Specs) do
     if type(spec.Invalidate) == "function" then pcall(spec.Invalidate, spec) end

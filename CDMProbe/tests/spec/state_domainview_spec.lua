@@ -1300,3 +1300,102 @@ describe("St.CoverageRows (the coverage probe's row source)", function()
     assert.equals(0, #St.CoverageRows())
   end)
 end)
+
+--------------------------------------------------------------------------------
+-- THE EXACT POWER RAIL (Phase 6.2) — `UnitPower(unit, type, unmodified)`.
+--------------------------------------------------------------------------------
+-- The game stores Soul Shards as 0-50 FRAGMENTS and displays them as 0-5 whole shards;
+-- the flagged read returns the internal units (measured in-game 2026-08-01: max 50 vs 5,
+-- and it WORKS IN COMBAT, because `ShouldUnitPowerBeSecret` takes (unit, powerType) and the
+-- flag is not a parameter of the verdict).  Until this landed, the whole pipeline saw whole
+-- shards only, so a true 1.9 arrived as `1` and "you are one Incinerate from a Chaos Bolt"
+-- was unsayable.
+--
+-- WHAT THESE PIN, in the order they can break:
+--   * the read is PURELY ADDITIVE — `value`/`max`/`readable` are byte-identical to before;
+--   * `modifier` is DERIVED from the two maxes, not assumed, so a power that gains or loses
+--     a divisor needs no code edit;
+--   * a refused exact read leaves the fields ABSENT, never zero — the project's standing
+--     rule that absence of a read must never become a positive claim, applied here.  Zero
+--     would read as "you have no shards", which is a different and actionable sentence.
+--------------------------------------------------------------------------------
+describe("State power — the exact (unmodified) rail", function()
+  local ns, St, fx
+  local SHARDS, MANA = 7, 0    -- Enum.PowerType members, per the harness
+
+  before_each(function()
+    ns, fx = H.fresh()
+    H.load("State.lua")
+    St = ns.State
+    ns.OnLogin()          -- builds the Enum.PowerType name cache
+  end)
+
+  local function shards()
+    return St.Build(false).power.SoulShards
+  end
+
+  it("carries BOTH rails plus the modifier that relates them", function()
+    fx.power[SHARDS] = { value = 3, max = 5, unmodified = 30, unmodifiedMax = 50 }
+    local p = shards()
+    assert.equals(3, p.value)             -- display units, unchanged
+    assert.equals(5, p.max)
+    assert.is_true(p.readable)
+    assert.equals(30, p.unmodified)       -- exact units
+    assert.equals(50, p.unmodifiedMax)
+    assert.equals(10, p.modifier)
+  end)
+
+  it("reports a FRACTIONAL shard exactly — 18 fragments, which the display rail rounds to 1", function()
+    fx.power[SHARDS] = { value = 1, max = 5, unmodified = 18, unmodifiedMax = 50 }
+    local p = shards()
+    assert.equals(1, p.value)             -- what the pipeline used to see, and all it saw
+    assert.equals(18, p.unmodified)       -- what it can see now
+  end)
+
+  it("modifier is 1 for a power whose rails agree (mana) — a no-op, not a special case", function()
+    fx.power[MANA] = { value = 4000, max = 100000, unmodified = 4000, unmodifiedMax = 100000 }
+    local p = St.Build(false).power.Mana
+    assert.equals(1, p.modifier)
+    assert.equals(4000, p.unmodified)
+  end)
+
+  it("ABSENT, never zero, when the exact VALUE refuses", function()
+    fx.power[SHARDS] = { value = 3, max = 5, unmodifiedMax = 50 }   -- no `unmodified`
+    local p = shards()
+    assert.equals(3, p.value)             -- the display rail is untouched by the refusal
+    assert.is_nil(p.unmodified)
+    assert.equals(50, p.unmodifiedMax)    -- the max half still answered
+    assert.equals(10, p.modifier)
+  end)
+
+  it("ABSENT, never zero, when the exact MAX refuses — no modifier is invented", function()
+    fx.power[SHARDS] = { value = 3, max = 5, unmodified = 30 }      -- no `unmodifiedMax`
+    local p = shards()
+    assert.equals(3, p.value)
+    assert.is_nil(p.unmodifiedMax)
+    assert.is_nil(p.modifier)
+    assert.is_nil(p.unmodified)           -- not asked: the ladder stops at the refused max
+  end)
+
+  it("a SECRET exact value degrades to absence rather than reaching the pulse", function()
+    fx.power[SHARDS] = { value = 3, max = 5, unmodified = H.secretValue(), unmodifiedMax = 50 }
+    local p = shards()
+    assert.is_nil(p.unmodified)
+    assert.equals(10, p.modifier)         -- the max pair was readable, so this still answers
+  end)
+
+  it("the DISPLAY rail refusing does not take the exact rail with it", function()
+    -- `readable = false` is State's "we asked and could not tell" for the display value.
+    -- The exact read is a separate call and gets its own verdict.
+    fx.power[SHARDS] = { value = H.secretValue(), max = 5, unmodified = 30, unmodifiedMax = 50 }
+    local p = shards()
+    assert.is_false(p.readable)
+    assert.is_nil(p.value)
+    assert.equals(30, p.unmodified)
+  end)
+
+  it("a power with max 0 is still not reported at all (the pre-existing gate)", function()
+    fx.power[SHARDS] = { value = 0, max = 0, unmodified = 0, unmodifiedMax = 0 }
+    assert.is_nil(St.Build(false).power.SoulShards)
+  end)
+end)

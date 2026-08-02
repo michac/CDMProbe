@@ -99,6 +99,17 @@ local function bar(value, incoming)
              display = "discrete", powerType = "SOUL_SHARDS" } }
 end
 
+-- The same bar carrying the EXACT rail too (Phase 6.2): integers in the game's internal
+-- units (Soul Shards: 0-50 fragments) plus the `modifier` that relates them to the pips.
+local function exactBar(frags, incomingFrags)
+  local b = bar(math.floor(frags / 10), math.floor((incomingFrags or 0) / 10))
+  b[1].valueExact    = frags
+  b[1].incomingExact = incomingFrags or 0
+  b[1].maxExact      = 50
+  b[1].modifier      = 10
+  return b
+end
+
 -- A drawList that anchors the given cids (i.e. the Binder DREW them).
 local function drawList(anchoredCids)
   local cues = {}
@@ -174,6 +185,35 @@ describe("DecisionLog.Render", function()
     local g = guidance({}, nil, bar("<secret>", 0))
     local s = ns.DecisionLog.Render(build{}, g, { cues = {} })
     assert.truthy(s:find("PW:?/", 1, true), s)
+  end)
+
+  -- ⚠ THE EXACT RAIL IS WHAT MAKES `PW:` A USABLE INSTRUMENT (Phase 6.2).  The whole point
+  -- of the phase is that the brain can tell 1.8 shards from 1.7; a trace that renders both
+  -- as `1` cannot show whether it did.  The division happens HERE, at the very edge, in a
+  -- string — no float ever reaches a gate.
+  it("renders the EXACT rail fractionally when the bar carries it: PW:1.8/+0.2", function()
+    local s = ns.DecisionLog.Render(build{}, guidance({}, nil, exactBar(18, 2)), { cues = {} })
+    assert.truthy(s:find("PW:1.8/+0.2", 1, true), s)
+  end)
+
+  it("renders an in-flight spender's exact minus: PW:3.0/-2.0", function()
+    local s = ns.DecisionLog.Render(build{}, guidance({}, nil, exactBar(30, -20)), { cues = {} })
+    assert.truthy(s:find("PW:3.0/-2.0", 1, true), s)
+  end)
+
+  -- An all-integer PW column in a live capture therefore means the exact read is not wired
+  -- (State) or not being passed through (Coach:ResourceBars) — which is exactly the signal
+  -- the in-flight verification of Phase 6.2 greps for.
+  it("falls back to the whole-unit integers when the bar carries no exact rail", function()
+    local s = ns.DecisionLog.Render(build{}, guidance({}, nil, bar(3, -2)), { cues = {} })
+    assert.truthy(s:find("PW:3/-2", 1, true), s)
+  end)
+
+  it("a modifier of 1 (mana, energy) renders as a plain integer, not 3.0", function()
+    local b = bar(3, -2)
+    b[1].valueExact, b[1].incomingExact, b[1].modifier = 3, -2, 1
+    local s = ns.DecisionLog.Render(build{}, guidance({}, nil, b), { cues = {} })
+    assert.truthy(s:find("PW:3/-2", 1, true), s)
   end)
 
   -- A PASSIVE spec's EmptyGuidance carries resourceBars = {}, so there IS no bar.  `?/?`

@@ -13,8 +13,11 @@
 --   spends     — what pressing it CONSUMES: "shards" | "core" | "art".  The
 --                numeric cost is NEVER authored here — it is talent-dependent,
 --                so it's read at runtime via ns.ShardCost (Util.lua).
---   generates  — deterministic Soul Shard yield.  Drives both the in-flight
---                projection and the overcap guard.
+--   generatesFrags — deterministic Soul Shard yield, in FRAGMENTS (10 per whole
+--                shard).  Drives both the in-flight projection and the overcap
+--                guard.  ⚠ It was `generates` in WHOLE SHARDS until Phase 6.2; the
+--                name carries the unit precisely so a stale read fails loudly
+--                instead of being silently wrong by 10x.
 --   cadence    — "oncd"     use it whenever it's up (the burst summons)
 --                "gated"    press it when the resource gate opens (HoG)
 --                "reactive" press it when a proc/condition arms it
@@ -110,9 +113,19 @@ spec.SpecBindAlias = {
   [136726]  = 1276452,
 }
 
--- The Soul Shard cap.  Used by the overcap guard: a generator that would push
--- past this stops being a ROTATION call even when its proc is genuinely up.
-spec.SHARD_CAP = 5
+-- ── THE SOUL SHARD RAIL, IN TWO UNITS (Phase 6.2) ────────────────────────────
+-- The game stores Soul Shards as 0–50 FRAGMENTS and DISPLAYS them as 0–5 whole shards;
+-- `UnitPower(…, unmodified)` reads the exact rail, `UnitPower(…)` the display one
+-- (measured 2026-08-01: max 50 vs 5, modifier 10).  Every DECISION is made in fragments —
+-- integers, exactly summable, no boundary comparison decided by a float — and only the
+-- rendered bar stays in whole shards, because Renderer.lua draws one pip per unit of `max`.
+--
+-- FRAG_CAP is the overcap guard's ceiling: a generator that would push past it stops
+-- being a ROTATION call even when its proc is genuinely up.  It is a FALLBACK — the brain
+-- prefers the live `unmodifiedMax` off the pulse.
+spec.FRAG_CAP        = 50   -- exact units (fallback for state.power.SoulShards.unmodifiedMax)
+spec.BAR_MAX         = 5    -- DISPLAY units — the pip count, never a gate
+spec.FRAGS_PER_SHARD = 10   -- the modifier, as a fallback for a pulse-less caller
 
 -- The POWER ARRAY (multi-spec Phase 3, the resource seam).  A spec declares an ORDERED
 -- list of the named powers its HUD renders; the pipeline is now array-shaped end to end
@@ -124,9 +137,15 @@ spec.SHARD_CAP = 5
 --   display  the guidance-contract resourceDisplay token (discrete pips | continuous fill).
 --   incoming true => this power receives State's in-flight projection (the +/- shard math).
 --   token    the game power render token the Renderer resolves to a colour (PowerBarColor).
+--   modifier FALLBACK exact-units-per-display-unit for this power (Phase 6.2): the divisor
+--            between the units SpecPowerDelta speaks and the units the bar renders in.  The
+--            LIVE `state.power[name].modifier` wins where the client gave one; this is what
+--            keeps the display honest when the exact read refuses.  Omit it (=> 1) for a
+--            power with no divisor.
 -- Read off ns.ActiveSpec.powers (an object read, like SHARD_CAP), NOT a rebound SpecField.
 spec.powers = {
-  { name = "SoulShards", display = "discrete", incoming = true, token = "SOUL_SHARDS" },
+  { name = "SoulShards", display = "discrete", incoming = true, token = "SOUL_SHARDS",
+    modifier = 10 },
 }
 
 -- The DECISION-LOG vocabulary (multi-spec Phase 4, the decision-log seam).  DecisionLog.lua
@@ -213,13 +232,13 @@ spec.Spec = {
   -- partner in the cast log (313 + 313 two-grams).  A bucket-2
   -- spender: it CONSUMES a Demonic Core proc (that's the press decision) and
   -- happens to refund 2 shards.  So `spends = "core"` decides the pole, and
-  -- `generates = 2` is what drives the overcap guard.
+  -- `generatesFrags = 20` is what drives the overcap guard.
   [S.DEMONBOLT] = {
-    group = "core", kind = "button", spends = "core", generates = 2,
+    group = "core", kind = "button", spends = "core", generatesFrags = 20,
     cadence = "reactive", abbr = "DB", label = "Demonbolt",
   },
   [S.SHADOW_BOLT] = {
-    group = "core", kind = "button", generates = 1, cadence = "filler",
+    group = "core", kind = "button", generatesFrags = 10, cadence = "filler",
     -- B7: what the player LOSES if this isn't in the tracked set.  Named
     -- specifically because this exact gap hid the SB -> Infernal Bolt blind spot
     -- for four milestones, and because Shadow Bolt is added by hand — the
@@ -237,17 +256,17 @@ spec.Spec = {
   -- CONFIRMED the live ones on 2026-07-21: **Ruination = 434635**, **Infernal
   -- Bolt = 434506**.  The other two stay mapped — they cost nothing and cover a
   -- build that surfaces the alternate ID.
-  -- `art` is the SEMANTIC discriminator the brain branches on; `generates` is the mechanical
-  -- shard yield SpecPowerDelta feeds State's in-flight projection.  ⚠ They were ONE field
-  -- until 2026-07-30: CoachDemonology asked `generates == 3` to mean "this Art is Infernal
-  -- Bolt".  That silently couples a rotation decision to a TUNING number — retune Infernal
-  -- Bolt off 3, or give Ruination a yield, and the brain recommends the wrong Art at the top
-  -- of the burst window with nothing naming the cause.  SpecDestruction split exactly this
-  -- overload out of `abbr`; this is the same fix on its sibling.  Branch on `art`, never on a
-  -- number that exists for arithmetic.
-  [433891] = { group = "core", kind = "button", spends = "art", art = "infernal", generates = 3,
+  -- `art` is the SEMANTIC discriminator the brain branches on; `generatesFrags` is the
+  -- mechanical shard yield SpecPowerDelta feeds the Coach's in-flight projection.  ⚠ They
+  -- were ONE field until 2026-07-30: CoachDemonology asked `generates == 3` to mean "this
+  -- Art is Infernal Bolt".  That silently couples a rotation decision to a TUNING number —
+  -- retune Infernal Bolt off 3, or give Ruination a yield, and the brain recommends the
+  -- wrong Art at the top of the burst window with nothing naming the cause.  SpecDestruction
+  -- split exactly this overload out of `abbr`; this is the same fix on its sibling.  Branch
+  -- on `art`, never on a number that exists for arithmetic.
+  [433891] = { group = "core", kind = "button", spends = "art", art = "infernal", generatesFrags = 30,
                cadence = "reactive", expect = false, abbr = "IB", label = "Infernal Bolt (alt ID, unconfirmed)" },
-  [434506] = { group = "core", kind = "button", spends = "art", art = "infernal", generates = 3,
+  [434506] = { group = "core", kind = "button", spends = "art", art = "infernal", generatesFrags = 30,
                cadence = "reactive", expect = false, abbr = "IB", label = "Infernal Bolt" },  -- CONFIRMED live
   [434635] = { group = "core", kind = "button", spends = "art", art = "ruination",
                cadence = "reactive", expect = false, abbr = "RU", label = "Ruination" },      -- CONFIRMED live
@@ -439,31 +458,44 @@ function spec.SpecColor(spellID)
 end
 
 -- DORMANT (see the banner above).  Which BATCH TINT pole an ability sits at.
--- Order matters: `spends` is checked BEFORE `generates`, so Demonbolt (spends a Core,
+-- Order matters: `spends` is checked BEFORE `generatesFrags`, so Demonbolt (spends a Core,
 -- refunds 2 shards) lands at the CONSUMER pole beside HoG rather than opposite it.
 function spec.SpecPole(info)
   if info.kind == "aura" then return "proc" end
   if info.cadence == "utility" then return "utility" end
   if info.cadence == "oncd" or info.spends then return "consumer" end
-  if info.generates then return "generator" end
+  if info.generatesFrags then return "generator" end
   return "consumer"
 end
 
 -- DORMANT (see the banner above); superseded by SpecPowerDelta below.  Deterministic
--- shard yield of an in-flight cast.
+-- shard yield of an in-flight cast, in FRAGMENTS since Phase 6.2.
 function spec.SpecGhost(spellID)
-  return (ns.SpecInfo(spellID).generates) or 0
+  return (ns.SpecInfo(spellID).generatesFrags) or 0
 end
 
 -- SIGNED net power delta of an in-flight cast (multi-spec Phase 3; was SpecShardDelta,
 -- W4 P6 Part 2) — what the power bar will read AFTER this cast resolves, relative to now,
--- AND which named power it moves.  Positive for a builder (Shadow Bolt +1, Demonbolt +2,
--- Infernal Bolt +3), NEGATIVE for a pure spender (Hand of Gul'dan −cost).  Supersedes
--- SpecGhost as State's `incoming` reader so an in-flight HoG projects −3 and the Coach
+-- AND which named power it moves.  Positive for a builder (Shadow Bolt +10, Demonbolt +20,
+-- Infernal Bolt +30), NEGATIVE for a pure spender (Hand of Gul'dan −cost).  Supersedes
+-- SpecGhost as the Coach's `incoming` reader so an in-flight HoG projects −30 and the Coach
 -- (ranking on projected = value + incoming) clears it to the builder mid-cast instead of
 -- re-cuing the spell you are casting.
 --
---   delta = (generates or 0) − (live shard cost IFF this ability spends shards)
+--   delta = (generatesFrags or 0) − (live shard cost x FRAGS_PER_SHARD IFF it spends shards)
+--
+-- ⚠ EVERYTHING HERE IS FRAGMENTS (Phase 6.2), because that is the unit the brain's gates
+-- compare in and the unit the client's exact power read hands back.  ns.ShardCost's name
+-- says shards and it means it — `C_Spell.GetSpellPowerCost` PRE-APPLIES the display divisor
+-- (Chaos Bolt: DB2 stores 20, the client returns 2, measured 2026-08-01) — so the cost is
+-- multiplied UP here, at the one conversion site this function has.  A missed conversion is
+-- a silent 10x error that still looks like a plausible shard count; there is deliberately no
+-- second place it could hide.
+--
+-- ⚠ THE CONSTANT, not the pulse's live `modifier`: this is a pure (spellID) -> delta
+-- function by contract (Coach.InflightPower passes it nothing else), so it has no pulse to
+-- ask.  spec.FRAGS_PER_SHARD is the same number the brain falls back to when the exact read
+-- refuses, and the game has reported 10 since the rail existed.
 --
 -- Returns `{ power, delta }` — Phase 3 made the projection per-power (State sums delta
 -- into sums[power]), so the reader now NAMES the power it moves ("SoulShards" for Demo).
@@ -471,16 +503,18 @@ end
 -- `{ power = nil, delta = 0 }`; State's accumulator skips a nil-power entry.
 --
 -- The spend is counted only when `spends == "shards"` — Demonbolt spends a CORE, not
--- shards, so its +2 refund stands uncosted (same rule as SpecPole's C2 ordering).  The
+-- shards, so its +20 refund stands uncosted (same rule as SpecPole's C2 ordering).  The
 -- cost is read LIVE (talent-dependent) via ns.ShardCost; an UNREADABLE cost drops the
--- spend term (delta = generates only) rather than guessing — the safe direction (never
+-- spend term (delta = generatesFrags only) rather than guessing — the safe direction (never
 -- pre-deducts shards on an unreadable read).
 function spec.SpecPowerDelta(spellID)
   local info = ns.SpecInfo(spellID)
-  local delta = info.generates or 0
+  local delta = info.generatesFrags or 0
   if info.spends == "shards" and ns.ShardCost then
     local cost = ns.ShardCost(spellID)
-    if type(cost) == "number" then delta = delta - cost end
+    if type(cost) == "number" then
+      delta = delta - math.floor(cost * spec.FRAGS_PER_SHARD + 0.5)
+    end
   end
   if delta == 0 then return { power = nil, delta = 0 } end
   return { power = "SoulShards", delta = delta }

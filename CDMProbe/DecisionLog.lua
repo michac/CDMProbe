@@ -181,10 +181,27 @@ function DL.Render(pulse, guidance, drawList)
   -- The first bar is the spec's primary meter (Demo/Destro: Soul Shards).  ⚠ A PASSIVE spec
   -- emits none (EmptyGuidance -> resourceBars = {}), so it renders `?/?` rather than reading
   -- through to the pulse.  That is more honest, not less: there is no bar.
+  --
+  -- ⚠ THE EXACT RAIL WINS WHEN IT IS THERE (Phase 6.2).  `valueExact`/`incomingExact` are
+  -- integers in the game's internal units (Soul Shards: 0–50 fragments) with `modifier`
+  -- relating them to the display units, so dividing HERE — at the very edge, in a string —
+  -- is what turns `18` into the `1.8` a human reads, without any float ever reaching a gate.
+  -- Falls back to the whole-unit integers when the client refused the exact read; an
+  -- all-integer `PW:` column in a capture therefore means the exact read is not wired
+  -- (State step 1) or not being passed through (Coach:ResourceBars), which is precisely the
+  -- signal the in-flight verification of this phase looks for.
   local bar = (guidance.resourceBars or {})[1] or {}
-  local val, inc = num(bar.value), num(bar.incoming)
-  local pwStr = (val and string.format("%d", math.floor(val)) or "?")
-    .. "/" .. (inc and string.format("%+d", inc) or "?")
+  local mod = num(bar.modifier)
+  local xVal, xInc = num(bar.valueExact), num(bar.incomingExact)
+  local pwStr
+  if mod and mod > 1 and xVal then
+    pwStr = string.format("%.1f", xVal / mod)
+      .. "/" .. (xInc and string.format("%+.1f", xInc / mod) or "?")
+  else
+    local val, inc = num(bar.value), num(bar.incoming)
+    pwStr = (val and string.format("%d", math.floor(val)) or "?")
+      .. "/" .. (inc and string.format("%+d", math.floor(inc)) or "?")
+  end
 
   -- In-flight cast: the NEWEST phase=="start" in history with no later succeeded/stopped
   -- across ALL bases (the prose rule; Coach.castingFresh is per-base, a different Q).

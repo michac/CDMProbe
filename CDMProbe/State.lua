@@ -921,14 +921,47 @@ local function buildPowerNames()
   end
 end
 
+-- THE EXACT READ (Phase 6.2).  `UnitPower(unit, powerType, unmodified)` and its Max twin
+-- return the power in the game's OWN INTERNAL units rather than the display units.  For
+-- Soul Shards that is FRAGMENTS: measured in-game 2026-08-01, `UnitPowerMax("player",
+-- SoulShards)` is 5 while `UnitPowerMax(…, true)` is 50, i.e. a modifier of 10, and the
+-- flagged read WORKS IN COMBAT — `ShouldUnitPowerBeSecret` takes (unit, powerType), so the
+-- flag is not a parameter of the secrecy verdict (knowledge/addon-dev/security-taint-and-
+-- restricted-data.md).  Every other power has a modifier of 1, so mana/energy are untouched.
+--
+-- ⚠ THIS IS PURELY ADDITIVE.  `value` / `max` / `readable` are byte-identical to what this
+-- function returned before — the display units the Renderer's per-pip loop needs.  The exact
+-- pair rides ALONGSIDE, and goes through the SAME secrecy ladder: a refused exact read leaves
+-- the fields ABSENT, never zero, so a consumer can tell "we could not ask" from "you have
+-- none".  State still has no opinion about which power matters (invariant #3), which is why
+-- these carry Blizzard's own vocabulary — `unmodified`, not "fragments", a Soul-Shard word.
 local function readOnePower(value)
   local okM, max = pcall(UnitPowerMax, "player", value)
   if not okM or ns.IsSecret(max) or type(max) ~= "number" or max <= 0 then return nil end
   local okV, val = pcall(UnitPower, "player", value)
+  local out
   if not okV or ns.IsSecret(val) or type(val) ~= "number" then
-    return { readable = false, max = ns.Stash(max), type = value }
+    out = { readable = false, max = ns.Stash(max), type = value }
+  else
+    out = { readable = true, value = ns.Stash(val), max = ns.Stash(max), type = value }
   end
-  return { readable = true, value = ns.Stash(val), max = ns.Stash(max), type = value }
+
+  -- The exact rail.  `modifier` is derived from the two MAXes rather than assumed, so a
+  -- power whose divisor Blizzard changes (or a spec that gains one) needs no code edit —
+  -- and it is rounded to an INTEGER because it is a count of internal units per display
+  -- unit, never a fraction.  Floored at 1 so a nonsense read can never scale a cost to 0.
+  local okXM, xmax = pcall(UnitPowerMax, "player", value, true)
+  if okXM and not ns.IsSecret(xmax) and type(xmax) == "number" and xmax > 0 then
+    local mod = math.floor(xmax / max + 0.5)
+    if mod < 1 then mod = 1 end
+    out.unmodifiedMax = ns.Stash(xmax)
+    out.modifier = mod
+    local okX, xval = pcall(UnitPower, "player", value, true)
+    if okX and not ns.IsSecret(xval) and type(xval) == "number" then
+      out.unmodified = ns.Stash(xval)
+    end
+  end
+  return out
 end
 
 local function readPower()

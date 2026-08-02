@@ -20,9 +20,13 @@
 --     there is no partner summon and nothing is staged — so Infernal is a plain on-cooldown
 --     line and there is no `tct`, no `stage`, no go-gate, and no window suppression in
 --     Escalate.  Building a Tyrant-style common-fate treatment here would be wrong.
---   * NO builder projection.  Destruction generates in FRAGMENTS into a bar we read in
---     whole shards, so SpecPowerDelta projects spenders only (see that file); the shard
---     gates are rounded conservatively to compensate (rotation.md -> Fragments).
+--   * THE RESOURCE RAIL IS EXACT, AND THAT IS THIS SPEC'S DEFINING FACT (Phase 6.2).  Every
+--     gate here is denominated in FRAGMENTS (0–50, the game's internal Soul Shard unit), read
+--     off State's `unmodified` power channel.  Until Phase 6.2 the pipeline saw whole shards
+--     only, so a true 1.9 arrived as `1`, `shards >= 2` was false, and the HUD said "build"
+--     one Incinerate tick before a Chaos Bolt was affordable — a MISSING CAPABILITY, not a
+--     rounding preference.  With the exact rail, SpecPowerDelta projects BUILDERS as well as
+--     spenders, and simc's fractional gates (`<=4.2`, `<=4.6`) are expressible verbatim.
 --   * CHARGES are real here.  Conflagrate is the project's first charged tracked ability, so
 --     readiness is "probably up OR a charge banked" — see usable().  (Shadowburn is NOT one:
 --     DB2 ChargeCategory = 0 @ 12.0.7.  An earlier draft of these files claimed it had 2.)
@@ -34,7 +38,7 @@ local ADDON, ns = ...
 local spec = ns.Specs[267]   -- the Destruction object registered by SpecDestruction.lua
 
 --------------------------------------------------------------------------------
--- Tunables (seconds / shards).  Fields on the spec object, so a sibling spec's values can
+-- Tunables (seconds / FRAGMENTS).  Fields on the spec object, so a sibling spec's values can
 -- never leak in as file-locals.
 --------------------------------------------------------------------------------
 spec.LATE_LEAD = 4.0    -- a probably-up press left elapsed this long => overdue.  Read by
@@ -47,18 +51,42 @@ spec.LATE_LEAD = 4.0    -- a probably-up press left elapsed this long => overdue
 -- the capture that forced it (a latch still firing at 13.4s).
 spec.DOT_PANDEMIC_TTL = 6.0
 
--- The shard gates of the priority list, named.  rotation.md rounds simc's fractional
--- thresholds to whole shards ON PURPOSE (`<= 4.2` and `<= 4.6` both become `<= 4`), which
--- is the CONSERVATIVE direction: it builds one press later than simc would rather than
--- risk overcapping on a value we cannot see.  Restoring simc's fractions is gated on the
--- fragment read (specs/destruction/observability-map.md -> "the fragment read").
-spec.BUILD_CEILING   = 4   -- L2 / L4 / L6: build only while this would not overcap
-spec.REFILL_FLOOR    = 3   -- L12: Infernal Bolt as the refill when at/below this
-spec.AOE_DUMP_FLOOR  = 4   -- L10: Rain of Fire needs at least this many banked
+-- The resource gates of the priority list, named — ALL IN FRAGMENTS (10 per whole shard).
+--
+-- ⚠ THE FRACTIONS ARE RESTORED (Phase 6.2), and the rounding note that used to live here is
+-- gone with them.  rotation.md used to round simc's `<= 4.2` and `<= 4.6` both to `<= 4`,
+-- the conservative direction, because State could not read a fraction at all; it can now, so
+-- the two gates are simc's own numbers expressed as the integers they always were.  They are
+-- HARDCODED FROM SIMC WITH A CITATION rather than computed off the yields: `4.6 + 0.4`
+-- (Incinerate with Diabolic Embers) is exactly 5.0, which makes them LOOK like derived
+-- overcap guards, but `4.2 + 0.5` (Conflagrate) is 4.7, not 5.0 — the relationship is
+-- suggestive and not exact, so deriving them would be inventing a rule simc does not state.
+--
+-- Line numbers are simc's `profiles/MID1/warlock_destruction.simc` @ ab7b0b8 (2026-08-01,
+-- branch midnight, DBC build 12.0.7.68887).
+spec.BUILD_CEILING_FRAGS  = 40   -- L2 Soul Fire      (simc: soul_shard<=4)
+spec.CONF_CEILING_FRAGS   = 42   -- L4 Conflagrate    (simc:33 — soul_shard<=4.2, no Backdraft)
+spec.INC_CEILING_FRAGS    = 46   -- L6 Incinerate     (simc:36 — soul_shard<=4.6, Chaotic Inferno)
+spec.REFILL_FLOOR_FRAGS   = 30   -- L12: Infernal Bolt as the refill when at/below this
+spec.AOE_DUMP_FLOOR_FRAGS = 40   -- L10: Rain of Fire needs at least this much banked
+-- ⚠ L10 STAYS ON A WHOLE-SHARD FLOOR ON PURPOSE.  simc's Rain of Fire gate is
+-- `soul_shard >= (3.5 - 0.1*active_dot.immolate)` — but that line is **Diabolist-AoE only**
+-- (`active_enemies>=4`), it has a **Hellcaller sibling at 4.0** off `active_dot.wither`
+-- (simc:63) and an **unconditional fallback with no shard condition at all** (simc:68), and
+-- the `-0.1 x active_dot` term is unexplained anywhere in simc — it is an income-anticipation
+-- term whose buffer SHRINKS as income RISES, which is backwards for a pooling reserve, and at
+-- 8 Immolates it falls below the real 3-shard cost.  We also have no `active_dot` count to
+-- feed it.  So the brain keeps a plain floor and the finding is recorded in
+-- specs/destruction/rotation.md rather than half-implemented here.
 
--- Shard costs.  ALWAYS resolved live through env.shardCostFn (talent-dependent); these are
+-- Shard costs, IN WHOLE SHARDS — the unit ns.ShardCost speaks (the client pre-applies the
+-- display divisor: Chaos Bolt is 20 fragments in DB2 and the API returns 2, measured
+-- 2026-08-01).  ALWAYS resolved live through env.shardCostFn (talent-dependent); these are
 -- only the fallback for a harness or an unreadable read.  Never hardcode a cost at a call
 -- site — that is how a talent that changes a cost silently breaks a gate.
+-- ⚠ Context multiplies these UP to fragments at ONE site and republishes them as
+-- `ctx.*CostFrags`; the fallbacks go through the same conversion, so a shard number never
+-- reaches a gate.
 spec.CB_COST_FALLBACK  = 2   -- Chaos Bolt
 spec.ROF_COST_FALLBACK = 3   -- Rain of Fire
 spec.SB_COST_FALLBACK  = 1   -- Shadowburn
@@ -96,6 +124,15 @@ end
 
 -- Honest pulse-number reader: a non-number reads nil, never a guess.
 local function num(v) return type(v) == "number" and v or nil end
+
+-- Truncate TOWARD ZERO — used only to render an exact-unit projection back into the DISPLAY
+-- units the pip bar speaks.  Never used in a gate (Phase 6.2: gates compare exact integers),
+-- so this is the only place a division reaches, and toward-zero is the honest direction for
+-- both signs: a partial shard gained is not yet a shard, spent is not yet spent.
+local function truncToward(x)
+  if x >= 0 then return math.floor(x) end
+  return -math.floor(-x)
+end
 
 --------------------------------------------------------------------------------
 -- HERO TREE — read by State, inferred here only as a fallback
@@ -175,41 +212,83 @@ function spec:Context(state, env)
   -- One map per Context, shared by the shard scalars below and the generic ctx.powers loop.
   local sums = ns.Coach.InflightPower(state, ns.SpecPowerDelta)
 
+  -- ── THE SHARD RAIL, IN FRAGMENTS (Phase 6.2) ───────────────────────────────
+  -- The whole point of this phase, and Destruction is the spec that needed it: every gate
+  -- below is denominated in FRAGMENTS (0–50) read off State's `unmodified` channel, so
+  -- "1.8 shards, +0.2 in flight, that is enough for a Chaos Bolt" is finally expressible.
+  --
+  -- ⚠ `ctx.shards` IS DELETED, NOT REPURPOSED.  Had it kept its name and changed unit, a
+  -- surviving `shards >= 2` would compile and be silently wrong by 10x — the one failure
+  -- mode this migration can produce.  A stale reader now gets nil and fails loudly.
+  --
+  -- The fallback when the exact read REFUSES is the display value scaled by the modifier:
+  -- coarse (a true 1.9 still arrives as 10) but never wrong in units.
   local ss = (state.power or {}).SoulShards or {}
-  local shards   = num(ss.value)
-  local incoming = sums.SoulShards or 0
-  local smax     = num(ss.max) or self.SHARD_CAP
-  local projected = shards and (shards + incoming) or nil
+  local mod = num(ss.modifier) or self.FRAGS_PER_SHARD
+  local frags = num(ss.unmodified)
+  if frags == nil then
+    local v = num(ss.value)
+    frags = v and (v * mod) or nil
+  end
+  local fragsIncoming = sums.SoulShards or 0
+  local fragsMax = num(ss.unmodifiedMax)
+    or (num(ss.max) and num(ss.max) * mod)
+    or self.FRAG_CAP
+  local fragsProjected = frags and (frags + fragsIncoming) or nil
 
   local ctx = {
     facts = factsByBase,
     mode = state.mode,
-    shards = shards, incoming = incoming, smax = smax,
-    projected = projected,
-    atCap = projected and projected >= self.SHARD_CAP or false,
-    powerReadable = ss.readable ~= false and shards ~= nil,
+    frags = frags, fragsIncoming = fragsIncoming, fragsMax = fragsMax,
+    fragsProjected = fragsProjected,
+    fragModifier = mod,
+    atCap = fragsProjected and fragsProjected >= fragsMax or false,
+    powerReadable = ss.readable ~= false and frags ~= nil,
   }
 
   -- ctx.powers — the generic power array the shell's ResourceBars emits from, driven off
   -- self.powers x state.power[name].  Destruction declares exactly SoulShards, so this is
   -- the same single discrete meter Demonology renders.
+  --
+  -- ⚠ THE ONE PLACE THAT STAYS IN DISPLAY UNITS: Renderer.lua pools one pip per unit of
+  -- `max`, so a `max` of 50 would try to draw fifty pips.  The exact integers ride alongside.
   ctx.powers = {}
   for _, p in ipairs(self.powers or {}) do
     local pw = (state.power or {})[p.name] or {}
+    -- The divisor between the units `sums` speaks (the spec's own, via SpecPowerDelta) and
+    -- the DISPLAY units this bar renders in.  Live client read first; `p.modifier` is the
+    -- spec's declared fallback for when it refuses (a power with no divisor omits it => 1).
+    local pmod = num(pw.modifier) or num(p.modifier) or 1
+    local exact = (p.incoming and sums[p.name]) or 0
     ctx.powers[#ctx.powers + 1] = {
       value     = num(pw.value),
-      max       = num(pw.max) or self.SHARD_CAP,
+      max       = num(pw.max) or self.BAR_MAX,
       -- `p.incoming` is the spec-declared "this bar shows a projection" flag.  Its READER
       -- moved here from State's deleted projectIncoming (Phase 6); the field on
-      -- spec.powers is unchanged.
-      incoming  = (p.incoming and sums[p.name]) or 0,
+      -- spec.powers is unchanged.  ⚠ `sums` is in EXACT units now, so the display half is
+      -- scaled DOWN, truncated toward zero — a partial shard is not a shard.
+      incoming  = truncToward(exact / pmod),
       display   = p.display or "discrete",
       powerType = p.token,
+      -- The exact rail (Phase 6.2): integers in the game's internal units, absent when the
+      -- client refused the read.  Dividing is the consumer's job — see Coach:ResourceBars.
+      -- `valueExact`/`maxExact` are MEASUREMENTS — absent, never zero, when the client
+      -- refused the exact read.  `incomingExact` is OUR arithmetic and is always known.
+      valueExact    = num(pw.unmodified),
+      maxExact      = num(pw.unmodifiedMax),
+      incomingExact = exact,
+      modifier      = pmod,
     }
   end
 
   -- Live shard costs, resolved once per pulse.  The shell owns the INJECTED reader
   -- (env.shardCostFn = cfg.shardCost); this brain owns WHICH spells cost and the fallbacks.
+  --
+  -- ⚠ THE UNIT BOUNDARY IS HERE AND NOWHERE ELSE.  Costs arrive in WHOLE SHARDS (the client
+  -- pre-applies the divisor: Chaos Bolt's DB2 cost of 20 comes back as 2); the gates compare
+  -- in FRAGMENTS.  So every cost is multiplied UP at this single site and republished under
+  -- a `*Frags` name, and nothing below this line ever sees a shard again.  The fallbacks go
+  -- through the same conversion, so there is exactly one crossing.
   local function costOf(spellID, fallback)
     if env and env.shardCostFn and spellID then
       local c = env.shardCostFn(spellID)
@@ -217,9 +296,12 @@ function spec:Context(state, env)
     end
     return fallback
   end
-  ctx.cbCost  = costOf(S.CHAOS_BOLT,   self.CB_COST_FALLBACK)
-  ctx.rofCost = costOf(S.RAIN_OF_FIRE, self.ROF_COST_FALLBACK)
-  ctx.sbCost  = costOf(S.SHADOWBURN,   self.SB_COST_FALLBACK)
+  local function costFrags(spellID, fallback)
+    return math.floor(costOf(spellID, fallback) * mod + 0.5)
+  end
+  ctx.cbCostFrags  = costFrags(S.CHAOS_BOLT,   self.CB_COST_FALLBACK)
+  ctx.rofCostFrags = costFrags(S.RAIN_OF_FIRE, self.ROF_COST_FALLBACK)
+  ctx.sbCostFrags  = costFrags(S.SHADOWBURN,   self.SB_COST_FALLBACK)
 
   -- ── Readiness, CHARGE-AWARE ────────────────────────────────────────────────
   -- An ability with a charge banked is usable even while its recharge timer runs, so a
@@ -497,8 +579,9 @@ end
 -- drops every occurrence.
 function spec:RankWinner(ctx, excluded)
   local S = ids()
-  local projected = ctx.projected or ctx.shards or 0   -- value + signed incoming
-  local ceiling = self.BUILD_CEILING
+  -- FRAGMENTS throughout (Phase 6.2): `projected` is the exact 0-50 rail plus the signed
+  -- in-flight delta, and every gate constant below is a fragment count (20 = 2 shards).
+  local projected = ctx.fragsProjected or ctx.frags or 0   -- value + signed incoming
 
   -- The Coach decides in BASE spellIDs, so key() is IDENTITY — it only gates on the ability
   -- being TRACKED (present in ctx.facts).  An untracked line yields nil and evaluation
@@ -523,8 +606,8 @@ function spec:RankWinner(ctx, excluded)
     if k then return k, lv, nt end
   end
 
-  -- L2 — Soul Fire while it fits without overcapping (simc: soul_shard<=4).
-  if ctx.soulFireUsable and projected <= ceiling then
+  -- L2 — Soul Fire while it fits without overcapping (simc: soul_shard<=4 => 40 fragments).
+  if ctx.soulFireUsable and projected <= self.BUILD_CEILING_FRAGS then
     k, lv, nt = pick(key(S.SOUL_FIRE), "ROTATION"); if k then return k, lv, nt end
   end
 
@@ -533,14 +616,16 @@ function spec:RankWinner(ctx, excluded)
   -- line is reached only when the transform is seen but Ruination itself was excluded (the
   -- second-place recompute).  Affordability still gates it: a plain Chaos Bolt costs shards
   -- even when the Art is up, and we cannot tell a free one from a paid one.
-  if ctx.artArmed and projected >= ctx.cbCost then
+  if ctx.artArmed and projected >= ctx.cbCostFrags then
     k, lv, nt = pick(key(S.CHAOS_BOLT), "ROTATION", "spend the Demonic Art"); if k then return k, lv, nt end
   end
 
   -- L4 — Conflagrate to build, while it fits and no Backdraft is being wasted.  The gate is
   -- PRESENCE, not "< 2 stacks" (the count is secret), so this holds at 1 stack where simc
-  -- would press — the conservative direction.
-  if ctx.conflagrateUsable and projected <= ceiling and not ctx.backdraft then
+  -- would press — the conservative direction.  ⚠ THE CEILING IS SIMC'S OWN 4.2 AGAIN
+  -- (42 fragments, warlock_destruction.simc:33), restored by the exact read; it was rounded
+  -- down to a flat 4 for as long as the pipeline could only see whole shards.
+  if ctx.conflagrateUsable and projected <= self.CONF_CEILING_FRAGS and not ctx.backdraft then
     k, lv, nt = pick(key(S.CONFLAGRATE), "ROTATION"); if k then return k, lv, nt end
   end
 
@@ -557,8 +642,9 @@ function spec:RankWinner(ctx, excluded)
     k, lv, nt = pick(key(S.MALEVOLENCE), "ROTATION"); if k then return k, lv, nt end
   end
 
-  -- L6 — Incinerate empowered by Chaotic Inferno, while it fits (simc: soul_shard<=4.6).
-  if ctx.chaoticInferno and projected <= ceiling then
+  -- L6 — Incinerate empowered by Chaotic Inferno, while it fits.  ⚠ Simc's 4.6 verbatim
+  -- (46 fragments, warlock_destruction.simc:36) — the second gate the exact read restored.
+  if ctx.chaoticInferno and projected <= self.INC_CEILING_FRAGS then
     k, lv, nt = pick(key(S.INCINERATE), "ROTATION", "Chaotic Inferno"); if k then return k, lv, nt end
   end
 
@@ -566,7 +652,7 @@ function spec:RankWinner(ctx, excluded)
   -- today (no target channel — ctx.targetExecute is structurally false), so in practice this
   -- is the Fiendish Cruelty line.
   if ctx.shadowburnUsable and (ctx.fiendishCruelty or ctx.targetExecute)
-      and projected >= ctx.sbCost then
+      and projected >= ctx.sbCostFrags then
     local note = ctx.fiendishCruelty and "Fiendish Cruelty" or "execute"
     k, lv, nt = pick(key(S.SHADOWBURN), "ROTATION", note); if k then return k, lv, nt end
   end
@@ -590,19 +676,20 @@ function spec:RankWinner(ctx, excluded)
   -- a player DECLARATION, never wrong, only stale.  It sits below the Art/anti-cap Chaos
   -- Bolts on Diabolist and above the L11 dump for both trees — which is also where the
   -- Hellcaller delta wants it, so no tree branch is needed, only the shard floor.
-  if ctx.mode == "aoe" and projected >= self.AOE_DUMP_FLOOR and projected >= ctx.rofCost then
+  if ctx.mode == "aoe" and projected >= self.AOE_DUMP_FLOOR_FRAGS
+      and projected >= ctx.rofCostFrags then
     k, lv, nt = pick(key(S.RAIN_OF_FIRE), "ROTATION"); if k then return k, lv, nt end
   end
 
   -- L11 — Chaos Bolt: the main shard dump and the payoff spender.
-  if projected >= ctx.cbCost then
+  if projected >= ctx.cbCostFrags then
     k, lv, nt = pick(key(S.CHAOS_BOLT), "ROTATION"); if k then return k, lv, nt end
   end
 
   -- L12 — Infernal Bolt as the shard refill when low.  Rides the Incinerate frame, so it is
   -- BLIND if Incinerate is not tracked — the worse twin of Demonology's Shadow Bolt hole,
   -- because this is the floor button.  @verify-ingame.
-  if projected <= self.REFILL_FLOOR and ctx.ibFrame then
+  if projected <= self.REFILL_FLOOR_FRAGS and ctx.ibFrame then
     k, lv, nt = pick(ctx.ibFrame, "ROTATION", "Infernal Bolt — shard refill"); if k then return k, lv, nt end
   end
 
@@ -633,11 +720,15 @@ function spec:Escalate(winnerKey, level, ctx)
   end
 
   -- 2. Chaos Bolt parked at a FULL bar — the readable overcap dump (Demonology's
-  --    HoG-at-cap rule, on Destruction's payoff spender).  Gated on ACTUAL shards, not the
+  --    HoG-at-cap rule, on Destruction's payoff spender).  Gated on ACTUAL fragments, not the
   --    projection: an in-flight spender has already committed to draining the bar, so
   --    projecting it would call you late for something you are mid-way through fixing.
   --    No burst carve-out, because Destruction never pools for a window on purpose.
-  if rec.base == S.CHAOS_BOLT and ctx.shards and ctx.shards >= self.SHARD_CAP then
+  -- ⚠ A FULL BAR IS `>= fragsMax`, i.e. 50 — NOT 5.  This is one of the two LATE-at-full-bar
+  -- rules the Phase-6.2 migration singled out: it reads like a whole-shard comparison and is
+  -- not one.
+  if rec.base == S.CHAOS_BOLT and ctx.frags
+      and ctx.frags >= (ctx.fragsMax or self.FRAG_CAP) then
     return "LATE"
   end
 

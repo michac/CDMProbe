@@ -121,7 +121,17 @@ local function build(f)
     history[#history + 1] = { phase = "start", spellID = ID.HOG, base = ID.HOG, at = NOW - 2 }
   end
 
-  local shardBar = { value = f.shards or 0, max = 5, readable = true }
+  -- ⚠ UNITS (Phase 6.2).  The brain decides in FRAGMENTS (0-50); `f.shards` stays in WHOLE
+  -- SHARDS and is multiplied here, so every existing `shards = N` call site keeps meaning
+  -- what it always meant.  `f.frags` is the escape hatch for a fractional case, and
+  -- `f.exactRefused` drops the exact read to exercise the value x modifier fallback.
+  local frags = f.frags or ((f.shards or 0) * 10)
+  local shardBar = { value = math.floor(frags / 10), max = 5, readable = true }
+  if not f.exactRefused then
+    shardBar.unmodified    = frags
+    shardBar.unmodifiedMax = 50
+    shardBar.modifier      = 10
+  end
   return {
     at = NOW, combat = (f.combat ~= false), combatStartedAt = NOW - 60,
     mode = f.mode or "st",

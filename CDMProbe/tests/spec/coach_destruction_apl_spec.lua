@@ -205,13 +205,30 @@ local function build(f)
   -- phase) plus the live shard cost SpecPowerDelta reads, chosen so its −cost IS f.incoming.
   -- Placed outside CAST_FRESH (1.0) but inside the flight window (3.0), so it is in flight
   -- without also raising the cast_started EDGE — a different question, tested elsewhere.
+  -- ⚠ IN WHOLE SHARDS, like `f.shards` — see the units note below.  `f.inflight` is the
+  -- generic escape hatch: any base spellID put in flight, projecting whatever yield or cost
+  -- SpecDestruction authors for it (that is how the fragment-boundary cases drive a builder).
   local history = {}
   if f.incoming and f.incoming ~= 0 then
     H.fx.cost[ID.CB] = -f.incoming
     history[#history + 1] = { phase = "start", spellID = ID.CB, base = ID.CB, at = NOW - 2 }
   end
+  if f.inflight then
+    history[#history + 1] = { phase = "start", spellID = f.inflight, base = f.inflight, at = NOW - 2 }
+  end
 
-  local shardBar = { value = f.shards or 0, max = 5, readable = true }
+  -- ⚠ UNITS (Phase 6.2).  The brain decides in FRAGMENTS (0-50); this fixture's `f.shards`
+  -- stays in WHOLE SHARDS and is multiplied here, so all ~90 existing `shards = N` call
+  -- sites keep meaning what they always meant.  `f.frags` is the escape hatch for the
+  -- fractional cases that motivated the whole phase (18 fragments = 1.8 shards).
+  -- `f.exactRefused` drops the exact read entirely, exercising the value x modifier fallback.
+  local frags = f.frags or ((f.shards or 0) * 10)
+  local shardBar = { value = math.floor(frags / 10), max = 5, readable = true }
+  if not f.exactRefused then
+    shardBar.unmodified    = frags
+    shardBar.unmodifiedMax = 50
+    shardBar.modifier      = 10
+  end
   return {
     at = NOW, combat = (f.combat ~= false), combatStartedAt = NOW - 60,
     mode = f.mode or "st",
@@ -1033,6 +1050,98 @@ describe("Destruction rotation list (from specs/destruction/rotation.md)", funct
   end)
 
   ----------------------------------------------------------------------------
+  -- THE FRAGMENT RAIL (Phase 6.2) — the capability this whole phase exists for.
+  ----------------------------------------------------------------------------
+  -- Soul Shards are stored as 0-50 FRAGMENTS and displayed as 0-5 whole shards.  Until the
+  -- exact read landed, the pipeline saw the display rail only: a true 1.8 arrived as `1`,
+  -- `shards >= 2` was false, and the HUD said "keep building" while you were one Incinerate
+  -- from a Chaos Bolt.  These are the cases that were UNEXPRESSIBLE before, so they are the
+  -- ones that prove the phase — every other test in this file passes on the old rail too.
+  describe("the FRAGMENT rail", function()
+    local function contextOf(facts) return ns.Specs[267]:Context(build(facts), Coach) end
+
+    -- THE MOTIVATING BOUNDARY.  18 fragments + an in-flight Incinerate (+2) is exactly the
+    -- 20 a Chaos Bolt costs; 17 + 2 is 19 and is not.  ⚠ MUTATION CHECK: both pulses read
+    -- `1` on the DISPLAY rail (asserted below), so a brain that decided on whole shards
+    -- cannot tell them apart and calls the filler in both — revert the rail and this pair
+    -- goes red together, which is the point of asserting BOTH sides.
+    it("18 fragments + an in-flight Incinerate makes Chaos Bolt the press", function()
+      assert.equals(ID.CB, winner({ frags = 18, inflight = ID.INC }).cid)
+    end)
+
+    it("...and 17 does not — it is one fragment short, and the floor keeps building", function()
+      assert.equals(ID.INC, winner({ frags = 17, inflight = ID.INC }).cid)
+    end)
+
+    it("both pulses read `1` on the DISPLAY rail — the discrimination is only on the exact one", function()
+      assert.equals(1, Coach:Compute(build({ frags = 18 })).resourceBars[1].value)
+      assert.equals(1, Coach:Compute(build({ frags = 17 })).resourceBars[1].value)
+      assert.equals(18, contextOf({ frags = 18 }).frags)
+      assert.equals(17, contextOf({ frags = 17 }).frags)
+    end)
+
+    it("projects the builder, not just the spender (the fence Phase 6.2 removed)", function()
+      local ctx = contextOf({ frags = 18, inflight = ID.INC })
+      assert.equals(2, ctx.fragsIncoming)      -- Incinerate: 2 fragments, base yield
+      assert.equals(20, ctx.fragsProjected)
+    end)
+
+    -- SIMC'S OWN FRACTIONS, restored by the exact read.  Both were rounded down to a flat
+    -- `<= 4` for as long as the pipeline could not see a fraction.
+    it("L4 Conflagrate builds at simc's 4.2 ceiling (42 fragments) and not at 43", function()
+      assert.equals(ID.CONF, winner({ conflagrate = cdReady(), frags = 42 }).cid)
+      assert.equals(ID.CB,   winner({ conflagrate = cdReady(), frags = 43 }).cid)
+    end)
+
+    it("L6 Chaotic-Inferno Incinerate builds at simc's 4.6 ceiling (46) and not at 47", function()
+      assert.equals(ID.INC, winner({ chaotic = true, frags = 46 }).cid)
+      assert.equals(ID.CB,  winner({ chaotic = true, frags = 47 }).cid)
+    end)
+
+    -- THE UNIT BOUNDARY, asserted as a NUMBER and not only through the press it produces.
+    -- Costs arrive in WHOLE SHARDS (the client pre-applies the divisor) and the gates compare
+    -- in FRAGMENTS; a 10x error still reads as a plausible shard count, so at some inputs a
+    -- gate would resolve the same way and hide it.  Pin the converted value itself.
+    it("converts a cost UP: a 2-shard Chaos Bolt is a 20-fragment gate", function()
+      local ctx = contextOf({ shards = 3 })
+      assert.equals(20, ctx.cbCostFrags)
+      assert.equals(30, ctx.rofCostFrags)
+      assert.equals(10, ctx.sbCostFrags)
+    end)
+
+    it("the Chaos Bolt gate compares 20 against 20 — not 2 against 20", function()
+      assert.equals(ID.CB,  winner({ frags = 20 }).cid)
+      assert.equals(ID.INC, winner({ frags = 19 }).cid)
+    end)
+
+    -- The exact read REFUSING must degrade to the display rail scaled by the modifier —
+    -- coarse, but never wrong in units, and never a crash or a false precision.
+    it("falls back to value x modifier when the exact read refuses", function()
+      local ctx = contextOf({ shards = 3, exactRefused = true })
+      assert.equals(30, ctx.frags)
+      assert.equals(50, ctx.fragsMax)       -- max 5 x the declared modifier
+      assert.is_true(ctx.powerReadable)
+      assert.equals(ID.CB, winner({ shards = 3, exactRefused = true }).cid)
+    end)
+
+    it("`ctx.shards` is GONE, not renamed in place — a stale reader gets nil", function()
+      local ctx = contextOf({ shards = 3 })
+      assert.is_nil(ctx.shards)
+      assert.is_nil(ctx.projected)
+      assert.is_nil(ctx.cbCost)
+    end)
+
+    -- Escalate's full-bar rule is the one that reads like a whole-shard comparison and is
+    -- not: a full bar is 50, not 5.
+    it("LATE at a FULL bar is 50 fragments — 5 would fire at a tenth of one", function()
+      local w = winner({ frags = 50 })
+      assert.equals(ID.CB, w.cid)
+      assert.equals("LATE", w.cue.emphasis)
+      assert.equals("ROTATION", winner({ frags = 49 }).cue.emphasis)
+    end)
+  end)
+
+  ----------------------------------------------------------------------------
   -- The resource seam — one discrete SoulShards meter, as Demonology renders.
   ----------------------------------------------------------------------------
   it("emits exactly one discrete SOUL_SHARDS resource bar", function()
@@ -1044,5 +1153,28 @@ describe("Destruction rotation list (from specs/destruction/rotation.md)", funct
     assert.equals(-2, bar.incoming)
     assert.equals("discrete", bar.display)
     assert.equals("SOUL_SHARDS", bar.powerType)
+  end)
+
+  -- The EXACT rail rides ALONGSIDE the display one on the bar (Phase 6.2).  `value`/`max`
+  -- stay whole-unit because Renderer.lua pools one pip texture per unit of `max`; the exact
+  -- integers are what DecisionLog's `PW:` divides to print `1.8`, and what a future
+  -- partial-fill pip renderer would consume.
+  it("the bar carries the exact rail additively, without moving the pip units", function()
+    local g = Coach:Compute(build({ frags = 18, incoming = -2 }))
+    local bar = g.resourceBars[1]
+    assert.equals(1, bar.value)          -- display: still one lit pip out of five
+    assert.equals(5, bar.max)
+    assert.equals(-2, bar.incoming)
+    assert.equals(18, bar.valueExact)    -- exact: 1.8 shards
+    assert.equals(50, bar.maxExact)
+    assert.equals(-20, bar.incomingExact)
+    assert.equals(10, bar.modifier)
+  end)
+
+  it("the exact fields are ABSENT, never zero, when the client refused the read", function()
+    local bar = Coach:Compute(build({ shards = 3, exactRefused = true })).resourceBars[1]
+    assert.equals(3, bar.value)
+    assert.is_nil(bar.valueExact)
+    assert.is_nil(bar.maxExact)
   end)
 end)

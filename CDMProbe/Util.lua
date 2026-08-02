@@ -362,9 +362,10 @@ end
 -- the filter: an UNFILTERED cost is not a slightly-worse answer, it is a
 -- different resource silently wearing the right units.
 --
--- Units caveat: Soul Shards are reported in FRAGMENTS in some places (10 per
--- shard) and whole shards in others, so the raw value is surfaced as-is rather
--- than divided by a guess.  The in-game readout settles it.
+-- ✅ UNITS, SETTLED IN GAME 2026-08-01.  `C_Spell.GetSpellPowerCost` PRE-APPLIES the
+-- display divisor: Chaos Bolt is stored as 20 fragments in DB2 and the client hands back
+-- **2**.  So this returns WHOLE SHARDS for a Soul Shard cost, always — the old "might be
+-- fragments" caveat is closed, and ns.ShardCost below is now a pass-through.
 function ns.PowerCost(spellID, powerType)
   if type(spellID) ~= "number" or ns.IsSecret(spellID) then return nil end
   if not (C_Spell and C_Spell.GetSpellPowerCost) then return nil end
@@ -392,22 +393,23 @@ function ns.PowerCost(spellID, powerType)
   return 0, nil
 end
 
--- The SAME cost, normalised to WHOLE SOUL SHARDS so it can be compared against
--- UnitPower(player, SoulShards) — which reports 0..5.
+-- The same cost, FILTERED TO SOUL SHARDS.  Returns (shardCost, rawCost) — the same number
+-- twice, because the client already reports it in whole shards (0..5, the rail
+-- `UnitPower(player, SoulShards)` reports).  ⚠ The NAME says shards and it means it: a
+-- consumer working in FRAGMENTS must multiply by the power's `modifier` itself, at exactly
+-- one place, and rename what it holds (Phase 6.2 — both brains do this in their Context).
 --
--- This is the load-bearing half of the units caveat above.  The gate rule is
--- `shards >= cost`, so a cost still expressed in FRAGMENTS (10 per shard) would
--- make every gate unreachable and every dot permanently dark.  The shard cap is
--- 5, so any reported cost that is a clean multiple of 10 can only be fragments —
--- there is no ability that costs ten shards.  Anything else is passed through
--- untouched rather than divided by a guess.
+-- ⚠ THE FRAGMENT HEURISTIC IS DELETED, NOT GENERALISED (Phase 6.2).  It read
+-- `if raw >= 10 and raw % 10 == 0 then return raw / 10`, and the in-game measurement that
+-- settled the units showed it can never legitimately fire: a Soul Shard cost of ten or more
+-- is impossible against a five-shard cap, so the branch could only ever have corrupted a
+-- correct answer.  It survived as long as it did because until v0.10.0 it only saw MANA
+-- figures (5000 -> 500), where it manufactured the defect's signature numbers; the type
+-- filter below then starved it, and it has not fired since.  Its `@verify-ingame` marker
+-- went with it — it pointed at the decision log, which could never have answered the
+-- question anyway (a raw 3 and a raw 30 both render `3`).
 --
--- Returns (shardCost, rawCost).
---
--- ⚠ The fragment heuristic below is STILL UNPROVEN against a real shard cost.  Until
--- v0.10.0 it only ever saw MANA figures, where it "worked" — 5000 -> 500 — and manufactured
--- the defect's signature numbers.  Now that the type filter means it only sees shards, the
--- decision log's `PW:` field is the read that confirms or falsifies it.  @verify-ingame
+-- THE TYPE FILTER STAYS, and is the load-bearing part — see ns.PowerCost's v0.10.0 banner.
 function ns.ShardCost(spellID)
   -- No Enum -> no way to ask about the right resource, and an UNFILTERED read is
   -- exactly the defect.  Report "unreadable" instead, which the scorer already
@@ -416,7 +418,6 @@ function ns.ShardCost(spellID)
   if pt == nil then return nil, nil end
   local raw = ns.PowerCost(spellID, pt)
   if raw == nil then return nil, nil end
-  if raw >= 10 and raw % 10 == 0 then return raw / 10, raw end
   return raw, raw
 end
 

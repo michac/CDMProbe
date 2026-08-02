@@ -49,9 +49,9 @@ local C = ns.Coach
 C.__index = C
 
 --------------------------------------------------------------------------------
--- Shell tunables (seconds / shards).  The DECISION tunables (TCT_LEAD / LATE_LEAD /
--- SHARD_CAP / HoG cost) belong to the spec brain now (CoachDemonology.lua); what stays
--- here is generic to the shell's own passes.
+-- Shell tunables (seconds).  The DECISION tunables (TCT_LEAD / LATE_LEAD / the power cap /
+-- the HoG cost) belong to the spec brain now (CoachDemonology.lua); what stays here is
+-- generic to the shell's own passes.
 --------------------------------------------------------------------------------
 local SOON_LEAD  = 3.0    -- a tracked cooldown anticipated within this => a dumb SOON
                          -- decoration (W4 Phase 8): "coming off cooldown", independent
@@ -66,7 +66,11 @@ local INFLIGHT_WINDOW = 3.0  -- a cast still plausibly IN FLIGHT this recently (
 -- an ARRAY the spec brain fills (ctx.powers, each entry carrying its own value/max/display/
 -- powerType); these only backstop a spec that left max/token off an entry.  The Demo facts
 -- (which power, its cap) live on the spec object now, not here.
-local SHARD_CAP   = 5     -- max fallback when a power entry omits it
+-- ⚠ DISPLAY UNITS, and named so.  This was `SHARD_CAP` until Phase 6.2, when the decision
+-- layer moved to FRAGMENTS (0–50) while the drawn bar stayed in whole shards (0–5) because
+-- Renderer.lua pools one pip per unit of `max`.  A fallback that still read `SHARD_CAP`
+-- beside a fragment-denominated brain is exactly the 10x confusion the rename prevents.
+local BAR_MAX_FALLBACK = 5   -- max fallback, in DISPLAY units, when an entry omits it
 local POWER_TOKEN = { SoulShards = "SOUL_SHARDS" }   -- Enum.PowerType name -> render token
 
 --------------------------------------------------------------------------------
@@ -322,16 +326,34 @@ end
 -- entry per declared power, each carrying value + max + the in-flight incoming projection
 -- + its display token + render powerType.  A single-power spec (Demo) yields a one-element
 -- array — the same shard meter as before.  The shell owns only the safety fallbacks.
+--
+-- ⚠ TWO UNITS, DELIBERATELY (Phase 6.2).  `value`/`max`/`incoming` stay in DISPLAY units
+-- because `Renderer.lua:drawResourceRow` pools one pip texture per unit of `max` — a `max`
+-- of 50 would try to draw fifty pips.  The EXACT rail rides ALONGSIDE as
+-- `valueExact`/`maxExact`/`incomingExact` plus the `modifier` that relates them: ADDITIVE
+-- and optional, ABSENT when the client refused the exact read rather than zero.
+--
+-- The exact fields are INTEGERS in the game's internal units (Soul Shards: 0–50 fragments,
+-- `modifier` 10) — NOT pre-divided floats.  Dividing is the CONSUMER's job, at the edge:
+-- DecisionLog's `PW:` renders `valueExact / modifier` as `1.8`, and a future partial-fill
+-- pip renderer would do the same.  Keeping the transport integral is the whole reason a
+-- boundary comparison upstream can never be decided by a float.
+-- See guidance-contract.json -> channels/resourceBars.
 --------------------------------------------------------------------------------
 function C:ResourceBars(ctx)
   local out = {}
   for _, p in ipairs((ctx and ctx.powers) or {}) do
     out[#out + 1] = {
       value = p.value or 0,
-      max = p.max or SHARD_CAP,
+      max = p.max or BAR_MAX_FALLBACK,
       incoming = p.incoming or 0,
       display = p.display or "discrete",
       powerType = p.powerType or POWER_TOKEN.SoulShards or "SOUL_SHARDS",
+      -- The exact rail, passed through VERBATIM — including its absence.
+      valueExact = p.valueExact,
+      maxExact = p.maxExact,
+      incomingExact = p.incomingExact,
+      modifier = p.modifier,
     }
   end
   return out

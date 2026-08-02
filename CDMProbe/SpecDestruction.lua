@@ -23,6 +23,16 @@
 --   spends     — what pressing it CONSUMES: "shards" | "art".  The numeric cost is NEVER
 --                authored here — it is talent-dependent, so it is read at runtime via
 --                ns.ShardCost (Util.lua), with a per-ability fallback on the brain.
+--   generatesFrags — deterministic Soul Shard yield in FRAGMENTS (10 per whole shard),
+--                BASE VALUE ONLY.  Feeds the in-flight projection through SpecPowerDelta.
+--                ⚠ THE FLOOR IS THE CONTRACT: a crit bonus is deterministic given a crit
+--                and the crit is not, so Incinerate's +1 and an Immolate crit tick's +1 are
+--                deliberately absent.  Under-crediting delays a cue by one press; over-
+--                crediting promises a Chaos Bolt you cannot cast.  Same doctrine as the
+--                charge napkin's undercount.  The one conditional we DO apply is Diabolic
+--                Embers, below — a talent, readable, and it doubles the commonest cast in
+--                the spec, so ignoring it would blunt the whole feature.
+--   diabolicEmbers — true = this yield DOUBLES when talent 387173 is known.
 --   cadence    — "oncd" | "gated" | "reactive" | "filler" | "utility"
 --   judgeable  — DEFAULT TRUE.  False = the ability's TRUE gate is something we cannot
 --                read, so we must never claim it is the right press.  Havoc is the
@@ -123,8 +133,24 @@ spec.SpecBindAlias = {
   [348]    = 157736,
 }
 
--- The Soul Shard cap.  Destruction spends in whole shards against the same 0–5 rail.
-spec.SHARD_CAP = 5
+-- ── THE SOUL SHARD RAIL, IN TWO UNITS (Phase 6.2) ────────────────────────────
+-- Destruction is the spec that FORCED this.  The game stores Soul Shards as 0–50 FRAGMENTS
+-- and displays them as 0–5 whole shards (measured 2026-08-01: `UnitPowerMax("player",
+-- SoulShards)` = 5, `UnitPowerMax(…, true)` = 50), and Destruction BUILDS in fragments —
+-- Incinerate pays 2, Conflagrate 5, an Immolate tick 1.  Reading only the display rail made
+-- a genuine 1.9 arrive as `1`, so "you are one Incinerate from a Chaos Bolt" was not
+-- imprecise, it was UNSAYABLE.  Every gate in the brain is now denominated in fragments;
+-- only the drawn bar stays in whole shards, because Renderer.lua draws one pip per unit of
+-- `max` and a `max` of 50 would try to draw fifty pips.
+--
+-- INTEGERS, NEVER FLOATS, on purpose: the client hands us an exact integer 0–50, these are
+-- boundary comparisons (`>= 20`), and dividing by 10 first would manufacture an imprecision
+-- the source does not have — a projected 2.0 arriving as 1.9999999999999998 withholds a cast
+-- that is available, rarely and unreproducibly.  Floats live at the EDGES (the decision
+-- log's `PW:1.8`), never inside a gate.
+spec.FRAG_CAP        = 50   -- exact units (fallback for state.power.SoulShards.unmodifiedMax)
+spec.BAR_MAX         = 5    -- DISPLAY units — the pip count, never a gate
+spec.FRAGS_PER_SHARD = 10   -- the modifier, as a fallback for a pulse-less caller
 
 -- THE POWER ARRAY.  Destruction rides the SAME power as Demonology — SoulShards, rendered
 -- as discrete pips on the SOUL_SHARDS token — so this spec touches NEITHER of the two
@@ -134,14 +160,21 @@ spec.SHARD_CAP = 5
 -- ⚠ FRAGMENTS, and why `display` is still "discrete".  Destruction SPENDS in whole shards
 -- (Chaos Bolt 2 / Rain of Fire 3 / Shadowburn 1) but GENERATES in tenths — Incinerate,
 -- Conflagrate, Soul Fire and Immolate ticks each pay a fraction.  The bar is conventionally
--- drawn as 5 segments with partial fill, which is neither `discrete` nor `continuous`.  We
--- render `discrete` because State cannot READ the fraction anyway: State.lua's readOnePower
--- calls UnitPower("player", pt) with no unmodified flag, so the value that arrives here is
--- already whole shards.  Adding a segments-with-partial-fill member to `resourceDisplay`
--- would be a contract edit that displays a precision we do not have — so the enum stays
--- closed until the fragment READ lands (specs/destruction/observability-map.md).
+-- drawn as 5 segments with partial fill, which is neither `discrete` nor `continuous`.
+--
+-- ⚠ THE REASON CHANGED IN PHASE 6.2, so do not re-read the old one.  This used to say
+-- "State cannot READ the fraction anyway", and that is now FALSE — State reads the exact
+-- 0–50 rail and puts `unmodified`/`unmodifiedMax`/`modifier` on the pulse, and the whole
+-- decision layer runs on it.  The enum stays closed for a DIFFERENT and purely mechanical
+-- reason: `Renderer.lua:drawResourceRow` pools ONE PIP TEXTURE PER UNIT OF `max` and fills
+-- the first `value` of them, with no fractional path at all (and `display == "continuous"`
+-- draws nothing).  A segments-with-partial-fill member would need a partial-fill pip built
+-- first.  Filed as a backlog item in docs/status.md; the additive `valueExact`/`maxExact`
+-- fields on each resourceBar are exactly what such a renderer would consume, so the data is
+-- already waiting for it.
 spec.powers = {
-  { name = "SoulShards", display = "discrete", incoming = true, token = "SOUL_SHARDS" },
+  { name = "SoulShards", display = "discrete", incoming = true, token = "SOUL_SHARDS",
+    modifier = 10 },
 }
 
 -- The DECISION-LOG vocabulary (adding-a-spec.md Step 6).  DecisionLog.lua holds no spec
@@ -213,8 +246,12 @@ spec.Spec = {
   -- Incinerate: the floor press.  `lost` states what its absence costs, in the same spirit
   -- as Demonology's Shadow Bolt entry — and here it is worse, because Incinerate is pressed
   -- far more often than Shadow Bolt and carries the Infernal Bolt transform.
+  -- 2 fragments base, DOUBLED to 4 by Diabolic Embers (387173) — Tier-1, DB2 energize
+  -- effect + the 12.0.7 tooltip.  Its +1 on a crit is deterministic given the crit and the
+  -- crit is not, so it is not projected (see `generatesFrags` in the header).
   [S.INCINERATE] = {
     kind = "button", cadence = "filler", abbr = "Inc", label = "Incinerate",
+    generatesFrags = 2, diabolicEmbers = true,
     lost = "the floor press has no icon, and Inc -> Infernal Bolt cannot light",
   },
   -- CONFLAGRATE is the project's first — and so far only — charged tracked ability
@@ -223,9 +260,12 @@ spec.Spec = {
   -- OOC luxury; in a pull the brain reads State's CHARGE NAPKIN instead (seeded exact OOC,
   -- -1 per landed cast, +1 per ChargeGained alert, clamped, biased to undercount).
   -- `charges` here documents the real ability; the count comes from State.
+  -- 5 fragments, no crit bonus.  ⚠ The MID1 4-set adds +2 (making it 7) and we do NOT read
+  -- it: there is no tier-set channel on the pulse, and the failure direction of ignoring it
+  -- is the safe one (under-credit).  Noted here rather than guessed at.
   [S.CONFLAGRATE] = {
     kind = "button", cadence = "reactive", charges = 2, abbr = "Conf",
-    label = "Conflagrate",
+    generatesFrags = 5, label = "Conflagrate",
   },
   -- ⚠ SHADOWBURN HAS NO CHARGES.  This entry carried `charges = 2` and these docs called it
   -- the second charged ability; both were wrong.  DB2 @ 12.0.7 is unambiguous —
@@ -236,11 +276,19 @@ spec.Spec = {
     kind = "button", spends = "shards", cadence = "reactive", abbr = "SB",
     label = "Shadowburn",
   },
-  -- Soul Fire: a hard-cast builder on a ~45s cooldown that also refreshes Immolate.
+  -- Soul Fire: a hard-cast builder on a ~45s cooldown that also refreshes Immolate.  A full
+  -- shard, 10 fragments.  (The KB's maxroll capture says 5; that capture is Tier 3 and it is
+  -- wrong — DB2's energize effect and the 12.0.7 tooltip both say 10.)
   [S.SOUL_FIRE] = {
     kind = "button", cadence = "oncd", baseCD = 45, abbr = "SF", label = "Soul Fire",
+    generatesFrags = 10,
   },
   -- Immolate — the spec's SPINE, keyed on the tracked DoT aura id (see SpecIDs).
+  -- ⚠ NO `generatesFrags`, and that is not an omission.  Immolate's income is 1 fragment
+  -- PER TICK over 18s, not a lump on cast; the in-flight projection answers "what will the
+  -- bar read when THIS CAST resolves", and the answer for a DoT application is "nothing
+  -- yet".  Its income is real and the brain simply does not anticipate it — the same
+  -- conservative floor as the crit yields.
   [S.IMMOLATE] = {
     kind = "button", cadence = "gated", abbr = "Imm", label = "Immolate",
   },
@@ -298,10 +346,18 @@ spec.Spec = {
   -- replaces Incinerate.  `expect = false` so an expected-vs-bound diff never reports them
   -- as a missing ability (unbound is their normal state).  `spends = "art"` is what the
   -- brain's Context filters on to recognise an armed Art, and **`art`** is what tells the
-  -- two apart — deliberately NOT a `generates` number, because Destruction's Infernal Bolt
-  -- refills in FRAGMENTS and the KB has no clean whole-shard figure for it
-  -- (@verify-ingame).  Demonology could key on `generates == 3`; we key on identity.
-  -- Both id pairs mapped — see the ID-split note in SpecIDs.
+  -- two apart.  Demonology could key on `generatesFrags == 30`; we key on identity, and
+  -- that separation is now load-bearing in the other direction too — Infernal Bolt DOES
+  -- carry a yield here (Phase 6.2), so a `generatesFrags`-based discriminator would be
+  -- ambiguous.  Both id pairs mapped — see the ID-split note in SpecIDs.
+  --
+  -- ⚠ 20 IS THE UNRESOLVED HALF.  Infernal Bolt refills 30 fragments on Demonology; on
+  -- DESTRUCTION the spec aura 137046 (effect #13) applies −10, making it 20 — and the two
+  -- researchers who mined simc disagreed about exactly this, one reading the aura and one
+  -- reading the raw 30.  20 is taken because it is the LOWER figure and the floor is the
+  -- contract, and because the APL asymmetry corroborates it.  It is Diabolist-only, so it
+  -- gates nothing; settle it in game by casting one and watching the bar move 2 shards or 3
+  -- (docs/roster-state-plan.md §7.2).  @verify-ingame
   --
   -- ⚠ `art` EXISTS SO `abbr` CAN BE PER-ID.  These two fields were one until 2026-07-30:
   -- the brain branched on `abbr == "IB"`, which forced every Infernal Bolt id to share one
@@ -317,9 +373,10 @@ spec.Spec = {
   [434636] = { kind = "button", spends = "art", art = "ruination", cadence = "reactive",
                expect = false, abbr = "RU3", label = "Ruination (alt ID, unconfirmed)" },
   [433891] = { kind = "button", spends = "art", art = "infernal",  cadence = "reactive",
-               expect = false, abbr = "IB",  label = "Infernal Bolt" },
+               expect = false, abbr = "IB",  generatesFrags = 20, label = "Infernal Bolt" },
   [434506] = { kind = "button", spends = "art", art = "infernal",  cadence = "reactive",
-               expect = false, abbr = "IB2", label = "Infernal Bolt (Demo-confirmed ID, alias)" },
+               expect = false, abbr = "IB2", generatesFrags = 20,
+               label = "Infernal Bolt (Demo-confirmed ID, alias)" },
 
   -- ── Utility: defensives / CC / mobility ───────────────────────────────────
   -- Class-shared with Demonology, so the same shape.  Utilities are never scored, never
@@ -366,34 +423,66 @@ function spec.SpecInfo(spellID)
   return NEUTRAL, false
 end
 
--- SIGNED net power delta of an in-flight cast — what the shard bar will read AFTER this
--- cast resolves, relative to now, and which named power it moves.  State folds it into
--- `incoming`, and the brain ranks on projected = value + incoming.
+-- ── Diabolic Embers (387173) — the one conditional yield we read ─────────────
+-- It DOUBLES Incinerate (2 fragments -> 4), and Incinerate is the press this spec makes
+-- more than any other, so under-crediting it by half would blunt the whole projection.
 --
--- ⚠ SPENDERS ONLY, ON PURPOSE.  Demonology projects both halves because its generators pay
--- WHOLE shards (Shadow Bolt +1, Demonbolt +2, Infernal Bolt +3).  Destruction's builders
--- pay FRAGMENTS — Incinerate, Conflagrate, Soul Fire and Immolate ticks each yield a
--- fraction — into a bar State can only read in whole shards.  Authoring a fake integer
--- `generates` for them would make the projection lie by up to a full shard on every filler
--- cast, so this spec declines to project builders at all (the option
--- specs/destruction/notes.md spells out) and carries no `generates` field anywhere.
+-- A TALENT is build-scoped, not tick-scoped, so it is cached and cleared through the
+-- registry's `Invalidate` seam (SpecRegistry.lua wires it to TRAIT_CONFIG_UPDATED and to a
+-- real spec swap) — this is the first spec to use that seam, which was left in place for
+-- exactly this.  ⚠ A REFUSED READ RETURNS FALSE AND DOES NOT CACHE: assume UNTALENTED, the
+-- conservative floor, and ask again next pulse so it self-heals the moment the spell book is
+-- readable.  Caching a refusal would freeze "untalented" for the session.
+local DIABOLIC_EMBERS = 387173
+local embersKnown     -- nil = not asked yet / last read refused
+
+local function diabolicEmbers()
+  if embersKnown ~= nil then return embersKnown end
+  if not (C_SpellBook and C_SpellBook.IsSpellKnown) then return false end
+  local ok, known = pcall(C_SpellBook.IsSpellKnown, DIABOLIC_EMBERS)
+  if not ok or type(known) ~= "boolean" then return false end
+  embersKnown = known
+  return known
+end
+
+-- The registry's build-scoped cache hook (SpecRegistry.lua -> ns.InvalidateSpecCaches).
+function spec.Invalidate()
+  embersKnown = nil
+end
+
+-- SIGNED net power delta of an in-flight cast, IN FRAGMENTS — what the shard rail will read
+-- AFTER this cast resolves, relative to now, and which named power it moves.  The Coach
+-- folds it into `incoming` (ns.Coach.InflightPower) and the brain ranks on
+-- projected = frags + fragsIncoming.
 --
--- The SPENDER half is clean whole numbers (Chaos Bolt -2, Rain of Fire -3, Shadowburn -1),
--- so it transfers from Demonology unchanged, including State's double-deduction guard: an
--- in-flight Chaos Bolt projects -2 and the brain re-ranks to the next press mid-cast
--- instead of re-cuing the spell you are already casting.  That is the half that matters
--- for correctness; the builder half only costs us the fine-grained pooling gates, which
--- rotation.md already rounds conservatively.
+--   delta = (generatesFrags, doubled by Diabolic Embers where it applies)
+--         − (live shard cost x FRAGS_PER_SHARD, IFF this ability spends shards)
 --
--- The cost is read LIVE (talent-dependent) via ns.ShardCost; an UNREADABLE cost drops the
--- term (delta 0) rather than guessing — the safe direction, since it never pre-deducts
--- shards we are not sure will be spent.
+-- ⚠ THE BUILDER HALF EXISTS NOW (Phase 6.2), and the fence that used to forbid it is gone
+-- because its PREMISE is gone.  This file used to say "spenders only, on purpose": builders
+-- pay fragments into a bar State could only read in whole shards, so a fake integer
+-- `generates` would have lied by up to a full shard per filler cast.  State reads the exact
+-- 0–50 rail now, the brain's gates are denominated in fragments, and an Incinerate's +2 is
+-- an exact integer added to an exact integer.  This is the half that makes "you are one
+-- Incinerate from a Chaos Bolt" sayable at all.
+--
+-- ⚠ ONE UNIT BOUNDARY, HERE.  ns.ShardCost returns WHOLE SHARDS (the client pre-applies the
+-- display divisor — Chaos Bolt's DB2 cost of 20 comes back as 2, measured 2026-08-01), so
+-- the cost is multiplied UP to fragments at this single site and nothing below it sees a
+-- shard again.  A missed conversion is a silent 10x error that still reads as a plausible
+-- shard count, which is why there is exactly one place it could happen.
+--
+-- An UNREADABLE cost drops the spend term rather than guessing — the safe direction, since
+-- it never pre-deducts shards we are not sure will be spent.
 function spec.SpecPowerDelta(spellID)
   local info = ns.SpecInfo(spellID)
-  local delta = 0
+  local delta = info.generatesFrags or 0
+  if delta > 0 and info.diabolicEmbers and diabolicEmbers() then delta = delta * 2 end
   if info.spends == "shards" and ns.ShardCost then
     local cost = ns.ShardCost(spellID)
-    if type(cost) == "number" then delta = -cost end
+    if type(cost) == "number" then
+      delta = delta - math.floor(cost * spec.FRAGS_PER_SHARD + 0.5)
+    end
   end
   if delta == 0 then return { power = nil, delta = 0 } end
   return { power = "SoulShards", delta = delta }
