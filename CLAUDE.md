@@ -127,6 +127,25 @@ Design context + status live in the parent workspace at
     instance's own pools (`cueHolders`/`cueFrames`/`cueGlows`) after Draw. A winning
     effect gets **promoted into the Renderer properly** (a token, a `GLOW_SPEC` field, a
     one-shot channel); do not ship it from the rig.
+  - `rt lab` — **THE RENDER LAB (`RenderLab.lua`, 2026-08-01) — DISPOSABLE, delete it when
+    the question is answered.** The cue ring's spin stalls then races, forever, and six
+    builds of theorising about our own scaffolding produced three wrong answers. So: panels
+    side by side, each a bare two-ring implementation, sharing NO helper with `RenderTest.lua`
+    and never touching `Renderer.lua` — a lab that borrowed the rig would measure the rig again.
+    **Round 1** had three subagents, blind to the repo, implement the idea from one pinned
+    brief; A2 and A3 (the faithful readings) ran **STEADY**, so the concept, the art and the
+    animation API are **cleared** and the artefact is ours. (A1 misread "ring" as a necklace
+    of orbiting sprites — discounted. Round 1's files are in git at v0.32.72.)
+    **Round 2** walks A2's steady ring toward the Renderer's, one difference per panel, with
+    A2 itself as the control: `B1` the shipped numbers (12.0s, echo locked in phase, light
+    split), `B2` + the Alpha BOUNCE breathe on the same texture, `B3` + a 10 Hz ticker
+    restating size/anchor/colour as `R:setDotGlow` does every tick.
+    ⚠ **ONE COMMAND ARMS EVERYTHING.** `/cdmp rt lab` draws the panels AND records every
+    rotation's `GetProgress()` at 20 Hz into `CDMProbeDB.rtlab` — nothing is typed during
+    the run. `/reload`, then `wowkb.cdmp rtlab` prints how far each ring drifts from a
+    uniform spin **in degrees**, so "does it surge" stops being a judgement from the chair.
+    Raw samples in, analysis on the desktop (the decision-log/`flight` split) so a capture
+    can be re-analysed without re-flying. `rt lab 1-4` magnifies one panel.
 - `reset` — turn the HUD off.
 
 *(The `skin` / `resource` solid-colour-block directions were deleted in W4a
@@ -394,6 +413,18 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   GLOW_SCALE is ART-SPECIFIC — 3.34 belongs to star_07 and
                                   does not transfer; swapping the art and re-dialling it
                                   are ONE job.
+    RenderLab.lua                 THE RENDER LAB (`/cdmp rt lab`) + its RenderLabA2/B1/B2/
+    RenderLabA2.lua               B3.lua panels — see the command above.  DISPOSABLE BY
+    RenderLabB1.lua               DESIGN: one `git rm` of these five files, their .toc
+    RenderLabB2.lua               lines and `cmd_rtlab` when the surge is localised.
+    RenderLabB3.lua               ⚠ Shares NO helper with RenderTest.lua and never touches
+                                  Renderer.lua — that isolation IS the experiment, so the
+                                  small duplications (icon art, captions) are deliberate.
+                                  Reached through ns.RenderTest's one door so `/cdmp rt off`
+                                  still tears it down with everything else.  Its recorder
+                                  walks the WIDGETS (GetAnimationGroups/GetAnimations), not
+                                  the code that made them, so it measures a panel that never
+                                  agreed to be measured.
     RenderTest.lua                the `/cdmp rt` render-test rig — IMPURE by construction
                                   and deliberately outside the Draw path: placeholder icon
                                   frames, a C_Timer ticker, the hand-authored DrawList

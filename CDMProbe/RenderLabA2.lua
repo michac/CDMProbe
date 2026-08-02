@@ -49,9 +49,12 @@ local function CreateRing(panel, size, sublayer, alpha, period, degrees)
   group:Play()
 end
 
-ns.RenderLabInfo[2] = "40px inner spins CW in 6s, 60px outer CCW in 9s; ADD blend, OVERLAY sublevels 1/2, linear (no easing), alpha .85/.55."
+-- ⚠ ROUND 2 RENUMBERED THIS FROM [2] TO [1] — the ONLY edit made to the file the blind
+-- subagent wrote.  It is round 1's steady survivor and now serves as round 2's CONTROL:
+-- if this panel ever surges, the run is invalid and nothing else on screen means anything.
+ns.RenderLabInfo[1] = "CONTROL (round-1 A2, unchanged): 40px inner CW 6s, 60px outer CCW 9s; ADD, OVERLAY 1/2, linear, alpha .85/.55."
 
-ns.RenderLabImpl[2] = function(panel)
+ns.RenderLabImpl[1] = function(panel)
   CreateRing(panel, OUTER_SIZE, OUTER_SUBLAYER, OUTER_ALPHA, OUTER_PERIOD, OUTER_DEGREES)
   CreateRing(panel, INNER_SIZE, INNER_SUBLAYER, INNER_ALPHA, INNER_PERIOD, INNER_DEGREES)
 end

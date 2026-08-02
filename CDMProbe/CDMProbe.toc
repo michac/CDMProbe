@@ -23,9 +23,10 @@ HudGeometry.lua
 Binder.lua
 Renderer.lua
 RenderTest.lua
-RenderLabA1.lua
 RenderLabA2.lua
-RenderLabA3.lua
+RenderLabB1.lua
+RenderLabB2.lua
+RenderLabB3.lua
 RenderLab.lua
 HudLayout.lua
 HudVirtual.lua

@@ -22,7 +22,7 @@ std = "lua51+wow"
 stds.wow = {
   read_globals = {
     -- Core client API the addon calls (grepped from CDMProbe/*.lua) ------------
-    "CreateFrame", "hooksecurefunc", "GetTime", "InCombatLockdown",
+    "CreateFrame", "hooksecurefunc", "GetTime", "GetFramerate", "InCombatLockdown",
     "UIParent", "CopyTable", "wipe", "issecretvalue", "issecrettable",
     "canaccessvalue", "GetSpellBaseCooldown", "CreateColor",
     -- M4.6 §4.6 — the centre-screen "BURST COMING" call-out.
