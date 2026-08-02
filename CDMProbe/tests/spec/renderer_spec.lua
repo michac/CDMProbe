@@ -81,6 +81,11 @@ describe("Renderer", function()
   ------------------------------------------------------------------------------
   -- 3b — cue dots
   ------------------------------------------------------------------------------
+  -- THE CUE'S GEOMETRY NOW RIDES THE CUE LAYER, not the dot.  The dot is CENTERed on the
+  -- layer and the layer carries the entry's point/offsets, so the pop can scale about the
+  -- cue's own centre instead of the icon's (Renderer.lua: ensureLayer).  What is asserted
+  -- is unchanged in substance: the entry's geometry reaches a frame anchored to the
+  -- registered icon, and the dot is where it says.
   it("paints one ROTATION dot under its handle at the given point + size", function()
     local r, icons = rigged(1)
     r:Draw({ cues = { { anchorTo = "fake1", point = "CENTER", relPoint = "CENTER",
@@ -89,10 +94,30 @@ describe("Renderer", function()
     assert.is_true(colorEq(dot._color, theme.ROTATION[1], theme.ROTATION[2], theme.ROTATION[3]))
     assert.same({ 12, 12 }, dot._size)
     assert.is_true(dot._shown)
-    local pt = dot._points[1]
-    assert.equals("CENTER", pt.point)
-    assert.equals(icons[1], pt.rel)          -- anchored to the registered frame
-    assert.equals(-28, pt.dy)
+    local layer = r.cueLayers["fake1"]
+    assert.is_not_nil(layer, "no cue layer — the dot has nothing to pop with")
+    assert.same({ 12, 12 }, layer._size)          -- the layer's rect IS the dot's rect
+    local lp = layer._points[1]
+    assert.equals("CENTER", lp.point)
+    assert.equals(r.cueHolders["fake1"], lp.rel)  -- ...on the holder, which IS the icon's rect
+    assert.equals(icons[1], r.cueHolderAnchor["fake1"])
+    assert.equals(-28, lp.dy)
+    assert.equals(layer, dot._points[1].rel)      -- the dot just centres on it
+    assert.equals("CENTER", dot._points[1].point)
+  end)
+
+  it("re-points the cue layer only when the geometry actually changes", function()
+    -- ⚠ The reason the pop lives on a frame at all: a SetSize/SetPoint per tick on the
+    -- region being scaled is the fight this structure exists to avoid.  The live cue
+    -- geometry is constant (G.DOT), so a steady redraw must re-stamp NOTHING.
+    local r = rigged(1)
+    local cue = { anchorTo = "fake1", point = "TOPRIGHT", relPoint = "TOPRIGHT",
+                  dx = -3, dy = -3, size = 12, emphasis = "ROTATION" }
+    r:Draw({ cues = { cue } })
+    local layer = r.cueLayers["fake1"]
+    assert.equals(1, #layer._points)
+    for _ = 1, 5 do r:Draw({ cues = { cue } }) end
+    assert.equals(1, #layer._points, "the cue layer is re-anchored on every draw")
   end)
 
   it("paints a ROTATION_FALLBACK cue in its OWN violet, animating like every other cue", function()
@@ -263,11 +288,16 @@ describe("Renderer", function()
     assert.is_true(r.cueHolders["fake1"]._shown)
   end)
 
+  -- …and a THIRD term since the ghost landed: a removed handle leaves both active sets in
+  -- the same draw that starts its out-animation, so a two-term union would hide the holder
+  -- instantly and the ghost would play invisibly.  Here the ghost is finished first.
   it("hides the holder only when BOTH channels drop the handle", function()
     local r = rigged(1)
     r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" } },
              keybinds = { { anchorTo = "fake1", keybind = "Q" } } })
     assert.is_true(r.cueHolders["fake1"]._shown)
+    r:Draw({})
+    r.cueGhosts["fake1"].anim:Fire("OnFinished")   -- the ghost has played out
     r:Draw({})
     assert.is_false(r.cueHolders["fake1"]._shown)
   end)
@@ -321,6 +351,199 @@ describe("Renderer", function()
     local r = rigged(1)
     assert.has_no.errors(function()
       r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" } } })
+    end)
+  end)
+
+  ------------------------------------------------------------------------------
+  -- THE PROMOTED LOOK (2026-08-01) — the treatment dialled in on `/cdmp rt fx` and
+  -- moved into the Renderer proper: a backing disc, an outer counter-rotating echo of
+  -- the ring, and the light split between the two.
+  ------------------------------------------------------------------------------
+  it("backs each cue with a dark disc and an outer echo of its ring", function()
+    local r = rigged(1)
+    r:Draw({ cues = { { anchorTo = "fake1", size = 12, emphasis = "ROTATION" } } })
+    local glow, echo, disc = r.cueGlows["fake1"], r.cueEchoes["fake1"], r.cueDiscs["fake1"]
+    assert.is_not_nil(echo, "no echo — the ring has no reach")
+    assert.is_not_nil(disc, "no backing disc — the additive ring has nothing to read against")
+    assert.is_true(echo._shown)
+    assert.is_true(disc._shown)
+    -- The echo is BIGGER than the base ring (reach) and the disc smaller than both, sized
+    -- off the echo's extent so turning the reach up can never leave it undersized.
+    local ring, out, back = glow._size[1], echo._size[1], disc._size[1]
+    assert.is_true(out > ring, "the echo must reach past the ring it echoes")
+    assert.is_true(back < ring, "the disc must sit BEHIND the dot, not swallow the ring")
+    assert.is_true(math.abs(out - ring * 1.5) < 1e-6)
+    assert.is_true(math.abs(back - out * 0.35) < 1e-6)
+    -- Both rings carry the cue's hue; only the ALPHA differs (the light split).
+    local rot = theme.ROTATION
+    assert.is_true(colorEq(glow._color, rot[1], rot[2], rot[3]))
+    assert.is_true(colorEq(echo._color, rot[1], rot[2], rot[3]))
+    assert.is_true(near(glow._color[4] + echo._color[4], 1.0),
+      "the light must be SPLIT between ring and echo, not added — adding reach must not add brightness")
+    assert.is_true(disc._color[1] == 0 and disc._color[2] == 0 and disc._color[3] == 0)
+  end)
+
+  it("counter-rotates the echo at a RATIO of whatever the base ring's period is", function()
+    -- The ratio (not an absolute period) is what makes the effect survive a retune and
+    -- gives LATE the same relationship for free.  Two copies turning TOGETHER read as one
+    -- thicker ring; opposed rotation is what makes the extra reach legible as rays.
+    local r = rigged(2)
+    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" },
+                      { anchorTo = "fake2", emphasis = "LATE" } } })
+    for _, key in ipairs({ "fake1", "fake2" }) do
+      local base, echo = r.cueGlows[key].rot, r.cueEchoes[key].rot
+      assert.is_true(near(echo._duration, base._duration * 2.5),
+        key .. ": the echo is not timed off the base ring's own period")
+      assert.is_true(base._degrees * echo._degrees < 0,
+        key .. ": the echo turns the SAME way as the base ring — it will read as one ring")
+    end
+    -- ...and that is a real difference, not both rings sitting at the same number.
+    assert.is_not.equals(r.cueGlows["fake1"].rot._duration, r.cueGlows["fake2"].rot._duration)
+  end)
+
+  it("keeps LATE's ring ~1.39x the base after the GLOW_SCALE retune", function()
+    -- LATE is not a different KIND of press, it is the same press ESCALATED — "a bigger
+    -- ring", expressed as a RATIO.  GLOW_SCALE moved 2.3 -> 3.34 when the art changed to
+    -- star_07 (it is art-specific), and LATE's ringScale moved with it.  This pins the
+    -- ratio rather than either number, which is the thing that must not drift.
+    local r = rigged(2)
+    r:Draw({ cues = { { anchorTo = "fake1", size = 12, emphasis = "ROTATION" },
+                      { anchorTo = "fake2", size = 12, emphasis = "LATE" } } })
+    local base, late = r.cueGlows["fake1"]._size[1], r.cueGlows["fake2"]._size[1]
+    local ratio = late / base
+    assert.is_true(ratio > 1.30 and ratio < 1.50,
+      "LATE's escalation ratio drifted to " .. ratio .. " (want ~1.39)")
+  end)
+
+  ------------------------------------------------------------------------------
+  -- THE CUE LAYER — why the pop can exist at all.  The dot/ring/echo/disc ride a frame
+  -- the draw path never resizes; the KEYBIND deliberately does not.
+  ------------------------------------------------------------------------------
+  it("parents the cue's own art to the cue layer and the key hint to the HOLDER", function()
+    local r = rigged(1)
+    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" } },
+             keybinds = { { anchorTo = "fake1", keybind = "Q" } } })
+    local holder, layer = r.cueHolders["fake1"], r.cueLayers["fake1"]
+    for name, region in pairs({ dot = r.cueFrames["fake1"], ring = r.cueGlows["fake1"],
+                               echo = r.cueEchoes["fake1"], disc = r.cueDiscs["fake1"] }) do
+      assert.equals(layer, region._parent, name .. " is not on the cue layer — it will not pop")
+    end
+    -- THE LOAD-BEARING HALF: identity chrome must not grow and shrink every time the
+    -- rotation moves, so the key hint is on the holder, OUTSIDE the popped subtree.
+    assert.equals(holder, r.cueKeys["fake1"]._parent,
+      "the keybind rides the cue layer — it will scale with every pop")
+    assert.is_not.equals(layer, r.cueKeys["fake1"]._parent)
+  end)
+
+  it("keeps the cue layer level-matched with the holder, so the key hint stays on top", function()
+    -- A child frame defaults one level ABOVE its parent, which would put the ring's
+    -- ARTWORK over the key hint's OVERLAY.  Level-matched, the draw layer decides.
+    local r = rigged(1)
+    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" } } })
+    assert.equals(r.cueHolders["fake1"]:GetFrameLevel(), r.cueLayers["fake1"]:GetFrameLevel())
+  end)
+
+  ------------------------------------------------------------------------------
+  -- THE TWO EDGES.  Measured off 504s of real play: the cue set turns over at cast
+  -- cadence (120 changes, one every ~4s) and 60 % of those are a SWAP.  So a per-handle
+  -- POP/GHOST and a per-SET-CHANGE callback are two different things, and conflating
+  -- them would fire twice on every swap.
+  ------------------------------------------------------------------------------
+  local function watched(n)
+    local seen = {}
+    local r = Rr.New({ onCueSetChanged = function(kind) seen[#seen + 1] = kind end })
+    for i = 1, n do r:Register("fake" .. i, H.newStub()) end
+    return r, seen
+  end
+  local function cue(handle) return { anchorTo = handle, emphasis = "ROTATION" } end
+
+  it("fires NO edge on a steady redraw", function()
+    local r, seen = watched(1)
+    for _ = 1, 5 do r:Draw({ cues = { cue("fake1") } }) end
+    assert.same({ "new" }, seen)   -- the first draw is a real arrival; the other four are not
+  end)
+
+  it("fires exactly one 'new' when a cue is added", function()
+    local r, seen = watched(2)
+    r:Draw({ cues = { cue("fake1") } })
+    r:Draw({ cues = { cue("fake1"), cue("fake2") } })
+    assert.same({ "new", "new" }, seen)
+  end)
+
+  it("fires exactly ONE 'new' on a swap — a cue that moved was not removed", function()
+    -- THE LOAD-BEARING CASE.  60 % of real set changes are this shape.  Firing per handle
+    -- would make every swap two events: overlapping sounds, and wrong besides.
+    local r, seen = watched(2)
+    r:Draw({ cues = { cue("fake1") } })              -- the arrival: one "new"
+    r:Draw({ cues = { cue("fake2") } })              -- fake1 out + fake2 in, ONE tick
+    assert.same({ "new", "new" }, seen)              -- ...and NOT { new, new, gone }
+    -- Both halves of the swap still happened visually — they are just not two events.
+    assert.equals(1, r.cueLayers["fake2"].pop._plays)
+    assert.is_true(r.ghosting["fake1"])
+  end)
+
+  it("fires one 'gone' when the board empties", function()
+    local r, seen = watched(1)
+    r:Draw({ cues = { cue("fake1") } })
+    r:Draw({ cues = {} })
+    assert.same({ "new", "gone" }, seen)
+    r:Draw({ cues = {} })                           -- still empty: not an edge
+    assert.same({ "new", "gone" }, seen)
+  end)
+
+  it("pops EVERY arriving handle while the set event fires once", function()
+    local r, seen = watched(3)
+    r:Draw({ cues = { cue("fake1") } })
+    local before = r.cueLayers["fake1"].pop._plays
+    r:Draw({ cues = { cue("fake1"), cue("fake2"), cue("fake3") } })
+    assert.equals(before, r.cueLayers["fake1"].pop._plays, "a steady handle re-popped")
+    assert.equals(1, r.cueLayers["fake2"].pop._plays)
+    assert.equals(1, r.cueLayers["fake3"].pop._plays)
+    assert.same({ "new", "new" }, seen)             -- two draws, two set changes — not four
+  end)
+
+  it("ghosts a removed handle in the ring's own size and hue, and keeps its holder alive", function()
+    local r = rigged(1)
+    r:Draw({ cues = { { anchorTo = "fake1", size = 12, emphasis = "ROTATION" } } })
+    local ringSize = r.cueGlows["fake1"]._size[1]
+    r:Draw({ cues = {} })
+    local ghost = r.cueGhosts["fake1"]
+    assert.is_not_nil(ghost, "nothing marks where the cue left")
+    assert.is_true(ghost._shown)
+    assert.equals(ringSize, ghost._size[1])
+    assert.is_true(colorEq(ghost._color, theme.ROTATION[1], theme.ROTATION[2], theme.ROTATION[3]))
+    assert.equals(1, ghost.anim._plays)
+    -- The ring itself is hidden by the cull the same tick — which is exactly why the
+    -- ghost is its own texture, and why the holder must survive the cull.
+    assert.is_false(r.cueGlows["fake1"]._shown)
+    assert.is_true(r.ghosting["fake1"])
+    assert.is_true(r.cueHolders["fake1"]._shown,
+      "the holder was culled under a playing ghost — the ghost plays invisibly")
+    ghost.anim:Fire("OnFinished")
+    assert.is_nil(r.ghosting["fake1"])
+    assert.is_false(ghost._shown)
+  end)
+
+  it("re-ghosts a handle that leaves twice without stranding its holder", function()
+    -- ⚠ ORDERING.  `Stop()` on the previous ghost fires OnFinished, which CLEARS the
+    -- "a ghost is playing" flag — so the flag has to be set AFTER the stop.  Set it
+    -- before and the second ghost plays under an already-culled holder.
+    local r = rigged(1)
+    local c = { anchorTo = "fake1", emphasis = "ROTATION" }
+    r:Draw({ cues = { c } })
+    r:Draw({ cues = {} })          -- ghost 1
+    r:Draw({ cues = { c } })       -- ...it comes back
+    r:Draw({ cues = {} })          -- ghost 2, over a still-running ghost 1
+    assert.equals(2, r.cueGhosts["fake1"].anim._plays)
+    assert.is_true(r.ghosting["fake1"], "the second ghost cleared its own flag")
+    assert.is_true(r.cueHolders["fake1"]._shown)
+  end)
+
+  it("stays silent with no callback injected (the Renderer calls no game function)", function()
+    local r = rigged(1)
+    assert.has_no.errors(function()
+      r:Draw({ cues = { cue("fake1") } })
+      r:Draw({ cues = {} })
     end)
   end)
 

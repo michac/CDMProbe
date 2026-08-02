@@ -1,9 +1,12 @@
-# `Media/fx/` — third-party assets for the `/cdmp rt fx` experiments
+# `Media/fx/` — third-party assets
 
-Candidate glow art and cue sounds for the "the cues read too subdued in play"
-investigation. **Experimental**: these are here to be A/B'd against Blizzard's own
-atlases and SoundKit entries, and most of them will lose. Prune to the winner before
-any of this is promoted out of the render-test rig.
+Glow art and cue sounds for the "the cues read too subdued in play" investigation.
+
+**Three of these are no longer experimental — they ship.** `glow/star_07.tga` is the
+Renderer's cue ring (`GLOW_ART`), and `sfx/drawKnife1.ogg` + `sfx/chip-lay-1.ogg` are the
+two cue sounds the live HUD plays (`HudDriver.lua`). Everything else in here is still a
+candidate that lost, kept because `/cdmp rt fx` is the rig for the next round of dialling.
+**Do not prune the shipped three.**
 
 ## Licence — CC0 1.0 Universal (public domain)
 
@@ -17,9 +20,16 @@ here is Blizzard art.
 | folder | source pack | upstream |
 |---|---|---|
 | `glow/` | Particle Pack (80 sprites) | <https://kenney.nl/assets/particle-pack> |
-| `sfx/`  | Interface Sounds (100 sounds) | <https://kenney.nl/assets/interface-sounds> |
+| `sfx/confirmation_*`, `bong_*`, `select_*`, `question_*` | Interface Sounds (100 sounds) | <https://kenney.nl/assets/interface-sounds> |
+| `sfx/drawKnife1.ogg` | RPG Audio (50 sounds) | <https://kenney.nl/assets/rpg-audio> |
+| `sfx/chip-lay-1.ogg` | Casino Audio (54 sounds) | <https://kenney.nl/assets/casino-audio> |
 
 ## `glow/` — ring/burst art, 128×128 32-bit RLE TGA
+
+**`star_07.tga` is the shipped cue ring** (Renderer.lua `GLOW_ART`). It replaced
+Blizzard's `services-ring-large-glowspin` atlas for the reason the next paragraph but one
+gives: that atlas is gold, `SetVertexColor` multiplies, and our violet emphasis token
+multiplied most of it away.
 
 Converted from the upstream 512×512 PNGs. Two deliberate changes:
 
@@ -55,4 +65,25 @@ channel, not a gain), so the only real control over "too subtle" is shipping a f
 that is already loud.
 
 `confirmation_001`–`004` are the "activated!" candidates; `bong_001`, `select_001/004`
-and `question_001` are alternates with different attack characters.
+and `question_001` are alternates with different attack characters. **None of them won.**
+
+### The two that ship
+
+The cue sound is **one play per change of the cue set** — measured at ~120 plays over
+504 s of real play, one every ~4 s, tracking your casts. So it had to be short, dry and
+physical rather than musical: a tone at that cadence becomes a melody you start hearing
+instead of a signal you react to.
+
+| file | plays when | upstream name | pack |
+|---|---|---|---|
+| `drawKnife1.ogg` | the cue set gained something (`"new"`) | `drawKnife1.ogg` | RPG Audio |
+| `chip-lay-1.ogg` | the set only lost something (`"gone"`) | `chipLay1.ogg` | Casino Audio |
+
+Both are **CC0 Kenney**, same as the rest of this folder — different packs from the
+`glow/` and interface sounds above, so they are listed separately rather than folded into
+the one row. Taken as the upstream `.ogg` originals; `chip-lay-1.ogg` is `chipLay1.ogg`
+renamed and nothing else (its embedded Vorbis `TITLE` tag still reads `chipLay1`).
+
+⚠ `"gone"` is **rare by construction** and that is correct, not a broken file: the board
+never went empty once in those 504 s of pulls, so `chip-lay-1` is mostly an end-of-pull
+sound. `/cdmp rt fx sound 1|2` auditions both on demand.

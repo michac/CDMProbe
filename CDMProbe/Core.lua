@@ -15,6 +15,12 @@ ns.version = (C_AddOns and C_AddOns.GetAddOnMetadata and C_AddOns.GetAddOnMetada
 local DEFAULTS = {
   -- `ns.db.hud` is the pipeline HUD's enable BOOL.  No default entry: absent == off;
   -- HudDriver's OnLogin drops a stale TABLE-shaped value, and SetHud writes it after.
+  -- `ns.db.hudSound` is the CUE SOUND's enable bool — one play per change of the cue set
+  -- (HudDriver's onCueSetChanged).  ⚠ Unlike `hud` it DOES get a default, because it
+  -- defaults ON: absent must mean "on", not "off", and only an entry can say that.
+  -- `/cdmp hud sound off` is the one command that silences it — in a raid you want that
+  -- to be a toggle, not a rebuild.
+  hudSound = true,
   -- Pipeline decision log — a ring of recent sessions (count: DecisionLog.SESSIONS),
   -- each a list of one-line
   -- `S{…} G{…} B{…}` pipeline traces appended on every DECISION CHANGE (DecisionLog.lua).

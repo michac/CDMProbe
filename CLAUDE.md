@@ -61,6 +61,12 @@ Design context + status live in the parent workspace at
   Blizzard's UI pixel-clean. Auto-enables on login if it was on. (Reclaimed `/cdmp hud`
   at the W4 cutover.)
   - `hud on` / `hud off` — set it explicitly (bare `hud` toggles).
+  - `hud sound on|off` — the **cue sound**: one play per *change of the cue set*, on
+    channel **Master** (it answers only to master volume — a rotation cue must not vanish
+    because effects were turned down to hear the boss). Defaults **on**
+    (`ns.db.hudSound`). ⚠ A swap is **one** event, not a remove plus an add — 60 % of real
+    set changes are swaps, so firing per handle would double the common case. Measured
+    rate: ~120 plays / 504 s of play, one every ~4 s, tracking your casts.
   - `hud status` — the pipeline readout: ON/OFF, State ingestion consumer count, and
     the last tick's cue count / any tick error. The decision trace is in
     `CDMProbeDB.decisionlog` (extract with `wowkb.cdmp decisionlog`).
@@ -99,16 +105,25 @@ Design context + status live in the parent workspace at
   JUDGE/SEQUENCE tokens — `states` had already superseded `inventory`.)
   ⚠ It exercises `R:Draw` ONLY — the proc-glow squares are applied post-Draw by the test
   rig, and `HudVirtual`'s own panel is not in it at all.
-  - `rt fx` — ⚠ **EXPERIMENTAL, 2026-08-01**: the `states` card redrawn with four
-    candidate cue treatments layered ON TOP of `R:Draw`, chasing "the cues read more
-    subdued in play than in the render test". `bg` = a black backing disc under dot+ring
+  - `rt fx` — the **dialling rig** (2026-08-01): the `states` card redrawn with candidate
+    cue treatments layered ON TOP of `R:Draw`. `bg` = a black backing disc under dot+ring
     (contrast against busy icon art); `glow 1-4` = extra additive ring copies, since
     `SetVertexColor` **cannot exceed 1.0** and re-drawing is the only way to add light;
-    `pop` / `ghost` = one-shot scale on cue application / removal; `sound` = a SOUNDKIT
-    audition stepper. **Every knob defaults OFF**, so a bare `rt fx` is pixel-identical to
-    `rt states` — that A/B is the point, turn one on at a time.
-    `pop`/`ghost`/`sound` need a rising edge: watch them on `rt rotate`.
-    ⚠ **`Renderer.lua` is untouched by this** — the FX layer reads the renderer
+    `ring`/`spin`/`rays`/`desync`/`art` = size, period, outer echo, layer phase, sprite;
+    `pop` / `ghost` = one-shot scale on cue application / removal; `sound` = an audition
+    stepper (list · any of 333,671 raw kit ids · any file · a 235-entry verified
+    max-volume pool). Bare `rt fx` opens a **panel** — every knob is a button, because a
+    visual experiment you drive by typing is one you stop running before you find the
+    answer.
+    ✅ **Round one is done and shipped** — star_07 art, ring ×1.45, the 1.5× counter-
+    rotating echo at 55 % of the light, the backing disc, the pop and the ghost all live
+    in `Renderer.lua` now. ⚠ **So the knobs dial RELATIVE to the shipped look**, not up
+    from a bare one, and `bg`/`rays`/`pop`/`ghost` now *double* something the Renderer
+    already draws rather than adding it. Every knob still defaults neutral, so a bare
+    `rt fx` is pixel-identical to `rt states` — that A/B is the point, turn one on at a
+    time. `pop`/`ghost`/`sound` need a rising edge: watch them on `rt rotate` (a hop there
+    is a genuine **swap**, so it is also how you confirm *one* sound per hop, not two).
+    ⚠ **`Renderer.lua` is untouched by this file** — the FX layer reads the renderer
     instance's own pools (`cueHolders`/`cueFrames`/`cueGlows`) after Draw. A winning
     effect gets **promoted into the Renderer properly** (a token, a `GLOW_SPEC` field, a
     one-shot channel); do not ship it from the rig.
@@ -343,12 +358,41 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   `Draw` culls the shared `cueHolders` on the UNION — both
                                   channels ride one holder per icon, so a per-channel cull
                                   would hide the other channel's decoration every frame.
+                                  ⚠ THE CULL HAS A THIRD TERM, `ghosting`: a removed handle
+                                  leaves both active sets in the very draw that starts its
+                                  out-animation, so a two-term union would hide the holder
+                                  and the ghost would play invisibly.
+                                  ⚠ THE CUE LAYER (`cueLayers`, 2026-08-01) is why the pop
+                                  can exist. `setDotGlow` re-asserts SetSize on the dot /
+                                  ring / echo / disc at ~10 Hz, which would fight a Scale
+                                  animation on those same textures — so the pop scales a
+                                  FRAME that owns them and the draw path never touches its
+                                  size. Its rect is the DOT's rect, not the icon's, so the
+                                  scale origin is the cue's own centre. The KEYBIND
+                                  FONTSTRING DELIBERATELY STAYS ON THE HOLDER: identity
+                                  chrome must not grow every time the rotation moves.
+                                  ⚠ ONE INJECTED CALLBACK, `cfg.onCueSetChanged(kind)` —
+                                  fired ONCE per draw on which the cue set changed at all
+                                  ("new" if anything was added, else "gone"). The Renderer
+                                  still calls no game function; HudDriver hangs the sound
+                                  off it and busted asserts the edges directly.
+                                  GLOW_SCALE is ART-SPECIFIC — 3.34 belongs to star_07 and
+                                  does not transfer; swapping the art and re-dialling it
+                                  are ONE job.
     RenderTest.lua                the `/cdmp rt` render-test rig — IMPURE by construction
                                   and deliberately outside the Draw path: placeholder icon
                                   frames, a C_Timer ticker, the hand-authored DrawList
                                   fixtures (ns.RenderTestFixtures, consumed by binder_spec)
                                   and the borrowed ActionButtonSpellAlertManager proc glow.
-                                  Split out of Renderer.lua 2026-07-30.
+                                  Split out of Renderer.lua 2026-07-30. Also the `rt fx`
+                                  DIALLING RIG (see the command above) — whose knobs now
+                                  dial RELATIVE to the shipped look, round one having been
+                                  promoted into Renderer.lua.
+    Media/fx/                     the shipped art + sound: `glow/star_07.tga` is the cue
+                                  ring, `sfx/drawKnife1.ogg` + `sfx/chip-lay-1.ogg` the two
+                                  cue sounds; the rest are candidates that lost, kept for
+                                  the next `rt fx` round. All CC0 Kenney — CREDITS.md has
+                                  the per-pack provenance and says which three ship.
     HudProcGlow.lua               post-hooks each CDM item's RefreshOverlayGlow and dims
                                   item.SpellActivationAlert (SetAlpha 0.5) while the HUD is
                                   on, so Blizzard's proc glow doesn't drown our chrome;
@@ -562,7 +606,7 @@ put `~/.luarocks/bin` on PATH.
   `SpecDemonology`) + the multi-spec seam (`SpecRegistry`/`ResolveActiveSpec`, the
   resource-array projection) + the **Destruction** rotation gate + **State's domain-view
   fold** + State's hero-tree resolution + the **CDM edge inventory** (see `tests/fixtures/`
-  below). **630 tests / 4 pending.** The harness is
+  below). **643 tests / 4 pending.** The harness is
   **`CDMProbe/tests/mock_ns.lua`**: a chainable `CreateFrame`/FontString/animation
   stub, a **settable `GetTime` fake clock**, global fakes
   (`wipe`/`InCombatLockdown`/`issecretvalue`/`C_Timer`/`Enum`/`GetSpecialization`/…),

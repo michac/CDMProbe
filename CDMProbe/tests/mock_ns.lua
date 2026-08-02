@@ -143,16 +143,19 @@ local function newStub()
     "SetTexture", "SetMask", "SetDrawLayer", "SetTexCoord",
     -- Mask OBJECTS (the RingedFrameTemplate idiom the cue dot uses), not the SetMask path.
     "AddMaskTexture", "RemoveMaskTexture",
-    "SetFrameStrata", "SetParent", "SetAtlas",
+    "SetFrameStrata", "SetAtlas",
     -- The moveable-panel surface (HudVirtual Phase 2).  `EnableMouse` is RECORDING (below):
     -- "does the panel eat clicks right now" is the lock state's user-visible half.
     "SetMovable", "RegisterForDrag", "StartMoving", "StopMovingOrSizing", "SetClampedToScreen",
-    "SetLooping", "Play", "Stop", "Pause", "Finish",
-    "SetDuration", "SetSmoothing", "SetOffset", "SetFromAlpha", "SetToAlpha",
+    "SetLooping", "Pause", "Finish",
+    "SetSmoothing", "SetOffset", "SetFromAlpha", "SetToAlpha",
     "SetOrder", "SetStartDelay", "SetChildKey", "SetTarget", "SetTargetKey",
     "SetFlipBookRows", "SetFlipBookColumns", "SetFlipBookFrames",
     "SetFlipBookFrameWidth", "SetFlipBookFrameHeight",
-    "SetDegrees", "SetRadians", "SetOrigin",
+    "SetRadians", "SetOrigin",
+    -- The Scale animation's setter under BOTH spellings (the Renderer probes for the
+    -- newer one and falls back).  Missing here, the fallback would `attempt to call nil`.
+    "SetScaleFrom", "SetScaleTo", "SetFromScale", "SetToScale",
   }) do t[m] = chain end
   -- RECORDING methods (W4 Phase 3 — the Renderer harness).  The Renderer draws no
   -- real pixels off-game, so busted asserts on what the stub was TOLD: colour,
@@ -188,6 +191,30 @@ local function newStub()
   function t:SetHeight(h)  self._size = self._size or {}; self._size[2] = h; return self end
   function t:SetFrameLevel(n) self._level = n or self._level; return self end
   function t:GetFrameLevel() return self._level or 1 end
+  -- ANIMATION STATE IS RECORDED, not chained away.  The Renderer's cue treatment is
+  -- MOTION — a spin period per emphasis, an echo counter-rotating at a ratio of it, a
+  -- one-shot pop — and a chainable no-op cannot tell "the echo turns the other way at
+  -- 10s" from "the echo was never timed at all".  `_plays` counts rather than latches,
+  -- because "exactly ONE pop per arriving cue" is a load-bearing claim.
+  function t:SetDuration(s) self._duration = s; return self end
+  function t:SetDegrees(d)  self._degrees = d;  return self end
+  function t:Play() self._playing = true; self._plays = (self._plays or 0) + 1; return self end
+  -- ⚠ `Stop()` FIRES OnFinished, as the client does (with requested = true).  Modelled
+  -- rather than no-op'd because it makes an ordering bug EXPRESSIBLE: the Renderer's
+  -- ghost sets its "a ghost is playing" flag, and stopping a previous ghost clears that
+  -- flag through this very path — so set-before-stop and set-after-stop are different
+  -- programs, and only a harness that fires can tell them apart.
+  function t:Stop()
+    local was = self._playing
+    self._playing = false
+    if was and self._scripts.OnFinished then self._scripts.OnFinished(self, true) end
+    return self
+  end
+  function t:IsPlaying() return self._playing and true or false end
+  -- WHO OWNS THIS REGION.  The one honest way to assert that the keybind hint does NOT
+  -- ride the popped cue layer: it is a question about parentage, not about pixels.
+  function t:SetParent(p) self._parent = p; return self end
+  function t:GetParent() return self._parent end
   function t:SetFont(...) return true end                 -- ns.SetFont branches on this
   function t:GetFont() return "font", 12, "" end
   function t:SetText(s) self._text = s; return self end
@@ -224,11 +251,13 @@ local function newStub()
     end
     return f(self, ...)
   end
-  function t:CreateFontString(...) return newStub() end
-  function t:CreateTexture(...) return newStub() end
-  function t:CreateMaskTexture(...) return newStub() end
-  function t:CreateAnimationGroup(...) return newStub() end
-  function t:CreateAnimation(...) return newStub() end
+  -- Every child records its CREATOR as `_parent` (see SetParent above).
+  local function child(self) local c = newStub(); c._parent = self; return c end
+  t.CreateFontString     = child
+  t.CreateTexture        = child
+  t.CreateMaskTexture    = child
+  t.CreateAnimationGroup = child
+  t.CreateAnimation      = child
   return t
 end
 H.newStub = newStub
@@ -349,8 +378,9 @@ function H.installGlobals()
     record(H.asked.known, id)
     return (H.fx and H.fx.known and H.fx.known[id]) == true
   end) }
-  _G.CreateFrame = function(_, name, _, _)
+  _G.CreateFrame = function(_, name, parent, _)
     local f = newStub()
+    f._parent = parent
     H.frames[#H.frames + 1] = f
     if type(name) == "string" then _G[name] = f end
     return f

@@ -46,6 +46,47 @@ D.lastDraw = nil
 
 local TICK_PERIOD = 0.1   -- ~10 Hz, matching State's poll cadence
 
+--------------------------------------------------------------------------------
+-- THE CUE SOUND — the Renderer's one injected callback, given a voice.
+--------------------------------------------------------------------------------
+-- The Renderer fires `onCueSetChanged(kind)` ONCE per draw on which the cue set changed
+-- at all (its header has the measurement: 120 changes in 504s of play, one every ~4s at
+-- cast cadence, 60 % of them a SWAP).  A swap is ONE event by construction, so this
+-- cannot double up on the common case.
+--
+-- CHANNEL "Master" ON PURPOSE.  Each channel answers to its own volume slider; a rotation
+-- cue must not vanish because the player turned effects down to hear the boss.  There is
+-- no volume PARAMETER anywhere in WoW's sound API (`PlaySoundFile(file, channel)` is the
+-- whole surface), so the channel is the only gain control there is — which is also why
+-- these are files we ship, normalised hot, rather than SoundKit ids.
+local SFX = "Interface\\AddOns\\CDMProbe\\Media\\fx\\sfx\\"
+local SFX_NEW  = SFX .. "drawKnife1.ogg"   -- something arrived
+local SFX_GONE = SFX .. "chip-lay-1.ogg"   -- ...and the rarer one: the board emptied
+-- Cheap insurance against a pathological flap.  Only 5 of the 120 measured gaps were
+-- under 0.3s, so in practice this never engages — it exists so that a bug upstream
+-- cannot turn into a machine-gun.
+local SOUND_FLOOR = 0.15
+D.lastSound = 0
+
+-- THE PLAYER, public so `/cdmp rt rotate` can hand it to the RIG's renderer and audition
+-- the real thing: a hop there is one add + one remove per tick — a SWAP — which is the
+-- only way to hear "one sound per hop, not two" without a target dummy.  It is the whole
+-- policy (the enable bool + the flap floor + the channel) and nothing else.
+function ns.PlayCueSound(kind)
+  if not (ns.db and ns.db.hudSound) then return end
+  local now = GetTime()
+  if now - (D.lastSound or 0) < SOUND_FLOOR then return end
+  D.lastSound = now
+  PlaySoundFile(kind == "gone" and SFX_GONE or SFX_NEW, "Master")
+end
+
+local function onCueSetChanged(kind)
+  -- `D.on` is cleared BEFORE the clearing Draw in SetHud, so toggling the HUD off does
+  -- not announce its own teardown as a departing cue.
+  if not D.on then return end
+  ns.PlayCueSound(kind)
+end
+
 -- The three persistent pipeline instances, built once on first enable.  Pure factories,
 -- so re-use is free and holds the Renderer's frame/texture pool + handle registry.
 local function ensureInstances()
@@ -58,7 +99,9 @@ local function ensureInstances()
     D.binder = ns.Binder.New({})
   end
   if not D.renderer then
-    D.renderer = ns.Renderer.New()
+    -- The ONE seam the Renderer has into the game: it decides that the cue set changed,
+    -- we decide what that sounds like.  It still calls no game function itself.
+    D.renderer = ns.Renderer.New({ onCueSetChanged = onCueSetChanged })
   end
 end
 
@@ -400,15 +443,32 @@ local function status()
   -- us (a declared id the CDM tracks NOWHERE is invisible to every other readout), so it
   -- belongs on the one line the player already reads.  Cheap: cached per build.
   ns.Print(coverageSummary(ns.Coverage.Get()))
+  ns.Printf("  cue sound: %s   |cff808080(one play per change of the cue set, channel Master)|r",
+    (ns.db and ns.db.hudSound) and "|cff88ff88on|r" or "|cffff8080off|r")
   ns.Print("  |cffffffff/cdmp hud layout|r dumps the live Layout; "
-    .. "|cffffffff/cdmp hud coverage|r the roster-coverage table.")
+    .. "|cffffffff/cdmp hud coverage|r the roster-coverage table; "
+    .. "|cffffffff/cdmp hud sound off|r silences the cue.")
 end
 
 --------------------------------------------------------------------------------
 -- Command
 --------------------------------------------------------------------------------
+-- ⚠ `sound` IS MATCHED FIRST, and it has to be: this dispatcher is substring-based, so
+-- "sound on" contains "on" and "sound off" contains "off" — either would toggle the whole
+-- HUD instead of the cue sound.
+local function soundCommand(rest)
+  ns.db = ns.db or {}
+  if rest:find("off") then ns.db.hudSound = false
+  elseif rest:find("on") then ns.db.hudSound = true
+  else ns.db.hudSound = not ns.db.hudSound end
+  ns.Printf("cue sound |cff%s|r — one play per change of the cue set (channel Master, so "
+    .. "it answers to master volume only).",
+    ns.db.hudSound and "88ff88ON" or "ff8080OFF")
+end
+
 local function hudCommand(rest)
   rest = (rest or ""):lower()
+  if rest:find("sound") then return soundCommand(rest) end
   if rest:find("coverage") then return dumpCoverage() end
   if rest:find("layout") then return dumpLayout() end
   if rest:find("status") then return status() end
@@ -417,7 +477,7 @@ local function hudCommand(rest)
   ns.SetHud(not D.on)
 end
 ns.RegisterCommand("hud",
-  "the HUD — the W4 pipeline (State -> Coach -> Binder -> Renderer). 'hud on|off' set it; 'hud layout' dumps the live Layout; 'hud coverage' the roster-coverage table; 'hud status' the readout.",
+  "the HUD — the W4 pipeline (State -> Coach -> Binder -> Renderer). 'hud on|off' set it; 'hud sound on|off' the cue sound; 'hud layout' dumps the live Layout; 'hud coverage' the roster-coverage table; 'hud status' the readout.",
   hudCommand)
 
 -- /cdmp reset — turn the HUD off.  The HUD is the only thing left to reset.

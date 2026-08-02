@@ -138,7 +138,12 @@ local function buildRig(n, captions)
     container:SetSize(640, 220)
     container:SetPoint("CENTER", UIParent, "CENTER", 0, 60)
     container:SetFrameStrata("HIGH")
-    rig = { container = container, icons = {}, renderer = R.New() }
+    -- The rig's renderer gets the SHIPPED cue-sound callback, so `rt rotate` auditions
+    -- the real edge policy (one play per SWAP, not two).  Resolved here at dispatch time,
+    -- not at file scope: HudDriver.lua loads after this file.  It respects
+    -- `/cdmp hud sound off` like everything else.
+    rig = { container = container, icons = {},
+            renderer = R.New({ onCueSetChanged = ns.PlayCueSound }) }
     ns._renderTestRig = rig
   end
   local SIZE, GAP = 48, 22
@@ -239,8 +244,25 @@ local function applyProcGlow(rig, specs)
 end
 
 --------------------------------------------------------------------------------
--- EXPERIMENTAL FX (`/cdmp rt fx …`) — four candidate treatments, 2026-08-01
+-- EXPERIMENTAL FX (`/cdmp rt fx …`) — the dialling rig, 2026-08-01
 --------------------------------------------------------------------------------
+-- ✅ THE FIRST ROUND IS DONE AND ITS WINNERS ARE SHIPPED.  This rig was built to answer
+-- "why do the cues read more subdued in play than in the render test".  It answered:
+-- star_07 art, ring 1.45x (GLOW_SCALE 2.3 -> 3.34), an outer echo at 1.5x / 55 % of the
+-- light counter-rotating at 2.5x the base period, a black backing disc, and the pop +
+-- ghost.  All of that now lives in **Renderer.lua**, so `/cdmp rt states` — which draws
+-- the shipped renderer and nothing else — already looks like the dialled version.
+--
+-- ⚠ SO THE KNOBS NOW DIAL *RELATIVE TO THE SHIPPED LOOK*, NOT UP FROM A BARE ONE.
+-- `ring 1.45` used to mean "1.45x Blizzard's stock ring"; it now means "1.45x the ring
+-- the HUD already draws".  Everything defaults to neutral (`scale`/`spinMul`/`rays` 1.0,
+-- `bg` off, `art` stock, `stack` 1, `pop`/`ghost` off), so a bare `/cdmp rt fx` is once
+-- again pixel-identical to `/cdmp rt states` — that A/B is the point, turn one on at a
+-- time.  Two knobs now DOUBLE something the Renderer already draws rather than adding
+-- it: `bg` puts a second disc behind the Renderer's, and `rays` a second echo outside
+-- its echo.  That is still a legitimate way to ask "more?", but read the result as
+-- "twice", not "at all".  `pop`/`ghost` likewise re-play on top of the shipped ones.
+--
 -- WHY THESE LIVE HERE AND NOT IN Renderer.lua.  Every one of these is an OPEN
 -- QUESTION, not a decision.  Renderer.lua is the pure Stage-4 contract that the live
 -- HUD and this rig share (that sharing is the whole reason `/cdmp rt` is trustworthy),
@@ -274,12 +296,13 @@ end
 -- The ghost is therefore an FX-OWNED texture on an FX-OWNED holder that no cull
 -- touches — which is also the shape the real feature would need.
 local FX = {
-  bg      = false,  -- black backing disc on/off
+  bg      = false,  -- black backing disc on/off.  ⚠ A SECOND one — Renderer.lua now draws
+                    -- its own (DISC_ALPHA/DISC_SCALE); this stacks on top of it.
   bgAlpha = 0.75,   -- its opacity
   -- ⚠ MEASURED AGAINST THE RING'S TEXTURE BOUNDS, WHICH IS WHY IT LOOKS TOO BIG.
-  -- 1.0 = the full quad the ring atlas is drawn into.  But `services-ring-large-glowspin`
-  -- does not fill its own quad: the art has transparent padding and its rays fade out well
-  -- before the edge, so a disc sized to the QUAD is visibly larger than the light it is
+  -- 1.0 = the full quad the ring sprite is drawn into.  But the sprite does not fill its
+  -- own quad: the art has transparent padding and its rays fade out well before the edge,
+  -- so a disc sized to the QUAD is visibly larger than the light it is
   -- backing.  The first cut compounded that by adding another 15 %.  There is no API that
   -- reports where the art's visible energy actually ends, so this is an eyeball constant —
   -- `bg size <n>` is the dial, and going BELOW 1.0 is expected, not a mistake.
@@ -292,19 +315,23 @@ local FX = {
   -- Multipliers on the Renderer's per-emphasis ring size / spin period.  See the long
   -- note at their use site: LATE already runs 1.4x bigger and 2.5x faster than every other
   -- emphasis, which is why one sprite can look right there and flat everywhere else.
-  scale     = 1.0,  -- ring diameter multiplier (base GLOW_SCALE is 2.3)
+  scale     = 1.0,  -- ring diameter multiplier (base GLOW_SCALE is 3.34 since the promotion)
   spinMul   = 1.0,  -- spin PERIOD multiplier; <1 = faster (base SPIN_SECS is 4.0)
   -- THE LATE EFFECT, GENERALISED.  See layerSpin(): the extra ring layers used to spin at
   -- a HARDCODED absolute period, which happened to equal the base everywhere except LATE.
   -- This is that accident turned into a ratio, so any emphasis can have it.
   desync    = 2.5,  -- extra layers' spin period / the BASE ring's period.  1.0 = locked
   counter   = true, -- extra layers turn the OTHER way (relative slide is the whole effect)
-  rays      = 1.0,  -- echo diameter multiplier; 1.0 = no echo
+  rays      = 1.0,  -- echo diameter multiplier; 1.0 = no echo.  ⚠ A SECOND echo — the
+                    -- Renderer ships one at ECHO_SCALE 1.5; this draws outside it.
   raysAlpha = 0.55, -- the echo's share of the light
-  art       = nil,  -- index into GLOW_ART; nil = whatever Renderer.lua's GLOW_ATLAS is
+  art       = nil,  -- index into GLOW_ART; nil = whatever Renderer.lua's GLOW_ART is
+                    -- (entry 8, star_07, since the promotion)
   stack   = 1,      -- additive glow copies: 1 = stock, 2 = "doubled"
-  pop     = false,  -- one-shot scale on application
-  ghost   = false,  -- one-shot scale+fade on removal
+  pop     = false,  -- one-shot scale on application.  ⚠ A SECOND one: the Renderer pops
+  ghost   = false,  -- ...and ghosts natively now, on its own CUE LAYER frame.  These
+                    -- re-play on top, on the textures, so use them to try a DIFFERENT
+                    -- peak/duration, not to ask whether a pop helps at all.
   peak    = 2.0,    -- pop/ghost peak scale ("double in size")
   secs    = 0.28,   -- pop duration
   sound   = nil,    -- index into SOUNDS (the stepper's position); nil = not from the list
@@ -389,18 +416,19 @@ local MEDIA = "Interface\\AddOns\\CDMProbe\\Media\\fx\\"
 --   `atlas`  a Blizzard atlas name  -> SetAtlas.  Free, but we take the art as it is.
 --   `file`   a TGA we ship          -> SetTexture.  See Media/fx/CREDITS.md.
 --
--- WHY SHIPPING OUR OWN IS THE STRONGER ANSWER, not merely another option.  SetVertexColor
--- MULTIPLIES, so a tint can only ever remove energy the art already has.  Blizzard's
+-- WHY SHIPPING OUR OWN IS THE STRONGER ANSWER, not merely another option — and this one
+-- is SETTLED: entry 8 won and is the Renderer's shipped art.  SetVertexColor MULTIPLIES,
+-- so a tint can only ever remove energy the art already has.  Blizzard's
 -- `services-ring-large-glowspin` is GOLD — mostly red+green — so our violet
 -- ROTATION_FALLBACK (green channel 0.16) multiplies most of it away, which is a real part
--- of why the fallback reads dim.  The Kenney sprites are WHITE/GREY with the shape carried
+-- of why the fallback read dim.  The Kenney sprites are WHITE/GREY with the shape carried
 -- in alpha, so every hue tints at full strength.  That is a property no amount of dialling
 -- the Blizzard atlas can buy.
 local GLOW_ART = {
   -- Blizzard atlases — names written from knowledge of the atlas set, NOT verified against
   -- this build.  `C_Texture.GetAtlasInfo` validates them, so `art list` reports each
   -- present/absent rather than letting a typo read as "that one looks bad".
-  { kind = "atlas", id = "services-ring-large-glowspin", label = "Blizz ring (Renderer's stock)" },
+  { kind = "atlas", id = "services-ring-large-glowspin", label = "Blizz ring (the OLD stock)" },
   { kind = "atlas", id = "services-ring-small-glowspin", label = "Blizz ring, tighter" },
   { kind = "atlas", id = "ChallengeMode-RingGlow",       label = "Blizz M+ keystone ring" },
   { kind = "atlas", id = "Artifacts-StarGlow",           label = "Blizz star burst" },
@@ -408,7 +436,7 @@ local GLOW_ART = {
   { kind = "file",  id = MEDIA .. "glow\\twirl_01.tga",  label = "Kenney twirl 01 — spiral" },
   { kind = "file",  id = MEDIA .. "glow\\twirl_03.tga",  label = "Kenney twirl 03 — dense spiral" },
   { kind = "file",  id = MEDIA .. "glow\\star_04.tga",   label = "Kenney star 04 — LONG spokes" },
-  { kind = "file",  id = MEDIA .. "glow\\star_07.tga",   label = "Kenney star 07 — long, sparse" },
+  { kind = "file",  id = MEDIA .. "glow\\star_07.tga",   label = "Kenney star 07 — long, sparse |cff88ff88(SHIPPED — the Renderer's stock)|r" },
   { kind = "file",  id = MEDIA .. "glow\\star_09.tga",   label = "Kenney star 09 — many spokes" },
   { kind = "file",  id = MEDIA .. "glow\\flare_01.tga",  label = "Kenney flare 01 — cross flare" },
   { kind = "file",  id = MEDIA .. "glow\\magic_05.tga",  label = "Kenney magic 05 — ring + rays" },
@@ -557,6 +585,11 @@ end
 -- here that are VERIFIED — a shipped file exists by construction, whereas every SOUNDKIT
 -- name below is a guess that may resolve to nothing.  See Media/fx/CREDITS.md.
 local SOUNDS = {
+  -- ✅ THE TWO THE HUD ACTUALLY PLAYS, first so a candidate is auditioned against what
+  -- ships rather than against silence.  HudDriver plays these ONCE per change of the cue
+  -- set; here they come as the ×3 audition burst like everything else in this list.
+  { kind = "file", id = MEDIA .. "sfx\\drawKnife1.ogg",       label = "SHIPPED — cue set gained something ('new')" },
+  { kind = "file", id = MEDIA .. "sfx\\chip-lay-1.ogg",       label = "SHIPPED — cue set only lost ('gone'; rare)" },
   { kind = "file", id = MEDIA .. "sfx\\confirmation_001.ogg", label = "Kenney confirm 01 — the 'activated!' pick" },
   { kind = "file", id = MEDIA .. "sfx\\confirmation_002.ogg", label = "Kenney confirm 02 — brighter" },
   { kind = "file", id = MEDIA .. "sfx\\confirmation_003.ogg", label = "Kenney confirm 03 — two-tone" },
@@ -959,12 +992,12 @@ local function applyFX(renderer, activeKeys, newOnly)
     if anchor and dot then
       local holder = fxHolder(key, anchor)
       local ring   = (glow and glow:GetWidth() or 0)
-      if ring <= 0 then ring = dot:GetWidth() * 2.3 end
+      if ring <= 0 then ring = dot:GetWidth() * 3.34 end   -- Renderer.lua's GLOW_SCALE
       -- RING SIZE + SPIN SPEED, as MULTIPLIERS on whatever the Renderer chose.
       --
       -- ⚠ THIS IS WHY ONE ART LOOKS RIGHT ON LATE AND WRONG EVERYWHERE ELSE.  LATE is the
-      -- only emphasis carrying per-token overrides (GLOW_SPEC.LATE: ringScale 3.2 vs the
-      -- base GLOW_SCALE 2.3, spinSecs 1.6 vs SPIN_SECS 4.0) — so it draws every ring ~1.4x
+      -- only emphasis carrying per-token overrides (GLOW_SPEC.LATE: ringScale 4.64 vs the
+      -- base GLOW_SCALE 3.34, spinSecs 1.6 vs SPIN_SECS 4.0) — so it draws every ring ~1.4x
       -- bigger and spinning 2.5x faster than ROTATION/SOON/FALLBACK do.  Spoked art needs
       -- BOTH: radius, because a spoke's length is what makes it a ray rather than a bump,
       -- and angular speed, because spokes are what let rotation read at all.  At the base
@@ -974,11 +1007,14 @@ local function applyFX(renderer, activeKeys, newOnly)
       -- (Renderer.lua: "the escalation is 'a bigger ring', not this exact number"), so
       -- scaling both together preserves it.  Dial the base up until ROTATION reads, then
       -- promote the number to GLOW_SCALE / SPIN_SECS rather than shipping it from here.
+      -- ✅ That is exactly what happened: `ring 1.45` here became GLOW_SCALE 2.3 -> 3.34
+      -- and LATE's ringScale 3.2 -> 4.64, ratio intact.  A `ring` multiplier now stacks on
+      -- TOP of that, so it is the lever for a SECOND round, not a re-run of the first.
       --
-      -- And note GLOW_SCALE is ART-SPECIFIC: 2.3 was dialled against
-      -- services-ring-large-glowspin to close the gap between the dot's rim and THAT
-      -- ring's inner edge.  A sprite whose spokes start at a different radius invalidates
-      -- the number, so swapping art and re-dialling scale are one job, not two.
+      -- And note GLOW_SCALE is ART-SPECIFIC: 3.34 was dialled against star_07 to close the
+      -- gap between the dot's rim and THAT sprite's inner edge (2.3 belonged to Blizzard's
+      -- ring, and did not transfer).  A sprite whose spokes start at a different radius
+      -- invalidates the number, so swapping art and re-dialling scale are one job, not two.
       if glow and FX.scale ~= 1.0 then
         ring = ring * FX.scale
         glow:SetSize(ring, ring)
@@ -1488,6 +1524,11 @@ function ns.RenderTest(arg)
   clearFX()                                  -- ...and any experimental chrome
   if arg == "off" then
     if ns._renderTestRig then
+      -- Forget the last cue set BEFORE clearing, so tearing the view down does not
+      -- announce itself as a board full of departing cues.  (`SetHud(false)` gets the
+      -- same effect from its own `D.on` gate; the rig has no such flag, and reaching
+      -- into the renderer's pools is what this file does by construction.)
+      ns._renderTestRig.renderer.cuedLast = {}
       ns._renderTestRig.renderer:Draw({})    -- clear every dot / panel / pip
       ns._renderTestRig.container:Hide()
     end
