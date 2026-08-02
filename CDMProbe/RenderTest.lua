@@ -345,6 +345,12 @@ local FX = {
   -- thing at a time — the first rung that looks wrong IS the culprit, with no arithmetic
   -- and no guessing.  nil = the shipped stack (all rungs).
   layers    = nil,
+  -- ⚠ SUPPRESS THE RENDERER'S OWN POP (not the FX one below).  It exists because the pop
+  -- is the ONE thing that differs between "rt off -> layers 3" (which misbehaves) and
+  -- "rt off -> layers 2 -> layers 3" (which does not): the first sees every handle ARRIVE
+  -- and scales each cue layer, the second already spent that edge a rung earlier.  With
+  -- no way to turn it off, that hypothesis could only be argued, not tested.
+  noPop     = false,
   pulseMul  = 1.0,  -- multiplier on the Renderer's PULSE_SECS
   pulseFloor= nil,  -- override the breathe's floor alpha; nil = Renderer's (0.55).
                     -- 1.0 = no breathe at all, which is the real A/B
@@ -806,9 +812,10 @@ local drawFxView    -- fwd: every click redraws the view (defined with the fx vi
 local function updatePanel()
   local p = ns._renderTestFxPanel
   if not p then return end
-  p.layersVal:SetText(FX.layers
-    and string.format("|cffffffff%d/%d|r  %s", FX.layers, LAYER_MAX, LAYER_NAMES[FX.layers])
-    or "|cff808080all — the shipped cue|r")
+  p.layersVal:SetText(string.format("%s%s", FX.layers
+    and string.format("|cffffffff%d/%d|r %s", FX.layers, LAYER_MAX, LAYER_NAMES[FX.layers])
+    or "|cff808080all — the shipped cue|r",
+    FX.noPop and "  |cffffcc00nopop|r" or ""))
   p.bgVal:SetText(FX.bg and string.format("|cff88ff88on|r  a%.2f s%.2f", FX.bgAlpha, FX.bgScale)
                         or "|cff808080off|r")
   p.glowVal:SetText(string.format("|cffffffffx%d|r  desync |cffffffff%.1f|r%s%s",
@@ -920,6 +927,7 @@ local function ensureFxPanel()
     FX.layers = n > LAYER_MAX and nil or n   -- past the top rung = back to the shipped cue
   end))
   btn("all", 34, 112, y, bump(function() FX.layers = nil end))
+  btn("nopop", 46, 150, y, bump(function() FX.noPop = not FX.noPop end))
   local layersVal = value(y)
   -- bg
   y = y - ROW_H2
@@ -1049,7 +1057,7 @@ local function ensureFxPanel()
     FX.desync, FX.counter = 2.5, true
     FX.pulseMul, FX.pulseFloor, FX.pulseOff = 1.0, nil, false
     FX.echoOff, FX.echoMul, FX.layers = false, 1.0, nil
-    FX.echoLight, FX.echoScale = nil, nil
+    FX.echoLight, FX.echoScale, FX.noPop = nil, nil, false
     FX.pop, FX.ghost, FX.peak = false, false, 2.0
     stopSoundLoop(); selectSound(nil, nil, nil, nil)
   end))
@@ -1285,6 +1293,12 @@ local function applyFX(renderer, activeKeys, newOnly)
       -- LAST, so the ladder wins over every knob above it: when you are stepping rungs you
       -- want the rung's definition on screen, not a leftover from an earlier click.
       applyLadder(renderer, key, glow, shipped, r, g2, b, safeCall)
+      -- Stop it the same frame it was started: it has had <1 frame to move anything, so
+      -- this is as close to "the pop never ran" as the rig can get without a Renderer edit.
+      if FX.noPop then
+        local lay = renderer.cueLayers and renderer.cueLayers[key]
+        if lay and lay.pop then lay.pop:Stop() end
+      end
       -- 1. BACKING DISC.  Sized off the ring's OUTERMOST drawn extent (the echo, when one
       -- is on), not off the base ring — otherwise turning `rays` up leaves the echo
       -- hanging off an undersized disc.
@@ -1428,11 +1442,25 @@ local function fxDump()
     local dot  = r.cueFrames[key]
     ns.Printf("  |cff88ff88%s|r  (%s)  dot %.0fpx",
       tostring(emph), tostring(key), safeCall(dot, "GetWidth", 0))
+    -- ⚠ THE CUE LAYER — the frame the ring is parented to, and the thing this dump was
+    -- BLIND to.  Its scale is animated by the pop, and a rotating texture inside a frame
+    -- whose scale is not 1 (or not uniform) is the shape of every "the spin surges"
+    -- report.  Reported before the ring, because it is upstream of it.
+    local lay = r.cueLayers and r.cueLayers[key]
+    if lay then
+      ns.Printf("      %-8s %5.1fx%-5.1f  scale |cffffffff%.3f|r  eff |cffffffff%.3f|r  pop %s",
+        "LAYER", safeCall(lay, "GetWidth", 0), safeCall(lay, "GetHeight", 0),
+        safeCall(lay, "GetScale", 1), safeCall(lay, "GetEffectiveScale", 1),
+        lay.pop and (safeCall(lay.pop, "IsPlaying", false)
+          and "|cffffcc00PLAYING|r" or "idle") or "-")
+    else
+      ns.Print("      |cffff4040no cue layer|r")
+    end
     if glow then
       -- The BASE ring is the Renderer's, so its rotation lives on glow.rot with the
       -- per-emphasis period the Renderer chose (LATE 4.8s, everything else 12.0s).
-      ns.Printf("      %-8s %5.1fpx  %s  period |cffffffff%.2fs|r deg |cffffffff%s|r  %s",
-        "BASE", safeCall(glow, "GetWidth", 0),
+      ns.Printf("      %-8s %5.1fx%-5.1f  %s  period |cffffffff%.2fs|r deg |cffffffff%s|r  %s",
+        "BASE", safeCall(glow, "GetWidth", 0), safeCall(glow, "GetHeight", 0),
         glow:IsShown() and "|cff88ff88shown|r" or "|cff808080hidden|r",
         safeCall(glow.rot, "GetDuration", 0),
         tostring(safeCall(glow.rot, "GetDegrees", 0)),
@@ -1635,6 +1663,11 @@ local function fxCommand(words)
     end
     ns.Printf("now: |cffffffff%s|r", FX.layers
       and (FX.layers .. " — " .. LAYER_NAMES[FX.layers]) or "all (the shipped cue)")
+  elseif verb == "nopop" then
+    FX.noPop = not FX.noPop
+    ns.Printf("rt fx nopop: |cffffffff%s|r — the RENDERER's arrival pop is %s",
+      FX.noPop and "on" or "off",
+      FX.noPop and "suppressed" or "left alone")
   elseif verb == "pulse" then
     -- The SHIPPED breathe: `pulse` cycles the period, `pulse flat` removes it entirely
     -- (the real A/B), `pulse off` stops the group.
@@ -1753,6 +1786,8 @@ local function fxCommand(words)
   else
     ns.Heading("rt fx — experimental cue treatments")
     ns.Print("  |cff88ff88(bare)|r        open the PANEL — every knob as a button")
+    ns.Print("  |cff88ff88nopop|r         suppress the RENDERER's arrival pop (the one thing")
+    ns.Print("         that differs between `off->3` and `off->2->3`)")
     ns.Print("  |cffffd100layers|r [n|all]  |cffffd100START HERE.|r Strip the cue to a bare dot and")
     ns.Print("         add ONE layer at a time — disc, ring, spin, breathe, echo.")
     ns.Print("         The first rung that looks wrong IS the culprit.")
