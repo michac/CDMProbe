@@ -316,7 +316,8 @@ local FX = {
   -- note at their use site: LATE already runs 1.4x bigger and 2.5x faster than every other
   -- emphasis, which is why one sprite can look right there and flat everywhere else.
   scale     = 1.0,  -- ring diameter multiplier (base GLOW_SCALE is 3.34 since the promotion)
-  spinMul   = 1.0,  -- spin PERIOD multiplier; <1 = faster (base SPIN_SECS is 4.0)
+  spinMul   = 1.0,  -- spin PERIOD multiplier; <1 = faster (base SPIN_SECS is 12.0 since
+                    -- the art-symmetry retune; star_07 is 8-fold, so 4.0 strobed)
   -- THE LATE EFFECT, GENERALISED.  See layerSpin(): the extra ring layers used to spin at
   -- a HARDCODED absolute period, which happened to equal the base everywhere except LATE.
   -- This is that accident turned into a ratio, so any emphasis can have it.
@@ -491,7 +492,7 @@ end
 --
 -- ⚠ THIS IS THE "WHY IS LATE SPECIAL" BUG, AND IT WAS A GOOD ONE.  The stack copies and
 -- the ray echo used to spin at HARDCODED absolute periods (4.0s and 6.0s).  The base ring
--- runs at SPIN_SECS = 4.0 for ROTATION / SOON / FALLBACK -- so a copy at 4.0 sat exactly
+-- ran at SPIN_SECS = 4.0 for ROTATION / SOON / FALLBACK -- so a copy at 4.0 sat exactly
 -- in phase with it, two identical spoked rings superimposed, invisible as a second layer.
 -- LATE is the ONE emphasis with its own spinSecs (1.6), so there the copy ran 2.5x slower
 -- than the base and the two spoke sets slid continuously past each other.  That slide IS
@@ -997,7 +998,7 @@ local function applyFX(renderer, activeKeys, newOnly)
       --
       -- ⚠ THIS IS WHY ONE ART LOOKS RIGHT ON LATE AND WRONG EVERYWHERE ELSE.  LATE is the
       -- only emphasis carrying per-token overrides (GLOW_SPEC.LATE: ringScale 4.64 vs the
-      -- base GLOW_SCALE 3.34, spinSecs 1.6 vs SPIN_SECS 4.0) — so it draws every ring ~1.4x
+      -- base GLOW_SCALE 3.34, spinSecs 4.8 vs SPIN_SECS 12.0) — so it draws every ring ~1.4x
       -- bigger and spinning 2.5x faster than ROTATION/SOON/FALLBACK do.  Spoked art needs
       -- BOTH: radius, because a spoke's length is what makes it a ray rather than a bump,
       -- and angular speed, because spokes are what let rotation read at all.  At the base
@@ -1196,7 +1197,7 @@ local function fxDump()
       tostring(emph), tostring(key), safeCall(dot, "GetWidth", 0))
     if glow then
       -- The BASE ring is the Renderer's, so its rotation lives on glow.rot with the
-      -- per-emphasis period the Renderer chose (LATE 1.6s, everything else 4.0s).
+      -- per-emphasis period the Renderer chose (LATE 4.8s, everything else 12.0s).
       ns.Printf("      %-8s %5.1fpx  %s  period |cffffffff%.2fs|r deg |cffffffff%s|r  %s",
         "BASE", safeCall(glow, "GetWidth", 0),
         glow:IsShown() and "|cff88ff88shown|r" or "|cff808080hidden|r",

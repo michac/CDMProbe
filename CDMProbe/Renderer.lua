@@ -96,10 +96,13 @@ local GLOW_SPEC = {
   -- ringScale is RELATIVE to GLOW_SCALE by intent (~1.4x), so it moved with it when the
   -- base ring shrank to close the dot/ring gap.  Keep that ratio if either is retuned —
   -- the escalation is "a bigger ring", not "this exact number".
-  -- ⚠ 4.64 = 3.2 x 1.45, moved with GLOW_SCALE's 2.3 -> 3.34 so the 1.39x RATIO is
-  -- preserved.  The escalation is "a bigger ring", never this exact number.
+  -- ⚠ BOTH NUMBERS ARE RATIOS WEARING ABSOLUTES, and both moved when the base did.
+  -- 4.64 = 3.2 x 1.45, tracking GLOW_SCALE's 2.3 -> 3.34, so the ring stays 1.39x.
+  -- 4.8 = 1.6 x 3, tracking SPIN_SECS' 4.0 -> 12.0 (the art-symmetry retune — see the
+  -- note at SPIN_SECS), so LATE keeps spinning 2.5x faster than everything else.
+  -- The escalation is "a bigger ring, turning faster", never these exact numbers.
   LATE              = { spin = true,  pulse = true, color = "ROTATION",
-                        ringScale = 4.64, spinSecs = 1.6 },
+                        ringScale = 4.64, spinSecs = 4.8 },
   SOON              = { spin = true,  pulse = true },
   -- ROTATION_FALLBACK animates like everything else now (2026-07-30 feedback).  History:
   -- v0.32.17 made the runner-up read by its ring being STATIC, because it was a DIMMER
@@ -482,7 +485,19 @@ local GLOW_ART = "Interface\\AddOns\\CDMProbe\\Media\\fx\\glow\\star_07.tga"
 -- ring, whose spokes start at a different radius; 3.34 (2.3 x 1.45) belongs to star_07 and
 -- to nothing else.  Swapping the art and re-dialling this are ONE job, not two.
 local GLOW_SCALE = 3.34
-local SPIN_SECS  = 4.0    -- one full rotation
+-- ⚠ SO IS THE PERIOD, AND FOR A REASON WORTH WRITING DOWN.  The rate the eye reads is not
+-- the angular velocity, it is **angular velocity x the sprite's rotational symmetry
+-- order** — how often a spoke passes a fixed point.  star_07 measures **8-fold** (an
+-- 8-pointed star with alternating long/short spokes: dominant k=8, harmonics at k=4/k=16),
+-- where Blizzard's `services-ring-large-glowspin` is a swept gradient with almost no
+-- angular structure at all (the twirl sprites beside it measure k=1).  So swapping the art
+-- at an unchanged 4.0s tripled the apparent spin — 8 spokes/revolution is a feature every
+-- 0.5s — and it read as a strobe rather than a turn.  12.0s puts a spoke back at ~1.5s.
+--
+-- THE RULE: art, GLOW_SCALE and SPIN_SECS are ONE dial with three parts.  Change the
+-- sprite and BOTH numbers are invalidated; a spokier sprite needs a longer period in
+-- proportion to its symmetry order.  (`/cdmp rt fx spin <n>` is how to re-dial it.)
+local SPIN_SECS  = 12.0   -- one full rotation
 
 -- THE OUTER ECHO — reach without brightness (`rt fx rays 1.5 @55%`).  A ring cannot be
 -- stretched radially: a texture is a quad and tex-coords are rectangular, so there is no

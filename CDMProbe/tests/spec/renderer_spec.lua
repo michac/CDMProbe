@@ -415,6 +415,21 @@ describe("Renderer", function()
       "LATE's escalation ratio drifted to " .. ratio .. " (want ~1.39)")
   end)
 
+  it("keeps LATE spinning 2.5x faster than the rest, whatever the base period is", function()
+    -- The OTHER half of the escalation, and the one that silently broke once: the base
+    -- period is ART-SPECIFIC (perceived rate = angular velocity x the sprite's symmetry
+    -- order — star_07 is 8-fold), so it moved 4.0 -> 12.0 when the art changed.  LATE's
+    -- has to move with it or the escalation is a number instead of a relationship.
+    local r = rigged(2)
+    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" },
+                      { anchorTo = "fake2", emphasis = "LATE" } } })
+    local base, late = r.cueGlows["fake1"].rot._duration, r.cueGlows["fake2"].rot._duration
+    assert.is_true(near(base / late, 2.5),
+      "LATE's spin escalation drifted to " .. (base / late) .. "x (want 2.5)")
+    -- ...and the echo tracks whichever period each one ended up with, for free.
+    assert.is_true(near(r.cueEchoes["fake2"].rot._duration, late * 2.5))
+  end)
+
   ------------------------------------------------------------------------------
   -- THE CUE LAYER — why the pop can exist at all.  The dot/ring/echo/disc ride a frame
   -- the draw path never resizes; the KEYBIND deliberately does not.

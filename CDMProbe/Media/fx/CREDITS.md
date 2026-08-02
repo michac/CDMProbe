@@ -31,6 +31,25 @@ Blizzard's `services-ring-large-glowspin` atlas for the reason the next paragrap
 gives: that atlas is gold, `SetVertexColor` multiplies, and our violet emphasis token
 multiplied most of it away.
 
+⚠ **These sprites differ in ROTATIONAL SYMMETRY, and that changes how fast a spin reads**
+— perceived rate is angular velocity × symmetry order (how often a spoke passes a fixed
+point), so swapping between two of them invalidates `SPIN_SECS` as surely as it
+invalidates `GLOW_SCALE`. Measured from the alpha channel (angular-energy profile →
+dominant Fourier order), for whoever dials the next one:
+
+| sprite | order | reads as |
+|---|---|---|
+| `twirl_01` / `twirl_03` | **k=1** | one swept arm — a slow sweep at any period |
+| `light_01` | k≈5, weak (0.12) | near-symmetric: rotation is almost invisible |
+| `magic_05` | k=4 (0.30) | mild |
+| `star_09` | k=6 (0.31) | mild |
+| `star_04` | k=4 (0.91) | strong 4-point |
+| **`star_07`** ← shipped | **k=8** (0.92) | 8 points, alternating long/short (hence k=4 + k=16 harmonics) |
+
+star_07 at the pre-swap 4.0 s period put a spoke past every 0.5 s and read as a strobe;
+it ships at **12.0 s** (~1.5 s per spoke). Blizzard's ring, being a swept gradient, sits
+down with the twirls.
+
 Converted from the upstream 512×512 PNGs. Two deliberate changes:
 
 - **PNG → TGA.** The upstream sprites are **palette** PNGs (colortype 3) with `tRNS`
