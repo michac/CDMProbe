@@ -79,3 +79,11 @@ ignore = { "211/ADDON" }
 files["CDMProbe/tests/"] = {
   std = "lua51+wow+busted",
 }
+
+-- `archive/` is RETIRED CODE, kept as a record and NOT in the .toc — the game never
+-- parses it and no shipped file references it.  It is excluded rather than fixed on
+-- purpose: it is the treatment/rig that a change REPLACED, so its value is being an
+-- unedited record of what was there and why.  Linting it would mean editing it, and an
+-- edited record is a worse record.  ⚠ Reviving anything from here means moving it back
+-- into CDMProbe/ proper, where the linter applies again.
+exclude_files = { "CDMProbe/archive/" }

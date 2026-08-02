@@ -105,47 +105,15 @@ Design context + status live in the parent workspace at
   JUDGE/SEQUENCE tokens — `states` had already superseded `inventory`.)
   ⚠ It exercises `R:Draw` ONLY — the proc-glow squares are applied post-Draw by the test
   rig, and `HudVirtual`'s own panel is not in it at all.
-  - `rt fx` — the **dialling rig** (2026-08-01): the `states` card redrawn with candidate
-    cue treatments layered ON TOP of `R:Draw`. `bg` = a black backing disc under dot+ring
-    (contrast against busy icon art); `glow 1-4` = extra additive ring copies, since
-    `SetVertexColor` **cannot exceed 1.0** and re-drawing is the only way to add light;
-    `ring`/`spin`/`rays`/`desync`/`art` = size, period, outer echo, layer phase, sprite;
-    `pop` / `ghost` = one-shot scale on cue application / removal; `sound` = an audition
-    stepper (list · any of 333,671 raw kit ids · any file · a 235-entry verified
-    max-volume pool). Bare `rt fx` opens a **panel** — every knob is a button, because a
-    visual experiment you drive by typing is one you stop running before you find the
-    answer.
-    ✅ **Round one is done and shipped** — star_07 art, ring ×1.45, the 1.5× counter-
-    rotating echo at 55 % of the light, the backing disc, the pop and the ghost all live
-    in `Renderer.lua` now. ⚠ **So the knobs dial RELATIVE to the shipped look**, not up
-    from a bare one, and `bg`/`rays`/`pop`/`ghost` now *double* something the Renderer
-    already draws rather than adding it. Every knob still defaults neutral, so a bare
-    `rt fx` is pixel-identical to `rt states` — that A/B is the point, turn one on at a
-    time. `pop`/`ghost`/`sound` need a rising edge: watch them on `rt rotate` (a hop there
-    is a genuine **swap**, so it is also how you confirm *one* sound per hop, not two).
-    ⚠ **`Renderer.lua` is untouched by this file** — the FX layer reads the renderer
-    instance's own pools (`cueHolders`/`cueFrames`/`cueGlows`) after Draw. A winning
-    effect gets **promoted into the Renderer properly** (a token, a `GLOW_SPEC` field, a
-    one-shot channel); do not ship it from the rig.
-  - `rt lab` — **THE RENDER LAB (`RenderLab.lua`, 2026-08-01) — DISPOSABLE, delete it when
-    the question is answered.** The cue ring's spin stalls then races, forever, and six
-    builds of theorising about our own scaffolding produced three wrong answers. So: panels
-    side by side, each a bare two-ring implementation, sharing NO helper with `RenderTest.lua`
-    and never touching `Renderer.lua` — a lab that borrowed the rig would measure the rig again.
-    **Round 1** had three subagents, blind to the repo, implement the idea from one pinned
-    brief; A2 and A3 (the faithful readings) ran **STEADY**, so the concept, the art and the
-    animation API are **cleared** and the artefact is ours. (A1 misread "ring" as a necklace
-    of orbiting sprites — discounted. Round 1's files are in git at v0.32.72.)
-    **Round 2** walks A2's steady ring toward the Renderer's, one difference per panel, with
-    A2 itself as the control: `B1` the shipped numbers (12.0s, echo locked in phase, light
-    split), `B2` + the Alpha BOUNCE breathe on the same texture, `B3` + a 10 Hz ticker
-    restating size/anchor/colour as `R:setDotGlow` does every tick.
-    ⚠ **ONE COMMAND ARMS EVERYTHING.** `/cdmp rt lab` draws the panels AND records every
-    rotation's `GetProgress()` at 20 Hz into `CDMProbeDB.rtlab` — nothing is typed during
-    the run. `/reload`, then `wowkb.cdmp rtlab` prints how far each ring drifts from a
-    uniform spin **in degrees**, so "does it surge" stops being a judgement from the chair.
-    Raw samples in, analysis on the desktop (the decision-log/`flight` split) so a capture
-    can be re-analysed without re-flying. `rt lab 1-4` magnifies one panel.
+  ⚠ **THE `rt fx` DIALLING RIG AND THE `rt lab` RENDER LAB ARE BOTH ARCHIVED** (2026-08-02,
+    `CDMProbe/archive/`). `rt fx` dialled the **v1** cue treatment and reaches into
+    `cueGlows` / `cueEchoes` / `cueLayers.pop`, none of which the v2 cue has. `rt lab` was
+    the experiment that replaced v1 and is spent. Read
+    `archive/RenderTest-fx-v1.lua` and `archive/cue-treatment-v1.lua` before building any
+    successor — between them they carry the two rules that cost the most to learn: a rig
+    claiming to be a faithful A/B baseline must be **asserted** against the shipped path
+    (the `rt fx` alpha bug showed a ring at >2× shipped brightness for six builds), and a
+    winning effect gets **promoted into the Renderer properly**, never shipped from a rig.
 - `reset` — turn the HUD off.
 
 *(The `skin` / `resource` solid-colour-block directions were deleted in W4a
@@ -405,39 +373,56 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   scale origin is the cue's own centre. The KEYBIND
                                   FONTSTRING DELIBERATELY STAYS ON THE HOLDER: identity
                                   chrome must not grow every time the rotation moves.
+                                  ⚠ THE CUE IS v2 (2026-08-02): backing disc + dot + TWO
+                                  COUNTER-ROTATING RINGS, no breathe / pop / ghost (all in
+                                  archive/cue-treatment-v1.lua). Its numbers are an
+                                  EXPERIMENTAL RESULT, not a dial-in — two subagents blind
+                                  to this repo converged on them and both ran steady, which
+                                  is why the header at RING_SCALE is worth reading before
+                                  touching any of them. ⚠ The pair COUNTER-ROTATES at
+                                  DIFFERENT periods on purpose; v1's echo was locked in
+                                  phase to kill a moiré and the cost was that the second
+                                  ring was invisible. The constraint is the BEAT FREQUENCY
+                                  (n-fold art beats at n x the relative angular velocity —
+                                  6s vs 9s gives 2.2 Hz, above the band the eye tracks);
+                                  check any retune against the art's symmetry order, not by
+                                  eye at one speed.
                                   ⚠ ONE INJECTED CALLBACK, `cfg.onCueSetChanged(kind)` —
                                   fired ONCE per draw on which the cue set changed at all
                                   ("new" if anything was added, else "gone"). The Renderer
                                   still calls no game function; HudDriver hangs the sound
                                   off it and busted asserts the edges directly.
-                                  GLOW_SCALE is ART-SPECIFIC — 3.34 belongs to star_07 and
-                                  does not transfer; swapping the art and re-dialling it
-                                  are ONE job.
-    RenderLab.lua                 THE RENDER LAB (`/cdmp rt lab`) + its RenderLabA2/B1/B2/
-    RenderLabA2.lua               B3.lua panels — see the command above.  DISPOSABLE BY
-    RenderLabB1.lua               DESIGN: one `git rm` of these five files, their .toc
-    RenderLabB2.lua               lines and `cmd_rtlab` when the surge is localised.
-    RenderLabB3.lua               ⚠ Shares NO helper with RenderTest.lua and never touches
-                                  Renderer.lua — that isolation IS the experiment, so the
-                                  small duplications (icon art, captions) are deliberate.
-                                  Reached through ns.RenderTest's one door so `/cdmp rt off`
-                                  still tears it down with everything else.  Its recorder
-                                  walks the WIDGETS (GetAnimationGroups/GetAnimations), not
-                                  the code that made them, so it measures a panel that never
-                                  agreed to be measured.
+                                  RING_SCALE is ART-SPECIFIC — 3.34 belongs to star_07 and
+                                  does not transfer; swapping the art and re-dialling BOTH
+                                  periods are ONE job.
+    archive/                      RETIRED CODE, kept as a record.  NOT in the .toc, never
+                                  parsed by the game, and EXCLUDED FROM luacheck on purpose
+                                  (linting it would mean editing it, and an edited record is
+                                  a worse record).  `cue-treatment-v1.lua` = the v1 cue
+                                  (spinning ring + locked-in-phase echo + breathe + pop +
+                                  ghost) and the reasoning that produced it — the
+                                  art-symmetry retune, the moiré analysis, the light split;
+                                  `RenderTest-fx-v1.lua` = the `/cdmp rt fx` dialling rig
+                                  that dialled it (the `sound` auditioner in there is
+                                  treatment-independent and worth recovering if the cue
+                                  sound is ever re-picked); `RenderLab*.lua` = the blind
+                                  three-way experiment that replaced it.  ⚠ Reviving
+                                  anything means moving it back into CDMProbe/ proper, where
+                                  the linter applies again.
     RenderTest.lua                the `/cdmp rt` render-test rig — IMPURE by construction
                                   and deliberately outside the Draw path: placeholder icon
                                   frames, a C_Timer ticker, the hand-authored DrawList
                                   fixtures (ns.RenderTestFixtures, consumed by binder_spec)
                                   and the borrowed ActionButtonSpellAlertManager proc glow.
-                                  Split out of Renderer.lua 2026-07-30. Also the `rt fx`
-                                  DIALLING RIG (see the command above) — whose knobs now
-                                  dial RELATIVE to the shipped look, round one having been
-                                  promoted into Renderer.lua.
-    Media/fx/                     the shipped art + sound: `glow/star_07.tga` is the cue
-                                  ring, `sfx/drawKnife1.ogg` + `sfx/chip-lay-1.ogg` the two
+                                  Split out of Renderer.lua 2026-07-30. ⚠ The `rt fx`
+                                  DIALLING RIG lived here and is now archive/
+                                  RenderTest-fx-v1.lua (2026-08-02) — this file is back to
+                                  what it says on the tin: fixtures, a rig, `states`,
+                                  `rotate`, `off`.
+    Media/fx/                     the shipped art + sound: `glow/star_07.tga` is BOTH cue
+                                  rings, `sfx/drawKnife1.ogg` + `sfx/chip-lay-1.ogg` the two
                                   cue sounds; the rest are candidates that lost, kept for
-                                  the next `rt fx` round. All CC0 Kenney — CREDITS.md has
+                                  a future round. All CC0 Kenney — CREDITS.md has
                                   the per-pack provenance and says which three ship.
     HudProcGlow.lua               post-hooks each CDM item's RefreshOverlayGlow and dims
                                   item.SpellActivationAlert (SetAlpha 0.5) while the HUD is
@@ -652,7 +637,7 @@ put `~/.luarocks/bin` on PATH.
   `SpecDemonology`) + the multi-spec seam (`SpecRegistry`/`ResolveActiveSpec`, the
   resource-array projection) + the **Destruction** rotation gate + **State's domain-view
   fold** + State's hero-tree resolution + the **CDM edge inventory** (see `tests/fixtures/`
-  below). **689 tests / 4 pending.** The harness is
+  below). **688 tests / 4 pending.** The harness is
   **`CDMProbe/tests/mock_ns.lua`**: a chainable `CreateFrame`/FontString/animation
   stub, a **settable `GetTime` fake clock**, global fakes
   (`wipe`/`InCombatLockdown`/`issecretvalue`/`C_Timer`/`Enum`/`GetSpecialization`/…),

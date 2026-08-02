@@ -95,7 +95,7 @@ describe("Renderer", function()
     assert.same({ 12, 12 }, dot._size)
     assert.is_true(dot._shown)
     local layer = r.cueLayers["fake1"]
-    assert.is_not_nil(layer, "no cue layer — the dot has nothing to pop with")
+    assert.is_not_nil(layer, "no cue layer — the cue has nothing to hang its art on")
     assert.same({ 12, 12 }, layer._size)          -- the layer's rect IS the dot's rect
     local lp = layer._points[1]
     assert.equals("CENTER", lp.point)
@@ -133,12 +133,12 @@ describe("Renderer", function()
     assert.is_true(colorEq(dot._color, fb[1], fb[2], fb[3]))
     assert.is_false(colorEq(dot._color, theme.ROTATION[1], theme.ROTATION[2], theme.ROTATION[3]),
       "fallback is still borrowing ROTATION's green")
-    local glow = r.cueGlows["fake1"]
-    assert.is_not_nil(glow)
-    assert.is_true(glow._shown)
-    assert.is_true(colorEq(glow._color, fb[1], fb[2], fb[3]))
-    assert.is_true(glow._spinOn)
-    assert.is_true(glow._pulseOn)
+    for name, t in pairs({ inner = r.cueRingIn["fake1"], outer = r.cueRingOut["fake1"] }) do
+      assert.is_not_nil(t, name .. " ring missing")
+      assert.is_true(t._shown)
+      assert.is_true(colorEq(t._color, fb[1], fb[2], fb[3]), name .. " ring is not violet")
+      assert.is_true(t._spinOn, name .. " ring is not turning")
+    end
   end)
 
   -- P5d strata fix: decorations ride a per-icon holder that sits ABOVE the icon (so a
@@ -288,16 +288,21 @@ describe("Renderer", function()
     assert.is_true(r.cueHolders["fake1"]._shown)
   end)
 
-  -- …and a THIRD term since the ghost landed: a removed handle leaves both active sets in
-  -- the same draw that starts its out-animation, so a two-term union would hide the holder
-  -- instantly and the ghost would play invisibly.  Here the ghost is finished first.
+  -- ⚠ THIS USED TO NEED A THIRD TERM, and the ghost that required it is archived
+  -- (2026-08-02).  A removed handle left both active sets in the very draw that started
+  -- its out-animation, so a two-term union hid the holder instantly and the ghost played
+  -- invisibly; the test had to Fire("OnFinished") by hand before the holder would hide.
+  -- With no out-animation the union is honestly two terms and the holder hides at once.
+  -- ⚠ Restore BOTH together if a departure animation ever comes back.
   it("hides the holder only when BOTH channels drop the handle", function()
     local r = rigged(1)
     r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" } },
              keybinds = { { anchorTo = "fake1", keybind = "Q" } } })
     assert.is_true(r.cueHolders["fake1"]._shown)
-    r:Draw({})
-    r.cueGhosts["fake1"].anim:Fire("OnFinished")   -- the ghost has played out
+    r:Draw({ keybinds = { { anchorTo = "fake1", keybind = "Q" } } })
+    assert.is_true(r.cueHolders["fake1"]._shown, "the key hint still needs its holder")
+    r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" } } })
+    assert.is_true(r.cueHolders["fake1"]._shown, "the cue still needs its holder")
     r:Draw({})
     assert.is_false(r.cueHolders["fake1"]._shown)
   end)
@@ -305,17 +310,25 @@ describe("Renderer", function()
   ------------------------------------------------------------------------------
   -- proc glow (rides the icon, driven by the cue's `glow` flag)
   ------------------------------------------------------------------------------
-  it("shows a spinning + pulsing ring on a ROTATION cue, centred on the still-visible dot", function()
+  it("shows both spinning rings on a ROTATION cue, centred on the still-visible dot", function()
     local r = rigged(1)
     r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" } } })
     assert.is_true(r.glowing["fake1"])
-    local glow = r.cueGlows["fake1"]
-    assert.is_true(glow._shown)
-    assert.equals(r.cueFrames["fake1"], glow._points[1].rel)   -- centred on the solid dot
-    -- tinted to the cue's own emphasis hue
-    assert.is_true(colorEq(glow._color, theme.ROTATION[1], theme.ROTATION[2], theme.ROTATION[3]))
-    assert.is_true(glow._spinOn)     -- both animation groups play
-    assert.is_true(glow._pulseOn)
+    local inner, outer = r.cueRingIn["fake1"], r.cueRingOut["fake1"]
+    for name, t in pairs({ inner = inner, outer = outer }) do
+      assert.is_true(t._shown, name .. " ring hidden")
+      assert.equals(r.cueFrames["fake1"], t._points[1].rel, name .. " not centred on the dot")
+      -- tinted to the cue's own emphasis hue
+      assert.is_true(colorEq(t._color, theme.ROTATION[1], theme.ROTATION[2], theme.ROTATION[3]))
+      assert.is_true(t._spinOn, name .. " ring is not turning")
+    end
+    -- ⚠ OPPOSITE DIRECTIONS AT DIFFERENT PERIODS — the whole point of the v2 pair.  v1's
+    -- echo was locked in phase with its ring (same sign, same period) to kill a moiré, and
+    -- the cost was that the two sat exactly on top of each other and read as ONE ring.
+    assert.is_true(inner.rot._degrees * outer.rot._degrees < 0,
+      "the rings turn the same way — that is one ring drawn twice, not two rings")
+    assert.is_not.equals(inner.rot._duration, outer.rot._duration,
+      "equal periods hold the pair in a fixed relative pose")
     assert.is_true(r.cueFrames["fake1"]._shown)   -- centre dot stays VISIBLE (no longer ring-only)
   end)
 
@@ -355,56 +368,75 @@ describe("Renderer", function()
   end)
 
   ------------------------------------------------------------------------------
-  -- THE PROMOTED LOOK (2026-08-01) — the treatment dialled in on `/cdmp rt fx` and
-  -- moved into the Renderer proper: a backing disc, an outer counter-rotating echo of
-  -- the ring, and the light split between the two.
+  -- THE v2 CUE (2026-08-02) — a backing disc, a solid dot, and TWO COUNTER-ROTATING
+  -- rings whose numbers came from a blind experiment rather than from dialling.
   ------------------------------------------------------------------------------
-  it("backs each cue with a dark disc and an outer echo of its ring", function()
+  it("backs each cue with a dark disc under an outer and an inner ring", function()
     local r = rigged(1)
     r:Draw({ cues = { { anchorTo = "fake1", size = 12, emphasis = "ROTATION" } } })
-    local glow, echo, disc = r.cueGlows["fake1"], r.cueEchoes["fake1"], r.cueDiscs["fake1"]
-    assert.is_not_nil(echo, "no echo — the ring has no reach")
-    assert.is_not_nil(disc, "no backing disc — the additive ring has nothing to read against")
-    assert.is_true(echo._shown)
+    local inner, outer = r.cueRingIn["fake1"], r.cueRingOut["fake1"]
+    local disc = r.cueDiscs["fake1"]
+    assert.is_not_nil(outer, "no outer ring — the cue has no reach")
+    assert.is_not_nil(disc, "no backing disc — the additive rings have nothing to read against")
+    assert.is_true(outer._shown)
     assert.is_true(disc._shown)
-    -- The echo is BIGGER than the base ring (reach) and the disc smaller than both, sized
-    -- off the echo's extent so turning the reach up can never leave it undersized.
-    local ring, out, back = glow._size[1], echo._size[1], disc._size[1]
-    assert.is_true(out > ring, "the echo must reach past the ring it echoes")
-    assert.is_true(back < ring, "the disc must sit BEHIND the dot, not swallow the ring")
-    assert.is_true(math.abs(out - ring * 1.5) < 1e-6)
-    assert.is_true(math.abs(back - out * 0.35) < 1e-6)
-    -- Both rings carry the cue's hue; only the ALPHA differs (the light split).
+    -- The outer ring reaches past the inner, and the disc sits behind the DOT — sized off
+    -- the outermost extent, so turning the reach up can never leave it undersized.
+    local rin, rout, back = inner._size[1], outer._size[1], disc._size[1]
+    assert.is_true(rout > rin, "the outer ring must reach past the inner")
+    assert.is_true(back < rin, "the disc must sit BEHIND the dot, not swallow the rings")
+    assert.is_true(math.abs(rout - rin * 1.5) < 1e-6)
+    assert.is_true(math.abs(back - rout * 0.35) < 1e-6)
+    -- Both rings carry the cue's hue; only the ALPHA differs.
     local rot = theme.ROTATION
-    assert.is_true(colorEq(glow._color, rot[1], rot[2], rot[3]))
-    assert.is_true(colorEq(echo._color, rot[1], rot[2], rot[3]))
-    assert.is_true(near(glow._color[4] + echo._color[4], 1.0),
-      "the light must be SPLIT between ring and echo, not added — adding reach must not add brightness")
+    assert.is_true(colorEq(inner._color, rot[1], rot[2], rot[3]))
+    assert.is_true(colorEq(outer._color, rot[1], rot[2], rot[3]))
+    -- ⚠ DELIBERATELY NOT A LIGHT SPLIT.  v1 forced ring + echo alpha to sum to 1.0,
+    -- because the two were superimposed and their additive light stacked on the same
+    -- pixels.  These two are separated in space AND phase, so they are two rings rather
+    -- than one drawn twice, and each carries its own weight.
+    assert.is_true(inner._color[4] > outer._color[4],
+      "the inner ring must be the brighter of the pair")
     assert.is_true(disc._color[1] == 0 and disc._color[2] == 0 and disc._color[3] == 0)
   end)
 
-  it("LOCKS the echo in phase with the base ring — no relative motion, no moiré", function()
-    -- ⚠ THIS TEST USED TO ASSERT THE OPPOSITE, and the reversal is the point.  The echo
-    -- shipped counter-rotating at 2.5x the base period, on the argument that crossing
-    -- spokes make the extra reach legible as rays — an argument formed against Blizzard's
-    -- near-featureless ring.  Against an 8-FOLD sprite two patterns in relative rotation
-    -- MOIRÉ, beating at 8 x the relative angular velocity; once the base slowed to 12s
-    -- that beat fell to ~0.93 Hz, inside the band the eye tracks, and the cue visibly
-    -- stalled and raced.  Locked, the pair reads as one ring with longer reach, which is
-    -- the only thing the echo was ever for.
+  it("counter-rotates the pair at DIFFERENT periods — visibly two rings, and no moiré", function()
+    -- ⚠ THIS TEST REPLACES ONE THAT ASSERTED THE EXACT OPPOSITE, TWICE, AND THE HISTORY IS
+    -- THE POINT.  The outer ring first shipped counter-rotating at 2.5x the base period,
+    -- on the argument that crossing spokes make the extra reach legible as rays.  Against
+    -- an 8-FOLD sprite two patterns in relative rotation MOIRÉ, beating at 8 x their
+    -- relative angular velocity; once the base slowed to 12s that beat fell to ~0.93 Hz,
+    -- inside the band the eye tracks, and a tracked moiré stalls at each alignment and
+    -- races between them.  So it was LOCKED in phase — which killed the beat and, it
+    -- turned out, made the second ring invisible: same direction, same period, same sprite,
+    -- so the pair sat exactly on top of itself and read as ONE ring.
+    --
+    -- v2 counter-rotates again, but at periods chosen so the beat lands ABOVE the band the
+    -- eye can track: 6s against 9s gives |1/6 + 1/9| x 8 = 2.2 Hz, which reads as texture.
+    -- ⚠ THE CONSTRAINT IS THE BEAT FREQUENCY, NOT THE DIRECTION.  Any retune must be
+    -- checked against the ART's symmetry order — keep it well above ~1.5 Hz.
     local r = rigged(2)
     r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" },
                       { anchorTo = "fake2", emphasis = "LATE" } } })
     for _, key in ipairs({ "fake1", "fake2" }) do
-      local base, echo = r.cueGlows[key].rot, r.cueEchoes[key].rot
-      assert.is_true(near(echo._duration, base._duration),
-        key .. ": the echo is not timed off the base ring's own period")
-      assert.equals(base._degrees, echo._degrees,
-        key .. ": the echo turns against the base ring — that is a moiré, not rays")
+      local inner, outer = r.cueRingIn[key].rot, r.cueRingOut[key].rot
+      assert.is_true(inner._degrees * outer._degrees < 0,
+        key .. ": the rings turn the SAME way — that is one ring drawn twice")
+      assert.is_not.equals(inner._duration, outer._duration,
+        key .. ": equal periods hold the pair in a fixed relative pose")
+      -- The 8-fold beat, computed the way the header says to check it.
+      local beat = math.abs(1 / inner._duration + 1 / outer._duration) * 8
+      assert.is_true(beat > 1.5,
+        key .. ": the moiré beats at " .. beat .. " Hz — inside the band the eye TRACKS")
     end
-    -- Still timed off the base rather than an absolute, so LATE tracks it for free.
-    assert.is_not.equals(r.cueGlows["fake1"].rot._duration, r.cueGlows["fake2"].rot._duration)
-    assert.is_not.equals(r.cueEchoes["fake1"].rot._duration, r.cueEchoes["fake2"].rot._duration)
+    -- LATE escalates by a MULTIPLIER now, so BOTH rings speed up together and the ratio
+    -- between them — and therefore the beat check above — survives the escalation.  It
+    -- used to be an absolute `spinSecs`, a ratio wearing an absolute, which silently
+    -- stopped meaning "2.5x faster" every time the base period moved.
+    assert.is_true(near(r.cueRingIn["fake1"].rot._duration
+                      / r.cueRingIn["fake2"].rot._duration, 2.5))
+    assert.is_true(near(r.cueRingOut["fake1"].rot._duration
+                      / r.cueRingOut["fake2"].rot._duration, 2.5))
   end)
 
   it("keeps LATE's ring ~1.39x the base after the GLOW_SCALE retune", function()
@@ -415,7 +447,7 @@ describe("Renderer", function()
     local r = rigged(2)
     r:Draw({ cues = { { anchorTo = "fake1", size = 12, emphasis = "ROTATION" },
                       { anchorTo = "fake2", size = 12, emphasis = "LATE" } } })
-    local base, late = r.cueGlows["fake1"]._size[1], r.cueGlows["fake2"]._size[1]
+    local base, late = r.cueRingIn["fake1"]._size[1], r.cueRingIn["fake2"]._size[1]
     local ratio = late / base
     assert.is_true(ratio > 1.30 and ratio < 1.50,
       "LATE's escalation ratio drifted to " .. ratio .. " (want ~1.39)")
@@ -429,30 +461,34 @@ describe("Renderer", function()
     local r = rigged(2)
     r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" },
                       { anchorTo = "fake2", emphasis = "LATE" } } })
-    local base, late = r.cueGlows["fake1"].rot._duration, r.cueGlows["fake2"].rot._duration
+    local base, late = r.cueRingIn["fake1"].rot._duration, r.cueRingIn["fake2"].rot._duration
     assert.is_true(near(base / late, 2.5),
       "LATE's spin escalation drifted to " .. (base / late) .. "x (want 2.5)")
-    -- ...and the echo tracks whichever period each one ended up with, for free.
-    assert.is_true(near(r.cueEchoes["fake2"].rot._duration, late))
+    -- ...and the OUTER ring escalates by the same multiplier, so the pair keeps its
+    -- relative rate and the moiré beat stays where the test above pinned it.
+    assert.is_true(near(r.cueRingOut["fake1"].rot._duration
+                      / r.cueRingOut["fake2"].rot._duration, 2.5))
   end)
 
   ------------------------------------------------------------------------------
-  -- THE CUE LAYER — why the pop can exist at all.  The dot/ring/echo/disc ride a frame
-  -- the draw path never resizes; the KEYBIND deliberately does not.
+  -- THE CUE LAYER — one parent per icon.  The dot / both rings / disc ride it; the
+  -- KEYBIND deliberately does not.  ⚠ The layer existed for the POP, which is archived
+  -- (2026-08-02) — it is kept because grouping the cue's regions under one parent is still
+  -- the right shape, and it is where any future one-shot would go.
   ------------------------------------------------------------------------------
   it("parents the cue's own art to the cue layer and the key hint to the HOLDER", function()
     local r = rigged(1)
     r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" } },
              keybinds = { { anchorTo = "fake1", keybind = "Q" } } })
     local holder, layer = r.cueHolders["fake1"], r.cueLayers["fake1"]
-    for name, region in pairs({ dot = r.cueFrames["fake1"], ring = r.cueGlows["fake1"],
-                               echo = r.cueEchoes["fake1"], disc = r.cueDiscs["fake1"] }) do
-      assert.equals(layer, region._parent, name .. " is not on the cue layer — it will not pop")
+    for name, region in pairs({ dot = r.cueFrames["fake1"], inner = r.cueRingIn["fake1"],
+                               outer = r.cueRingOut["fake1"], disc = r.cueDiscs["fake1"] }) do
+      assert.equals(layer, region._parent, name .. " is not on the cue layer")
     end
     -- THE LOAD-BEARING HALF: identity chrome must not grow and shrink every time the
     -- rotation moves, so the key hint is on the holder, OUTSIDE the popped subtree.
     assert.equals(holder, r.cueKeys["fake1"]._parent,
-      "the keybind rides the cue layer — it will scale with every pop")
+      "the keybind rides the cue layer — it belongs to the icon, not to the decision")
     assert.is_not.equals(layer, r.cueKeys["fake1"]._parent)
   end)
 
@@ -465,10 +501,12 @@ describe("Renderer", function()
   end)
 
   ------------------------------------------------------------------------------
-  -- THE TWO EDGES.  Measured off 504s of real play: the cue set turns over at cast
-  -- cadence (120 changes, one every ~4s) and 60 % of those are a SWAP.  So a per-handle
-  -- POP/GHOST and a per-SET-CHANGE callback are two different things, and conflating
-  -- them would fire twice on every swap.
+  -- THE SET EDGE.  Measured off 504s of real play: the cue set turns over at cast
+  -- cadence (120 changes, one every ~4s) and 60 % of those are a SWAP.  ⚠ There used to be
+  -- a SECOND, per-handle edge here (the POP on arrival, the GHOST on departure), and the
+  -- distinction between the two was the point of this block — conflating them would fire
+  -- the sound twice on every swap.  Both one-shots were archived 2026-08-02, so only the
+  -- per-SET-CHANGE callback remains; the swap case below still pins the shape that mattered.
   ------------------------------------------------------------------------------
   local function watched(n)
     local seen = {}
@@ -499,8 +537,8 @@ describe("Renderer", function()
     r:Draw({ cues = { cue("fake2") } })              -- fake1 out + fake2 in, ONE tick
     assert.same({ "new", "new" }, seen)              -- ...and NOT { new, new, gone }
     -- Both halves of the swap still happened visually — they are just not two events.
-    assert.equals(1, r.cueLayers["fake2"].pop._plays)
-    assert.is_true(r.ghosting["fake1"])
+    assert.is_true(r.cueRingIn["fake2"]._shown, "the arriving cue never drew")
+    assert.is_false(r.cueRingIn["fake1"]._shown, "the departing cue never cleared")
   end)
 
   it("fires one 'gone' when the board empties", function()
@@ -512,53 +550,40 @@ describe("Renderer", function()
     assert.same({ "new", "gone" }, seen)
   end)
 
-  it("pops EVERY arriving handle while the set event fires once", function()
+  it("draws EVERY arriving handle while the set event fires once", function()
     local r, seen = watched(3)
     r:Draw({ cues = { cue("fake1") } })
-    local before = r.cueLayers["fake1"].pop._plays
     r:Draw({ cues = { cue("fake1"), cue("fake2"), cue("fake3") } })
-    assert.equals(before, r.cueLayers["fake1"].pop._plays, "a steady handle re-popped")
-    assert.equals(1, r.cueLayers["fake2"].pop._plays)
-    assert.equals(1, r.cueLayers["fake3"].pop._plays)
+    for _, key in ipairs({ "fake1", "fake2", "fake3" }) do
+      assert.is_true(r.cueRingIn[key]._shown, key .. " arrived without rings")
+      assert.is_true(r.cueRingIn[key]._spinOn, key .. " arrived without turning")
+    end
     assert.same({ "new", "new" }, seen)             -- two draws, two set changes — not four
   end)
 
-  it("ghosts a removed handle in the ring's own size and hue, and keeps its holder alive", function()
-    local r = rigged(1)
-    r:Draw({ cues = { { anchorTo = "fake1", size = 12, emphasis = "ROTATION" } } })
-    local ringSize = r.cueGlows["fake1"]._size[1]
-    r:Draw({ cues = {} })
-    local ghost = r.cueGhosts["fake1"]
-    assert.is_not_nil(ghost, "nothing marks where the cue left")
-    assert.is_true(ghost._shown)
-    assert.equals(ringSize, ghost._size[1])
-    assert.is_true(colorEq(ghost._color, theme.ROTATION[1], theme.ROTATION[2], theme.ROTATION[3]))
-    assert.equals(1, ghost.anim._plays)
-    -- The ring itself is hidden by the cull the same tick — which is exactly why the
-    -- ghost is its own texture, and why the holder must survive the cull.
-    assert.is_false(r.cueGlows["fake1"]._shown)
-    assert.is_true(r.ghosting["fake1"])
-    assert.is_true(r.cueHolders["fake1"]._shown,
-      "the holder was culled under a playing ghost — the ghost plays invisibly")
-    ghost.anim:Fire("OnFinished")
-    assert.is_nil(r.ghosting["fake1"])
-    assert.is_false(ghost._shown)
-  end)
-
-  it("re-ghosts a handle that leaves twice without stranding its holder", function()
-    -- ⚠ ORDERING.  `Stop()` on the previous ghost fires OnFinished, which CLEARS the
-    -- "a ghost is playing" flag — so the flag has to be set AFTER the stop.  Set it
-    -- before and the second ghost plays under an already-culled holder.
+  -- ⚠ A STEADY HANDLE MUST NOT RESTART ITS SPIN.  This is what the archived pop's
+  -- `_plays` counter used to prove incidentally, and it matters more now than it did
+  -- then: `Play()` on a running group restarts it, so a re-play every tick at 10 Hz would
+  -- pin the rings near phase zero and they would look STUCK rather than turning.  That is
+  -- the failure mode the whole ring investigation was chasing, so it gets its own test.
+  it("never restarts a steady cue's rotation on redraw", function()
     local r = rigged(1)
     local c = { anchorTo = "fake1", emphasis = "ROTATION" }
     r:Draw({ cues = { c } })
-    r:Draw({ cues = {} })          -- ghost 1
-    r:Draw({ cues = { c } })       -- ...it comes back
-    r:Draw({ cues = {} })          -- ghost 2, over a still-running ghost 1
-    assert.equals(2, r.cueGhosts["fake1"].anim._plays)
-    assert.is_true(r.ghosting["fake1"], "the second ghost cleared its own flag")
-    assert.is_true(r.cueHolders["fake1"]._shown)
+    local inner, outer = r.cueRingIn["fake1"], r.cueRingOut["fake1"]
+    local a, b = inner.spin._plays, outer.spin._plays
+    for _ = 1, 10 do r:Draw({ cues = { c } }) end
+    assert.equals(a, inner.spin._plays, "the inner ring re-played — it will look stuck")
+    assert.equals(b, outer.spin._plays, "the outer ring re-played — it will look stuck")
   end)
+
+  -- ⚠ THE TWO GHOST TESTS THAT LIVED HERE ARE DELETED WITH THE GHOST (2026-08-02).
+  -- They pinned real, hard-won behaviour — that the ghost is its OWN texture because the
+  -- cull hides the departing ring in the same tick, that the holder must survive that cull
+  -- or the ghost plays invisibly, and that `Stop()` fires OnFinished so the "ghosting" flag
+  -- must be set AFTER the stop or a cue leaving twice strands its holder.  All three are
+  -- recorded in archive/cue-treatment-v1.lua.  ⚠ Restore them WITH any new departure
+  -- animation; they are the reason it worked.
 
   it("stays silent with no callback injected (the Renderer calls no game function)", function()
     local r = rigged(1)

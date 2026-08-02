@@ -10,14 +10,15 @@
 -- opaque handle -> frame lookup (live: cooldownID -> CDM item frame; test:
 -- "fake1" -> a placeholder square).  Everything else is coords + a style token.
 --
--- WHAT A CUE IS NOW (2026-08-01, promoted out of the `/cdmp rt fx` rig):
---   * cue = a solid DOT + a spinning ring + an outer counter-rotating ECHO of that ring
---     + a black BACKING DISC, all coloured by its `emphasis` token and all riding a
---     per-icon CUE LAYER frame (see ensureLayer).  A cue arriving POPS; a cue leaving
---     leaves a GHOST.
+-- WHAT A CUE IS NOW (2026-08-02 — the v2 treatment; v1 is archive/cue-treatment-v1.lua):
+--   * cue = a black BACKING DISC + a solid DOT + TWO COUNTER-ROTATING RINGS, all coloured
+--     by its `emphasis` token and all riding a per-icon CUE LAYER frame (see ensureLayer).
+--     ⚠ The ring pair's numbers came from a BLIND EXPERIMENT, not from dialling — see the
+--     header at RING_SCALE.  No breathe, no pop, no ghost: all three retired with v1, and
+--     the cue is deliberately pure steady-state until the new one has been flown.
 --   * keybind = a corner key hint, drawn from the DrawList's OWN `keybinds[]` channel
 --     (Phase 3) — identity chrome, independent of whether the icon is cued.  It rides
---     the HOLDER, deliberately NOT the cue layer, so it does not scale with the pop.
+--     the HOLDER, deliberately NOT the cue layer.
 --   * panel = a plain titled list of step rows (state · keybind · label), shown
 --     only when the DrawList carries one.
 --   * resourceBars = an array of minimal discrete-pip rows, stacked (optional).
@@ -77,15 +78,15 @@ end
 -- Per-emphasis GLOW/RING spec — the source of truth for ring behaviour (token ->
 -- pixels lives in the Renderer, per architecture invariant #5).  Supersedes
 -- HudGeometry.G.GLOW_EMPHASIS / the `glow` bool.
---   * an entry ⇒ this emphasis draws a spinning glow RING (+ a solid circle dot).
---   * `spin`/`pulse` ⇒ whether the ring rotates / breathes.  Both false ⇒ a STATIC ring.
---   * `color` redirects the colour lookup for BOTH circle and ring (LATE -> ROTATION
+--   * an entry ⇒ this emphasis draws the RING PAIR (+ a solid circle dot).
+--   * `spin` ⇒ whether the rings rotate.  false ⇒ a STATIC pair.
+--   * `color` redirects the colour lookup for BOTH circle and rings (LATE -> ROTATION
 --     green).  It OVERRIDES the theme entry for that token — see the theme note above.
---   * no entry (IDLE / unknown) ⇒ no circle, no ring (keybind-only if it carries one).
---   * `ringScale` / `spinSecs` => per-emphasis ring SIZE and rotation period (both default
---     to GLOW_SCALE / SPIN_SECS).  These express DEGREE without spending a hue.
+--   * no entry (IDLE / unknown) ⇒ no circle, no rings (keybind-only if it carries one).
+--   * `ringScale` = per-emphasis ring SIZE (defaults to RING_SCALE); `spinMult` = how much
+--     FASTER this emphasis turns (defaults to 1). These express DEGREE without a hue.
 local GLOW_SPEC = {
-  ROTATION          = { spin = true,  pulse = true },
+  ROTATION          = { spin = true },
   -- LATE is not a different KIND of press -- it is the SAME press, overdue.  So it is the
   -- rotation cue ESCALATED (a bigger ring spinning ~2.5x faster), not a second colour.
   -- WARNING: this deliberately reverses part of the 2026-07-26 dial-in, which pulled LATE
@@ -96,20 +97,22 @@ local GLOW_SPEC = {
   -- ringScale is RELATIVE to GLOW_SCALE by intent (~1.4x), so it moved with it when the
   -- base ring shrank to close the dot/ring gap.  Keep that ratio if either is retuned —
   -- the escalation is "a bigger ring", not "this exact number".
-  -- ⚠ BOTH NUMBERS ARE RATIOS WEARING ABSOLUTES, and both moved when the base did.
-  -- 4.64 = 3.2 x 1.45, tracking GLOW_SCALE's 2.3 -> 3.34, so the ring stays 1.39x.
-  -- 4.8 = 1.6 x 3, tracking SPIN_SECS' 4.0 -> 12.0 (the art-symmetry retune — see the
-  -- note at SPIN_SECS), so LATE keeps spinning 2.5x faster than everything else.
+  -- ⚠ THE SPEED ESCALATION IS NOW A MULTIPLIER, NOT AN ABSOLUTE.  It used to be
+  -- `spinSecs = 4.8` against a 12.0s base — a ratio wearing an absolute, which is exactly
+  -- how it silently stopped meaning "2.5x faster" every time the base period moved.  There
+  -- are TWO base periods now (the pair turns at different rates by design), so an absolute
+  -- could not express it at all.  `spinMult` scales both.
+  -- ringScale stays relative to RING_SCALE by intent (~1.39x).
   -- The escalation is "a bigger ring, turning faster", never these exact numbers.
-  LATE              = { spin = true,  pulse = true, color = "ROTATION",
-                        ringScale = 4.64, spinSecs = 4.8 },
-  SOON              = { spin = true,  pulse = true },
+  LATE              = { spin = true, color = "ROTATION",
+                        ringScale = 4.64, spinMult = 2.5 },
+  SOON              = { spin = true },
   -- ROTATION_FALLBACK animates like everything else now (2026-07-30 feedback).  History:
   -- v0.32.17 made the runner-up read by its ring being STATIC, because it was a DIMMER
   -- GREEN and motion was the only channel left to separate it from ROTATION.  It has its
   -- own violet since v0.32.36, so HUE carries the distinction and the stillness bought
   -- nothing — it just made the backup look like a dead cue next to the live ones.
-  ROTATION_FALLBACK = { spin = true,  pulse = true },
+  ROTATION_FALLBACK = { spin = true },
 }
 
 -- powerType -> RGBA.  SOUL_SHARDS is the soul-violet — the shard colour by construction.
@@ -157,15 +160,9 @@ function R.New(cfg)
   self.cueLayers  = {}          -- anchorTo -> the CUE LAYER frame (see ensureLayer)
   self.cueFrames  = {}          -- anchorTo -> dot texture (diff-by-key pool)
   self.cueKeys    = {}          -- anchorTo -> keybind-hint fontstring (diff-by-key)
-  self.cueGlows   = {}          -- anchorTo -> the dot's glow-halo texture
-  self.cueEchoes  = {}          -- anchorTo -> the ring's outer counter-rotating echo
+  self.cueRingIn   = {}         -- anchorTo -> the INNER ring texture (faster, brighter)
+  self.cueRingOut  = {}         -- anchorTo -> the OUTER ring, counter-rotating
   self.cueDiscs   = {}          -- anchorTo -> the black backing disc under both
-  self.cueGhosts  = {}          -- anchorTo -> the removal ghost texture
-  self.ghosting   = {}          -- anchorTo -> true while a ghost is playing.  ⚠ THE THIRD
-                                -- TERM OF THE HOLDER CULL — a removed handle's holder
-                                -- would otherwise hide the instant it left the DrawList
-                                -- and its ghost would play invisibly.  Cleared by the
-                                -- ghost group's own OnFinished.
   self.cuedLast   = {}          -- the PREVIOUS draw's cue-active set: the EDGE input.
                                 -- added = active - last, removed = last - active.
   -- Injected, defaults to nil so the Renderer still never calls a game function.  Fired
@@ -232,33 +229,29 @@ function R:ensureHolder(key, anchor)
 end
 
 --------------------------------------------------------------------------------
--- The CUE LAYER — one frame per icon, and the reason the pop can exist at all.
+-- The CUE LAYER — one frame per icon, grouping everything a cue draws.
 --------------------------------------------------------------------------------
--- WHY A SECOND FRAME.  `setDotGlow` re-asserts `SetSize` on the dot / ring / echo / disc
--- on EVERY draw (~10 Hz), because that is how the per-emphasis ring size is applied.  A
--- `Scale` animation on those same textures is therefore fought by a resize ten times a
--- second — which the `rt fx` rig never hit, since its Draw runs once per command rather
--- than per tick.  So the pop does NOT scale the textures: it scales a FRAME that owns
--- them, and nothing in the draw path touches that frame's size.
+-- WHAT RIDES IT.  dot + both rings + backing disc.  The KEYBIND FONTSTRING DELIBERATELY
+-- DOES NOT — it stays on the holder, because it is identity chrome and belongs to the
+-- icon rather than to the decision.  renderer_spec pins that.
 --
--- WHAT RIDES IT.  dot + ring + echo + backing disc.  The KEYBIND FONTSTRING DELIBERATELY
--- DOES NOT — it stays on the holder, because it is identity chrome and must not grow and
--- shrink every time the rotation moves.  renderer_spec pins that.
+-- ⚠ IT USED TO EXIST FOR THE POP, AND THE POP IS GONE (2026-08-02).  A one-shot `Scale`
+-- on the cue's textures would have been fought by `setDotGlow` re-asserting `SetSize` on
+-- them ten times a second, so the pop scaled a FRAME that owned them instead and nothing
+-- in the draw path touched that frame's size.  With the pop archived the frame is no
+-- longer load-bearing — it is kept because it is still the right shape: one parent per
+-- icon means the cue's four regions are created, parented, and re-parented as a unit when
+-- a holder is rebuilt, and it is where any future one-shot would go.
 --
--- ITS RECT IS THE DOT'S RECT, not the icon's.  The alternative (SetAllPoints the holder)
--- would put the Scale origin at the ICON's centre, so a popping cue would slide outward
--- from the icon as it grew; the dialled-in look scales each cue about ITS OWN centre.  So
--- the layer takes the cue entry's geometry, the dot is CENTERed on the layer, and ring /
--- echo / disc stay CENTERed on the dot exactly as before.
+-- ITS RECT IS THE DOT'S RECT, not the icon's — the layer takes the cue entry's geometry,
+-- the dot is CENTERed on the layer, and the rings + disc stay CENTERed on the dot.
 --
--- ⚠ ITS GEOMETRY IS RE-STAMPED ONLY ON CHANGE, for the same reason the pop is here at
--- all: a `SetSize`/`SetPoint` per tick on the frame being scaled is the fight this whole
--- structure exists to avoid.  The cue geometry is constant in practice (G.DOT), so the
--- guard costs nothing and never re-stamps after the first draw.
+-- ⚠ ITS GEOMETRY IS RE-STAMPED ONLY ON CHANGE.  The cue geometry is constant in practice
+-- (G.DOT), so the guard costs nothing and never re-stamps after the first draw.
 --
 -- FRAME LEVEL = THE HOLDER'S, not above it.  A child frame defaults one level up, which
--- would put the ring's ARTWORK over the keybind's OVERLAY on the holder.  Level-matched,
--- draw layer decides, and the key hint keeps drawing on top of the ring.
+-- would put the rings' ARTWORK over the keybind's OVERLAY on the holder.  Level-matched,
+-- draw layer decides, and the key hint keeps drawing on top of the rings.
 function R:ensureLayer(key, holder, c, sz)
   local l = self.cueLayers[key]
   if not l then
@@ -333,6 +326,14 @@ local function sizeDisc(t, size, rel)
   t:SetPoint("CENTER", rel, "CENTER", 0, 0)
 end
 
+-- Park one ring: hidden, stopped, and its play-flag cleared so a re-shown cue re-plays.
+local function parkRing(t)
+  if not t then return end
+  t:Hide()
+  t.spin:Stop()
+  t._spinOn = nil
+end
+
 function R:drawCues(cues)
   local active = {}
   for _, c in ipairs(cues or {}) do
@@ -364,37 +365,30 @@ function R:drawCues(cues)
         -- GLOW_SPEC entry) rides a layer BELOW it, so the crisp dot + keybind stay on top.
         dot:SetAlpha(1)
         dot:Show()
-        self:setDotGlow(key, layer, dot, gs and col or nil, sz, gs)
+        self:setCueRings(key, layer, dot, gs and col or nil, sz, gs)
       else
         -- DEFENSIVE: an emphasis token the theme has no entry for draws NOTHING — we never
         -- guess a colour.  Hide any dot/glow this handle had.  (Before Phase 3 this branch
         -- also had to keep the handle alive for a keybind-only cue; that job is gone, but
         -- the "unknown token ⇒ no dot" rule is a contract of its own and stays.)
         if self.cueFrames[key] then self.cueFrames[key]:Hide() end
-        self:setDotGlow(key, self.cueLayers[key], self.cueFrames[key], nil, sz, nil)
+        self:setCueRings(key, self.cueLayers[key], self.cueFrames[key], nil, sz, nil)
       end
     end
   end
-  -- Dots + rings + echoes + discs cull on the CUE-active set; holders do not (see R:Draw).
+  -- Dots + both rings + discs cull on the CUE-active set; holders do not (see R:Draw).
   for key, dot in pairs(self.cueFrames) do
     if not active[key] then dot:Hide() end
   end
   for key, disc in pairs(self.cueDiscs) do
     if not active[key] then disc:Hide() end
   end
-  for key, echo in pairs(self.cueEchoes) do
-    if not active[key] then
-      echo:Hide()
-      echo.spin:Stop()
-      echo._spinOn = nil
-    end
+  for key, t in pairs(self.cueRingOut) do
+    if not active[key] then parkRing(t) end
   end
-  for key, g in pairs(self.cueGlows) do
+  for key, t in pairs(self.cueRingIn) do
     if not active[key] then
-      g:Hide()
-      if g.spin then g.spin:Stop() end
-      if g.pulse then g.pulse:Stop() end
-      g._spinOn, g._pulseOn = nil, nil   -- so a re-shown glow re-plays each group
+      parkRing(t)                        -- stopped + flag cleared, so a re-shown cue replays
       self.glowing[key] = nil
     end
   end
@@ -445,216 +439,166 @@ function R:drawKeybinds(list)
 end
 
 --------------------------------------------------------------------------------
--- Press glow — a SPINNING round glow centred on the solid cue dot, in OUR colour.
+-- The cue rings — TWO counter-rotating sprites centred on the solid dot.
 --------------------------------------------------------------------------------
--- A round ring-glow atlas Blizzard built to spin (services-ring-large-glowspin, the
--- RecruitAFriend claim glow), additive, tinted to the cue's emphasis hue via
--- SetVertexColor and CENTRED on the solid dot, sized relative to the dot.  The
--- CONTINUOUS ROTATION is the eye-draw (2026-07-28 feedback: "the movement really helps
--- draw the eye"); a symmetric soft circle can't show spin, so this ring's angular
--- detail is what makes the motion read.  Two separate looping groups because their
--- loop MODES differ: `spin` (Rotation, REPEAT — a seamless full turn) and `pulse`
--- (Alpha, BOUNCE — a gentle breathe); one group can't do both.  Sits a layer BELOW the
--- dot (ARTWORK vs the dot's OVERLAY) so the crisp dot + keybind stay on top.  Pooled
--- per handle.  Each group is driven independently to match its `spin`/`pulse` flag and
--- tracked per-glow (g._spinOn / g._pulseOn), so a steady redraw doesn't hitch a running
--- animation and a ring with both flags false simply never plays.
+-- Additive star sprites, tinted to the cue's emphasis hue via SetVertexColor and CENTRED
+-- on the solid dot, sized relative to it.  The CONTINUOUS ROTATION is the eye-draw
+-- (2026-07-28 feedback: "the movement really helps draw the eye"); a symmetric soft circle
+-- cannot show spin, so this sprite's angular detail is what makes the motion read.  They
+-- sit a layer BELOW the dot (ARTWORK vs the dot's OVERLAY) so the crisp dot + keybind stay
+-- on top, and pool per handle.
 --
--- ⚠ THE RING HAS A HOLE, AND IT CANNOT BE FILLED.  Its transparent centre is baked into
--- the art, and there is no tint or blend mode that paints it in (SetVertexColor
--- multiplies — it cannot add alpha where there is none).  The angular detail in that ring
--- is also the only reason the spin READS at all; a symmetric soft blob would rotate
--- invisibly.  So the hole is not a bug to remove, it is the cost of the motion channel —
--- the lever is to make the DOT COVER IT by sizing the ring so its inner edge sits on the
--- dot's rim.  That is what GLOW_SCALE is.
+-- ⚠ THESE NUMBERS ARE NOT A DIAL-IN, THEY ARE AN EXPERIMENTAL RESULT — the whole point is
+-- that they were arrived at by someone who could not see this file.  The v1 treatment's
+-- spin read as "slows like a rubber band, then races, forever", and six builds of
+-- theorising about our own scaffolding produced three wrong answers in a row.  So three
+-- subagents, blind to this repository, each implemented "two concentric counter-rotating
+-- green rings" from one pinned brief (same sprite, same colour, 40px inner / 60px outer,
+-- opposite directions) with periods, blend mode, layers and easing left free.  Two of the
+-- three converged on almost exactly what is below, and BOTH RAN STEADY — which cleared the
+-- concept, the art and the WoW animation API, and put the fault in v1.
 --
--- WE SHIP THE ART (2026-08-01, promoted from `rt fx art 8`).  It was Blizzard's
--- `services-ring-large-glowspin` atlas; it is now a CC0 Kenney sprite we ship, via
--- `SetTexture` on a file path rather than `SetAtlas` on a name.  The reason is not taste:
--- SetVertexColor MULTIPLIES, so a tint can only remove energy the art already has, and
--- that atlas is GOLD — mostly red+green.  Our violet ROTATION_FALLBACK (green channel
--- 0.16) multiplied most of it away, which is a real part of why the fallback read dim.
--- This sprite is white/grey with the shape in ALPHA, so every hue tints at full strength.
--- 128x128, power-of-two.  Licence + provenance: Media/fx/CREDITS.md.
+-- Round 2 then walked that steady ring toward v1's, one difference per panel, recording
+-- every rotation's phase against a uniform spin.  NOTHING surged, including v1's own
+-- numbers.  What it showed instead is that v1's pair reads as ONE ring: the echo was
+-- LOCKED IN PHASE with the base — same direction, same period, same 8-fold sprite — so the
+-- two sat exactly on top of each other.  That was v1's deliberate fix for a moiré (see
+-- archive/cue-treatment-v1.lua), and it worked, at the cost of the second ring being
+-- invisible.  This pair counter-rotates at DIFFERENT periods so you can see both.
+--
+-- ⚠ WHY THE MOIRÉ THAT DROVE v1's LOCK IS NOT BACK.  Two n-fold patterns in relative
+-- rotation beat at n x their RELATIVE angular velocity; star_07 is 8-fold, and 6s against
+-- 9s counter-rotating gives |1/6 + 1/9| x 8 = 2.2 Hz — above flicker fusion, so it reads as
+-- texture.  v1's 12.0s-against-30.0s pair sat at 0.93 Hz, squarely in the band the eye
+-- TRACKS, and a tracked moiré stalls at each alignment and races between them.  The lock
+-- was the right fix for the wrong periods.  ⚠ ANY retune must be checked against the ART's
+-- symmetry order, not by eye at one speed: keep the beat well above ~1.5 Hz.
+--
+-- ⚠ ART, SIZE AND PERIOD ARE ONE DIAL WITH THREE PARTS.  The rate the eye reads is angular
+-- velocity x the sprite's rotational symmetry order — how often a spoke passes a fixed
+-- point — and star_07 measures 8-fold (dominant k=8, harmonics at k=4/k=16).  Swap the
+-- sprite and RING_SCALE and both periods are invalidated together; a spokier sprite needs
+-- longer periods in proportion.
 local GLOW_ART = "Interface\\AddOns\\CDMProbe\\Media\\fx\\glow\\star_07.tga"
--- Ring diameter relative to the DOT.  Dialled BY EYE on `/cdmp rt fx` — the number that
--- matters is not the ring's size but the gap between the dot's rim and the ring's inner
--- edge, which must be ZERO so the two read as one object.
---
--- ⚠ GLOW_SCALE IS ART-SPECIFIC AND DOES NOT TRANSFER.  2.3 was dialled against Blizzard's
--- ring, whose spokes start at a different radius; 3.34 (2.3 x 1.45) belongs to star_07 and
--- to nothing else.  Swapping the art and re-dialling this are ONE job, not two.
-local GLOW_SCALE = 3.34
--- ⚠ SO IS THE PERIOD, AND FOR A REASON WORTH WRITING DOWN.  The rate the eye reads is not
--- the angular velocity, it is **angular velocity x the sprite's rotational symmetry
--- order** — how often a spoke passes a fixed point.  star_07 measures **8-fold** (an
--- 8-pointed star with alternating long/short spokes: dominant k=8, harmonics at k=4/k=16),
--- where Blizzard's `services-ring-large-glowspin` is a swept gradient with almost no
--- angular structure at all (the twirl sprites beside it measure k=1).  So swapping the art
--- at an unchanged 4.0s tripled the apparent spin — 8 spokes/revolution is a feature every
--- 0.5s — and it read as a strobe rather than a turn.  12.0s puts a spoke back at ~1.5s.
---
--- THE RULE: art, GLOW_SCALE and SPIN_SECS are ONE dial with three parts.  Change the
--- sprite and BOTH numbers are invalidated; a spokier sprite needs a longer period in
--- proportion to its symmetry order.  (`/cdmp rt fx spin <n>` is how to re-dial it.)
-local SPIN_SECS  = 12.0   -- one full rotation
 
--- THE BREATHE.  A SECOND continuous motion on the same texture, and the one nobody has
--- ever dialled: it predates the `rt fx` rig, which shipped no knob for it, so every
--- judgement about "how fast do the cues move" has actually been a judgement about
--- rotation + this, with only the rotation adjustable.  `SetLooping("BOUNCE")` means the
--- FULL cycle is 2 x PULSE_SECS.  ⚠ It multiplies with the ring's vertex alpha, so after
--- the light split the ring breathes between 0.45 x floor and 0.45 — the RATIO is what
--- the eye reads, and the ratio is unchanged by the split.
-local PULSE_SECS  = 0.60  -- half-cycle; 1.2s there and back
-local PULSE_FLOOR = 0.55  -- dims to this fraction, then back to full
+-- ⚠ THE RING HAS A HOLE, AND IT CANNOT BE FILLED.  Its transparent centre is baked into
+-- the art, and no tint or blend mode paints it in (SetVertexColor MULTIPLIES — it cannot
+-- add alpha where there is none).  The angular detail is also the only reason the spin
+-- READS at all; a symmetric soft blob would rotate invisibly.  So the hole is not a bug to
+-- remove, it is the cost of the motion channel — the lever is to make the DOT COVER IT by
+-- sizing the ring so its inner edge sits on the dot's rim.
+local RING_SCALE  = 3.34   -- INNER ring diameter, relative to the dot (12 -> 40px)
+local OUTER_SCALE = 1.5    -- OUTER ring diameter, relative to the inner (40 -> 60px)
 
--- THE OUTER ECHO — reach without brightness (`rt fx rays 1.5 @55%`).  A ring cannot be
--- stretched radially: a texture is a quad and tex-coords are rectangular, so there is no
--- transform that lengthens the rays while holding the inner radius.  The reach of a ray is
--- baked into the art.  So the ring is drawn AGAIN, larger — and because additive light
--- STACKS, the light is SPLIT between the two rather than added, so only the REACH grows.
---
--- ⚠ LOCKED IN PHASE WITH THE BASE RING — same direction, same period — AND THE REASON IS
--- THE MOST EXPENSIVE THING LEARNED IN THIS WHOLE ROUND.  It shipped counter-rotating at
--- 2.5x the base period, inherited from the rig's `desync` knob, on the argument that
--- opposed rotation keeps the spokes crossing and makes the extra reach legible as rays.
--- That argument was formed against Blizzard's ring, which is a swept gradient with almost
--- no angular structure.  Against an 8-FOLD sprite it is wrong, and expensively so:
---
---   TWO N-FOLD PATTERNS IN RELATIVE ROTATION PRODUCE A MOIRÉ, and it beats at N x the
---   RELATIVE angular velocity — 8 alignments per relative revolution here.  At the
---   original 4.0s/10.0s that beat sat near 2.8 Hz, above flicker fusion, so it read as
---   texture and nobody questioned it.  Slowing the base to 12.0s (the art-symmetry retune
---   above) dragged the beat down to ~0.93 Hz, straight into the band where the eye TRACKS
---   it — and a tracked moiré stalls at each alignment and races between them.  Reported
---   from the chair as "the spin slows like a rubber band, then speeds up, forever".
---
--- So the slowdown did not CREATE the interference, it made it visible; the interference
--- was there from the first build.  Locked in phase there is no relative motion at all and
--- the pair reads as ONE ring with longer reach — which is the only thing the echo was ever
--- for.  ⚠ Any future value other than 1.0 / -360 reintroduces a beat at 8 x the relative
--- velocity: check it against the ART's symmetry order, not by eye at one speed.
--- (`/cdmp rt fx echo sync <n>` walks it back out if that is ever wanted deliberately.)
-local ECHO_SCALE      = 1.5    -- echo diameter, relative to the base ring
-local ECHO_LIGHT      = 0.55   -- the echo's share of the light; the base ring keeps 0.45
-local ECHO_SPIN_RATIO = 1.0    -- echo period = base period x this.  1.0 = locked, no moiré
-local ECHO_DEGREES    = -360   -- ...the SAME way as the base ring.  See above.
+-- Opposite directions, and deliberately NON-HARMONIC periods so the pair never settles
+-- into a fixed relative pose.  Negative = clockwise.
+local INNER_SECS,    OUTER_SECS    = 6.0,  9.0
+local INNER_DEGREES, OUTER_DEGREES = -360, 360
+
+-- ⚠ NOT A LIGHT SPLIT.  v1 forced ring + echo alpha to sum to 1.0 so that adding reach
+-- could not add brightness — correct there, because the two were superimposed and their
+-- additive light stacked on the same pixels.  These two are separated in space and in
+-- phase, so they are two rings, not one ring drawn twice, and each carries its own weight.
+local INNER_ALPHA, OUTER_ALPHA = 0.85, 0.55
 
 -- THE BACKING DISC — contrast, not light.  The rings are additive over busy icon art, so
 -- they wash out against it; punching a dark hole behind them gives the added light
--- something to read against.  Sized off the OUTERMOST drawn extent (the echo), not the
--- base ring, so it can never end up smaller than the light it is backing.  ~21px behind a
--- 12px dot at the shipped numbers.
+-- something to read against.  Sized off the OUTERMOST drawn extent, so it can never end up
+-- smaller than the light it is backing.  ~21px behind a 12px dot at the shipped numbers.
 local DISC_ALPHA = 0.75
-local DISC_SCALE = 0.35   -- diameter relative to the ECHO's diameter (ring x 1.5)
+local DISC_SCALE = 0.35   -- diameter relative to the OUTER ring's diameter
 
 -- Drive one looping group to match its flag, tracked on the owner so a steady redraw at
--- 10 Hz doesn't restart it.  Both flags false ⇒ the region is shown but never animates.
+-- 10 Hz doesn't restart it.  Flag false ⇒ the region is shown but never animates.
 local function drive(owner, group, want, flag)
   if want and not owner[flag] then group:Play(); owner[flag] = true
   elseif not want and owner[flag] then group:Stop(); owner[flag] = false end
 end
 
-function R:setDotGlow(key, layer, dot, col, size, gs)
-  local g = self.cueGlows[key]
-  if not col then                              -- no glow this frame: hide + park
-    if g then
-      g:Hide()
-      if g.spin then g.spin:Stop() end
-      if g.pulse then g.pulse:Stop() end
-      g._spinOn, g._pulseOn = nil, nil         -- clear so a re-shown glow re-plays
-    end
-    local e, d = self.cueEchoes[key], self.cueDiscs[key]
-    if e then e:Hide(); e.spin:Stop(); e._spinOn = nil end
+local function ensureRing(layer, sublevel, degrees, secs)
+  local t = layer:CreateTexture(nil, "ARTWORK", nil, sublevel)
+  t:SetTexture(GLOW_ART)
+  t:SetBlendMode("ADD")
+  local g = t:CreateAnimationGroup()
+  local rot = g:CreateAnimation("Rotation")
+  rot:SetDegrees(degrees)
+  rot:SetDuration(secs)
+  rot:SetOrigin("CENTER", 0, 0)
+  rot:SetOrder(1)
+  g:SetLooping("REPEAT")
+  t.spin, t.rot, t._secs = g, rot, secs
+  return t
+end
+
+function R:setCueRings(key, layer, dot, col, size, gs)
+  local inner, outer = self.cueRingIn[key], self.cueRingOut[key]
+  if not col then                              -- no rings this frame: hide + park
+    parkRing(inner)
+    parkRing(outer)
+    local d = self.cueDiscs[key]
     if d then d:Hide() end
     self.glowing[key] = nil
     return
   end
-  if not g then
-    g = layer:CreateTexture(nil, "ARTWORK")
-    g:SetTexture(GLOW_ART)
-    g:SetBlendMode("ADD")
-    local spinGroup = g:CreateAnimationGroup()  -- continuous rotation (REPEAT)
-    local rot = spinGroup:CreateAnimation("Rotation")
-    rot:SetDegrees(-360)
-    rot:SetDuration(SPIN_SECS)
-    rot:SetOrigin("CENTER", 0, 0)
-    rot:SetOrder(1)
-    g.rot = rot                                 -- kept so the PERIOD can change per emphasis
-    spinGroup:SetLooping("REPEAT")
-    local pulseGroup = g:CreateAnimationGroup() -- breathe (BOUNCE) — own group
-    local a = pulseGroup:CreateAnimation("Alpha")
-    a:SetFromAlpha(PULSE_FLOOR)
-    a:SetToAlpha(1.00)
-    a:SetDuration(PULSE_SECS)
-    a:SetOrder(1)
-    pulseGroup:SetLooping("BOUNCE")
-    g.spin, g.pulse = spinGroup, pulseGroup
-    -- Exposed like `g.rot`, so `/cdmp rt fx` can re-time the breathe live.  It could not
-    -- before, which is why the first round of dialling never questioned it.
-    g.pulseAnim, g.pulseSecs = a, PULSE_SECS
-    self.cueGlows[key] = g
+  if not inner then
+    inner = ensureRing(layer, 0, INNER_DEGREES, INNER_SECS)
+    self.cueRingIn[key] = inner
   end
-  local d     = size or 12
-  local ring  = d * ((gs and gs.ringScale) or GLOW_SCALE)
-  local secs  = (gs and gs.spinSecs) or SPIN_SECS
-  local outer = ring * ECHO_SCALE
-  -- THE LIGHT SPLIT.  The base ring gives up its share to the echo, so adding reach does
-  -- not add brightness.  Alpha only — the hue is the emphasis colour, untouched.
-  g:SetVertexColor(col[1], col[2], col[3], 1 - ECHO_LIGHT)
-  g:ClearAllPoints()
-  g:SetPoint("CENTER", dot, "CENTER", 0, 0)
-  g:SetSize(ring, ring)
-  -- Remembered for the GHOST, which outlives the cull that hides this texture and must
-  -- not restate the ring's size or hue (that is how the two would drift apart).
-  g.ringSize, g.ringCol = ring, col
-  -- Re-time the rotation only when it CHANGES: SetDuration on a playing group restarts it,
-  -- which would stutter the ring on every redraw at 10 Hz.
-  if g._spinSecs ~= secs then
-    g._spinSecs = secs
-    g.rot:SetDuration(secs)
+  if not outer then
+    -- One sub-layer under the inner ring, so the brighter, faster one reads on top.
+    outer = ensureRing(layer, -1, OUTER_DEGREES, OUTER_SECS)
+    self.cueRingOut[key] = outer
   end
-  g:Show()
-  drive(g, g.spin,  gs and gs.spin,  "_spinOn")
-  drive(g, g.pulse, gs and gs.pulse, "_pulseOn")
 
-  -- THE BACKING DISC — BACKGROUND, under everything, sized off the echo's extent.
+  local d     = size or 12
+  local ring  = d * ((gs and gs.ringScale) or RING_SCALE)
+  local out   = ring * OUTER_SCALE
+  local mult  = (gs and gs.spinMult) or 1
+
+  -- ⚠ GEOMETRY IS STATED ONCE, NOT PER DRAW.  v1 re-asserted size, anchor and colour on
+  -- every pipeline tick (~10 Hz) on textures whose Rotation was already playing.  Round 2
+  -- built a panel specifically to test whether that restate disturbs a running animation
+  -- and MEASURED that it does not — so this guard is not a bug fix, it is just not doing
+  -- work that provably buys nothing.  The cue geometry is constant in practice.
+  if inner._ring ~= ring then
+    inner._ring = ring
+    inner:SetSize(ring, ring)
+    inner:ClearAllPoints()
+    inner:SetPoint("CENTER", dot, "CENTER", 0, 0)
+  end
+  if outer._ring ~= out then
+    outer._ring = out
+    outer:SetSize(out, out)
+    outer:ClearAllPoints()
+    outer:SetPoint("CENTER", dot, "CENTER", 0, 0)
+  end
+  inner:SetVertexColor(col[1], col[2], col[3], INNER_ALPHA)
+  outer:SetVertexColor(col[1], col[2], col[3], OUTER_ALPHA)
+
+  -- Re-time only when the RATE CHANGES: SetDuration on a playing group restarts it, which
+  -- would hitch the ring on every redraw at 10 Hz.
+  for t, base in pairs({ [inner] = INNER_SECS, [outer] = OUTER_SECS }) do
+    local secs = base / mult
+    if t._secs ~= secs then
+      t._secs = secs
+      t.rot:SetDuration(secs)
+    end
+  end
+
+  inner:Show()
+  outer:Show()
+  drive(inner, inner.spin, gs and gs.spin, "_spinOn")
+  drive(outer, outer.spin, gs and gs.spin, "_spinOn")
+
+  -- THE BACKING DISC — BACKGROUND, under everything, sized off the outer ring's extent.
   local disc = self.cueDiscs[key]
   if not disc then
     disc = maskedDisc(layer, "BACKGROUND")
     self.cueDiscs[key] = disc
   end
   disc:SetColorTexture(0, 0, 0, DISC_ALPHA)
-  sizeDisc(disc, outer * DISC_SCALE, dot)
+  sizeDisc(disc, out * DISC_SCALE, dot)
   disc:Show()
-
-  -- THE OUTER ECHO — one sub-layer under the base ring, counter-rotating at the ratio.
-  local echo = self.cueEchoes[key]
-  if not echo then
-    echo = layer:CreateTexture(nil, "ARTWORK", nil, -1)
-    echo:SetTexture(GLOW_ART)
-    echo:SetBlendMode("ADD")
-    local sg  = echo:CreateAnimationGroup()
-    local rot = sg:CreateAnimation("Rotation")
-    rot:SetDegrees(ECHO_DEGREES)
-    rot:SetOrigin("CENTER", 0, 0)
-    rot:SetOrder(1)
-    sg:SetLooping("REPEAT")
-    echo.spin, echo.rot = sg, rot
-    self.cueEchoes[key] = echo
-  end
-  echo:SetVertexColor(col[1], col[2], col[3], ECHO_LIGHT)
-  echo:SetSize(outer, outer)
-  echo:ClearAllPoints()
-  echo:SetPoint("CENTER", dot, "CENTER", 0, 0)
-  local esecs = secs * ECHO_SPIN_RATIO
-  if echo._spinSecs ~= esecs then
-    echo._spinSecs = esecs
-    echo.rot:SetDuration(esecs)
-  end
-  echo:Show()
-  drive(echo, echo.spin, gs and gs.spin, "_spinOn")
 
   self.glowing[key] = true
 end
@@ -677,96 +621,25 @@ end
 -- ⚠ `"gone"` IS RARE BY CONSTRUCTION and that is correct.  The board never emptied in
 -- 504s of pulls, so a pure-remove edge is mostly an end-of-pull event.  Do not "fix" it
 -- by firing it on swaps.
-local POP_PEAK = 2.0      -- one-shot scale: 1x -> peak -> 1x
-local POP_SECS = 0.28     -- ...fast out (35 %), slower settle (65 %); a symmetric
-                          -- split reads as a wobble rather than a punch
+-- ⚠ THE POP AND THE GHOST ARE ARCHIVED (2026-08-02) — see archive/cue-treatment-v1.lua.
+-- A cue arriving used to punch (a one-shot Scale on the cue layer) and a cue leaving used
+-- to ghost (a scale-and-fade of its ring).  Both went with the v1 treatment: the cue is
+-- being rebuilt as pure steady-state first, and the pop is also the one thing that was
+-- uniquely true of the code path which reproduced the old spin artefact, so leaving it out
+-- keeps the fresh start honest.  Add either back only after the steady cue has been flown.
+--
+-- What survives is the SET-level callback, which was never visual.
 
--- The Scale animation's setter was renamed across expansions and both spellings are still
--- in the wild.  A wrong name here fails SILENTLY — no error, no motion — which would read
--- as "the pop doesn't help", the one wrong answer this must not give.
-local function setScale(anim, from, to)
-  if anim.SetScaleFrom then
-    anim:SetScaleFrom(from, from); anim:SetScaleTo(to, to)
-  else
-    anim:SetFromScale(from, from); anim:SetToScale(to, to)
-  end
-end
-
--- The pop group lives on the CUE LAYER (never on the textures — see ensureLayer).
-local function ensurePop(layer)
-  local g = layer.pop
-  if not g then
-    g = layer:CreateAnimationGroup()
-    local up = g:CreateAnimation("Scale"); up:SetOrigin("CENTER", 0, 0); up:SetOrder(1)
-    local dn = g:CreateAnimation("Scale"); dn:SetOrigin("CENTER", 0, 0); dn:SetOrder(2)
-    setScale(up, 1.0, POP_PEAK); up:SetDuration(POP_SECS * 0.35)
-    setScale(dn, POP_PEAK, 1.0); dn:SetDuration(POP_SECS * 0.65)
-    layer.pop = g
-  end
-  return g
-end
-
--- REMOVAL: a ghost of the ring, scaling up and fading out where the cue just left.  It
--- has to be its OWN texture: `drawCues` hides the dropped cue's ring the instant it
--- leaves the DrawList, so an out-animation on that texture would play invisibly.  Size
--- and hue are read off what the ring was LAST TOLD (`ringSize`/`ringCol`), not restated,
--- so this cannot drift from the ring it is a ghost of.
-function R:ghostCue(key)
-  local layer, g = self.cueLayers[key], self.cueGlows[key]
-  if not (layer and g and g.ringSize) then return end
-  local t = self.cueGhosts[key]
-  if not t then
-    t = layer:CreateTexture(nil, "ARTWORK")
-    t:SetTexture(GLOW_ART)
-    t:SetBlendMode("ADD")
-    local grp = t:CreateAnimationGroup()
-    local s = grp:CreateAnimation("Scale"); s:SetOrigin("CENTER", 0, 0); s:SetOrder(1)
-    setScale(s, 1.0, POP_PEAK); s:SetDuration(POP_SECS)
-    local a = grp:CreateAnimation("Alpha")
-    a:SetFromAlpha(1); a:SetToAlpha(0); a:SetOrder(1); a:SetDuration(POP_SECS)
-    -- Clearing `ghosting` here is what lets the holder cull hide the holder again on the
-    -- next draw.  Set in one place, cleared in one place.
-    grp:SetScript("OnFinished", function() t:Hide(); self.ghosting[key] = nil end)
-    t.anim = grp
-    self.cueGhosts[key] = t
-  end
-  local col = g.ringCol
-  t:SetVertexColor(col[1], col[2], col[3], 1)
-  t:SetSize(g.ringSize, g.ringSize)
-  t:ClearAllPoints()
-  t:SetPoint("CENTER", layer, "CENTER", 0, 0)   -- the layer outlives the ring's cull
-  -- ⚠ THIS ORDER IS LOAD-BEARING.  `Stop()` fires OnFinished (with requested = true), so
-  -- it clears `ghosting` — the flag must therefore be set AFTER the stop, not before, or
-  -- a cue that leaves twice in quick succession ghosts with its holder already culled.
-  t.anim:Stop()
-  t:SetAlpha(1)
-  t:Show()
-  self.ghosting[key] = true
-  t.anim:Play()
-end
-
--- Diff this draw's cue-active set against the last one: pop what arrived, ghost what
--- left, and fire the SET-level callback at most once.  Called from R:Draw between the two
--- channel passes and the holder cull, because the cull reads `ghosting`.
+-- Diff this draw's cue-active set against the last one and fire the SET-level callback at
+-- most once.  Called from R:Draw between the two channel passes and the holder cull.
 function R:drawCueEdges(active)
   local last = self.cuedLast
   local added, removed = false, false
   for key in pairs(active) do
-    if not last[key] then
-      added = true
-      local layer = self.cueLayers[key]
-      if layer then
-        local g = ensurePop(layer)
-        g:Stop()      -- a re-arriving cue restarts its pop rather than stacking one
-        g:Play()
-      end
-    end
+    if not last[key] then added = true end
   end
   for key in pairs(last) do
-    if not active[key] then
-      removed = true
-      self:ghostCue(key)
-    end
+    if not active[key] then removed = true end
   end
   self.cuedLast = active
   if (added or removed) and self.onCueSetChanged then
@@ -889,20 +762,22 @@ end
 -- either pass would hide the other channel's decoration every frame: an uncued icon's key
 -- hint would be parented to a hidden holder, and a keyless cued icon's dot likewise.  Each
 -- pass therefore returns its own active set and the holder cull happens HERE, over both.
--- Dots/glows still cull on cue-active and key fontstrings on keybind-active — those pools
+-- Dots/rings still cull on cue-active and key fontstrings on keybind-active — those pools
 -- are single-channel.  renderer_spec pins both directions of the independence.
 --
--- ⚠ AND THE CULL HAS A THIRD TERM: a GHOST.  A removed handle leaves both active sets in
--- the same draw that starts its ghost, so a two-term union would hide the holder
--- instantly and the ghost would play invisibly.  `ghosting[key]` keeps it alive and the
--- ghost's own OnFinished clears it.
+-- ⚠ IT USED TO HAVE A THIRD TERM, `ghosting`, AND THAT IS GONE WITH THE GHOST (2026-08-02).
+-- A removed handle left both active sets in the very draw that started its out-animation,
+-- so a two-term union hid the holder instantly and the ghost played invisibly.  With no
+-- out-animation there is nothing to keep alive, and the union is honestly two terms again.
+-- ⚠ If a departure animation is ever restored, THE THIRD TERM COMES BACK WITH IT — that
+-- coupling is not optional, see archive/cue-treatment-v1.lua.
 function R:Draw(drawList)
   drawList = drawList or {}
   local cued = self:drawCues(drawList.cues)
   local keyed = self:drawKeybinds(drawList.keybinds)
   self:drawCueEdges(cued)
   for key, h in pairs(self.cueHolders) do
-    if not (cued[key] or keyed[key] or self.ghosting[key]) then h:Hide() end
+    if not (cued[key] or keyed[key]) then h:Hide() end
   end
   self:drawPanel(drawList.panel)
   self:drawResources(drawList.resourceBars)
