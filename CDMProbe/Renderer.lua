@@ -14,8 +14,10 @@
 --   * cue = a black BACKING DISC + a solid DOT + TWO COUNTER-ROTATING RINGS, all coloured
 --     by its `emphasis` token and all riding a per-icon CUE LAYER frame (see ensureLayer).
 --     ⚠ The ring pair's numbers came from a BLIND EXPERIMENT, not from dialling — see the
---     header at RING_SCALE.  No breathe, no pop, no ghost: all three retired with v1, and
---     the cue is deliberately pure steady-state until the new one has been flown.
+--     header at RING_SCALE.  No breathe: that one retired with v1 and has not come back.
+--   * ...plus the POP: one short scale on the cue layer, played on BOTH edges (see
+--     POP_PEAK).  ⚠ It is WRITTEN FRESH, not recovered from v1 — read the header there
+--     before assuming it is the old one wearing new numbers.
 --   * keybind = a corner key hint, drawn from the DrawList's OWN `keybinds[]` channel
 --     (Phase 3) — identity chrome, independent of whether the icon is cued.  It rides
 --     the HOLDER, deliberately NOT the cue layer.
@@ -165,6 +167,10 @@ function R.New(cfg)
   self.cueDiscs   = {}          -- anchorTo -> the black backing disc under both
   self.cuedLast   = {}          -- the PREVIOUS draw's cue-active set: the EDGE input.
                                 -- added = active - last, removed = last - active.
+  self.leaving    = {}          -- anchorTo -> true while its POP-OUT is still playing.
+                                -- The only state the pop adds, and it is what keeps a
+                                -- departing cue's art (and its holder) on screen for the
+                                -- ~0.18s after it left both active sets.  See R:popCue.
   -- Injected, defaults to nil so the Renderer still never calls a game function.  Fired
   -- ONCE per draw that changed the cue set — see drawCueEdges for why a SWAP is one event.
   self.onCueSetChanged = cfg.onCueSetChanged
@@ -172,6 +178,11 @@ function R.New(cfg)
                                 -- here, read only by renderer_spec: the one observable
                                 -- proof the glow path ran.  Keep it — it is an
                                 -- assertion surface, not dead state.
+                                -- ⚠ IT TRACKS THE COMMANDED STATE, NOT PIXELS.  It clears
+                                -- the instant a cue leaves the DrawList, even though
+                                -- `leaving` is still holding that cue's art on screen for
+                                -- its pop-out.  Do not conflate the two: one answers "is
+                                -- this icon being cued", the other "is it still drawn".
   self.pipRows    = {}          -- barIndex -> { 1..N pip textures } (per-bar pool)
   self.panelWidget = nil        -- { frame, title, rows = {} }, built on first panel
   -- UIPARENT is a sanctioned root token (architecture.md :341); pre-register it so
@@ -235,13 +246,12 @@ end
 -- DOES NOT — it stays on the holder, because it is identity chrome and belongs to the
 -- icon rather than to the decision.  renderer_spec pins that.
 --
--- ⚠ IT USED TO EXIST FOR THE POP, AND THE POP IS GONE (2026-08-02).  A one-shot `Scale`
--- on the cue's textures would have been fought by `setDotGlow` re-asserting `SetSize` on
--- them ten times a second, so the pop scaled a FRAME that owned them instead and nothing
--- in the draw path touched that frame's size.  With the pop archived the frame is no
--- longer load-bearing — it is kept because it is still the right shape: one parent per
--- icon means the cue's four regions are created, parented, and re-parented as a unit when
--- a holder is rebuilt, and it is where any future one-shot would go.
+-- ⚠ IT EXISTS FOR THE POP.  A one-shot `Scale` on the cue's TEXTURES would be fought by
+-- the draw path re-asserting `SetSize` on them at ~10 Hz, so the pop scales a FRAME that
+-- owns them and nothing in the draw path touches that frame's size.  (The frame earns its
+-- keep even without the pop — one parent per icon means the cue's four regions are
+-- created, parented and re-parented as a unit when a holder is rebuilt — but the pop is
+-- why it was built, and the pop is back.)
 --
 -- ITS RECT IS THE DOT'S RECT, not the icon's — the layer takes the cue entry's geometry,
 -- the dot is CENTERed on the layer, and the rings + disc stay CENTERed on the dot.
@@ -274,6 +284,125 @@ function R:ensureLayer(key, holder, c, sz)
   end
   l:Show()
   return l
+end
+
+--------------------------------------------------------------------------------
+-- THE POP — one short scale on the cue layer, played at BOTH edges.
+--------------------------------------------------------------------------------
+-- WHY.  A cue arriving is an INSTRUCTION CHANGE, and steady-state art gives the eye
+-- nothing to catch it by: the set turns over at cast cadence (120 changes / 504s of real
+-- play, 60 % of them SWAPS), so without a transient a swap reads as "the ring was always
+-- there".  The pop is that transient, on both halves of the swap.
+--
+-- ⚠ WRITTEN FRESH, DELIBERATELY NOT RECOVERED.  v1 had a pop too
+-- (archive/cue-treatment-v1.lua) and `popPlaying` was the ONE field that differed between
+-- the code path which reproduced the old "the spin rubber-bands forever" artefact and the
+-- path that did not.  That makes v1's pop a suspect, so none of it was copied: different
+-- peak, different structure, and the ordering rules below were re-derived rather than
+-- inherited.  Do not "restore" it from the archive.
+--
+-- ⚠ GENTLER THAN v1's 2.0x ON PURPOSE.  v1 DOUBLED the cue.  1.35x is less likely to
+-- interact with the rings it is scaling, and it is a one-number dial afterwards:
+-- POP_PEAK = 1.0 disables the visual half outright while leaving every bit of the
+-- bookkeeping below intact — the first thing to try if the rings ever look stuck after a
+-- cue arrives.
+local POP_PEAK = 1.35
+local POP_SECS = 0.18
+
+-- ⚠ THE SETTER NAME IS GENUINELY AMBIGUOUS, AND A SILENT MISS IS THE ONE UNACCEPTABLE
+-- FAILURE.  Blizzard's generated API doc for the Scale animation carries
+-- `SetScaleFrom` / `SetScaleTo` (Blizzard_APIDocumentationGenerated/
+-- SimpleAnimScaleAPIDocumentation.lua, build 12.0.7.68887); a great deal of addon code
+-- still calls the older `SetFromScale` / `SetToScale`, and the XML attributes are a third
+-- spelling again (`fromScaleX`/`toScaleX`) — which is all the KB records, so this is not
+-- paranoia.  v1 branched on whichever existed and did NOTHING if neither did, and on
+-- screen "the setter was missing" is indistinguishable from "the pop does not help" — the
+-- one wrong answer this must not give.  So: take the spelling that exists, and SAY SO if
+-- neither does.
+local popWarned = false
+local function scaleSetters(anim)
+  if anim.SetScaleFrom and anim.SetScaleTo then return anim.SetScaleFrom, anim.SetScaleTo end
+  if anim.SetFromScale and anim.SetToScale then return anim.SetFromScale, anim.SetToScale end
+  if not popWarned then
+    popWarned = true
+    ns.Print("|cffff4040cue pop disabled|r — this client's Scale animation has neither "
+      .. "SetScaleFrom/SetScaleTo nor SetFromScale/SetToScale.  Cues still draw and still "
+      .. "clear; they just do not punch on arrival.")
+  end
+  return nil
+end
+
+-- ONE GROUP, TWO SYMMETRIC HALVES: SetOrder(1) grows, SetOrder(2) returns.  ONE TARGET —
+-- the layer — so disc, dot and BOTH rings scale together and the draw path never touches
+-- what is animating.  Returns nil (once, warned) if this client has no usable setter.
+local function buildPop(layer)
+  local g = layer:CreateAnimationGroup()
+  local up, down = g:CreateAnimation("Scale"), g:CreateAnimation("Scale")
+  local setFrom, setTo = scaleSetters(up)
+  if not setFrom then return nil end
+  setFrom(up, 1, 1)
+  setTo(up, POP_PEAK, POP_PEAK)
+  setFrom(down, POP_PEAK, POP_PEAK)
+  setTo(down, 1, 1)
+  for i, a in ipairs({ up, down }) do
+    a:SetOrder(i)
+    a:SetDuration(POP_SECS / 2)
+    a:SetOrigin("CENTER", 0, 0)
+  end
+  return g
+end
+
+-- Built once per layer, on the layer (the layer object is stable per handle — ensureLayer
+-- re-parents it rather than rebuilding it).  `_popBuilt` is what stops a client with no
+-- usable setter from creating a fresh throwaway group on every draw.
+function R:ensurePop(key)
+  local layer = self.cueLayers[key]
+  if not layer then return nil end
+  if not layer._popBuilt then
+    layer._popBuilt = true
+    local g = buildPop(layer)
+    if g then g:SetScript("OnFinished", function() self:onPopFinished(key) end) end
+    layer.pop = g
+  end
+  return layer.pop
+end
+
+-- The pop ENDS.  On an arrival that means nothing; on a DEPARTURE it is the moment the
+-- cue's art finally leaves the screen.  ⚠ `Stop()` fires this too — see R:popCue.
+function R:onPopFinished(key)
+  if not self.leaving[key] then return end
+  self.leaving[key] = nil
+  self:hideCueArt(key)
+end
+
+-- ONE ANIMATION, BOTH EDGES — only the ordering around it differs.  On ARRIVAL the cue is
+-- already drawn and shown by drawCues, so the pop simply plays.  On DEPARTURE the pop
+-- plays FIRST and its OnFinished is what hides the art.
+--
+-- ⚠ THE ORDER IS LOAD-BEARING.  `Stop()` FIRES OnFinished (the client does, with
+-- requested = true, and tests/mock_ns.lua models it), so the flag OnFinished reads has to
+-- be settled around the stop and never before it:
+--     arrival:   clear `leaving` -> Stop -> Play
+--     departure: Stop -> set `leaving` -> Play
+-- Set the flag before the stop on departure and a cue that leaves twice in quick
+-- succession hides its own art mid-animation.
+function R:popCue(key, leaving)
+  local g = self:ensurePop(key)
+  if not g then
+    -- No layer (an unknown emphasis draws nothing), or no usable Scale setter: there is no
+    -- animation to wait for, so nothing may be marked as waiting for one — otherwise the
+    -- art and its holder would be stranded on screen with no OnFinished ever coming.
+    self.leaving[key] = nil
+    return
+  end
+  if leaving then
+    g:Stop()
+    self.leaving[key] = true
+  else
+    self.leaving[key] = nil
+    g:Stop()
+  end
+  g:Play()
 end
 
 --------------------------------------------------------------------------------
@@ -334,6 +463,20 @@ local function parkRing(t)
   t._spinOn = nil
 end
 
+-- THE ONE PLACE A CUE'S ART LEAVES THE SCREEN.  Two callers and they must not drift:
+-- drawCues' region cull (a cue that dropped out with no pop to wait for) and
+-- R:onPopFinished (one that had).  ⚠ It deliberately does NOT clear `glowing` — that
+-- tracks the COMMANDED state and cleared the moment the cue left the DrawList, which is
+-- typically ~0.18s before these pixels do.
+function R:hideCueArt(key)
+  local dot = self.cueFrames[key]
+  if dot then dot:Hide() end
+  local disc = self.cueDiscs[key]
+  if disc then disc:Hide() end
+  parkRing(self.cueRingOut[key])
+  parkRing(self.cueRingIn[key])
+end
+
 function R:drawCues(cues)
   local active = {}
   for _, c in ipairs(cues or {}) do
@@ -366,6 +509,11 @@ function R:drawCues(cues)
         dot:SetAlpha(1)
         dot:Show()
         self:setCueRings(key, layer, dot, gs and col or nil, sz, gs)
+        -- ARRIVAL: the cue is drawn and shown, so the pop just plays.  Only for a handle
+        -- that was NOT on the board last draw — a steady redraw at 10 Hz must not punch,
+        -- and `cuedLast` is still the PREVIOUS draw's set here (drawCueEdges rolls it over
+        -- after both channel passes).
+        if not self.cuedLast[key] then self:popCue(key, false) end
       else
         -- DEFENSIVE: an emphasis token the theme has no entry for draws NOTHING — we never
         -- guess a colour.  Hide any dot/glow this handle had.  (Before Phase 3 this branch
@@ -376,20 +524,19 @@ function R:drawCues(cues)
       end
     end
   end
+  -- DEPARTURE: a handle that was cued LAST draw and is not cued now.  The pop-out starts
+  -- here and its art has to survive the cull below to be seen at all.
+  for key in pairs(self.cuedLast) do
+    if not active[key] then self:popCue(key, true) end
+  end
   -- Dots + both rings + discs cull on the CUE-active set; holders do not (see R:Draw).
-  for key, dot in pairs(self.cueFrames) do
-    if not active[key] then dot:Hide() end
-  end
-  for key, disc in pairs(self.cueDiscs) do
-    if not active[key] then disc:Hide() end
-  end
-  for key, t in pairs(self.cueRingOut) do
-    if not active[key] then parkRing(t) end
-  end
-  for key, t in pairs(self.cueRingIn) do
+  -- One loop over `cueFrames` covers all four pools: they are keyed together by
+  -- construction — the dot is created first, and the rings + disc only ever in the same
+  -- branch, so a handle with a ring but no dot cannot exist.
+  for key in pairs(self.cueFrames) do
     if not active[key] then
-      parkRing(t)                        -- stopped + flag cleared, so a re-shown cue replays
-      self.glowing[key] = nil
+      self.glowing[key] = nil                                    -- the COMMANDED state...
+      if not self.leaving[key] then self:hideCueArt(key) end     -- ...the pixels can wait
     end
   end
   return active
@@ -611,8 +758,8 @@ end
 -- 60 % of those are a SWAP (one handle out, another in, same tick); 23 are a pure add,
 -- 25 a pure remove; the board never once went empty.  Two DIFFERENT edges fall out:
 --
---   * POP / GHOST are PER HANDLE and purely visual.  Simultaneous ones are fine — they
---     are on different icons.
+--   * THE POP is PER HANDLE and purely visual.  Simultaneous ones are fine — they are on
+--     different icons, and a swap is exactly that: one popping out while another pops in.
 --   * `onCueSetChanged` is PER SET CHANGE.  A swap is ONE event, not a remove plus an
 --     add: firing per handle would double every swap (overlapping sounds), and it would
 --     be wrong besides — a cue that MOVED was not removed.  So: one call, `"new"` if
@@ -621,14 +768,11 @@ end
 -- ⚠ `"gone"` IS RARE BY CONSTRUCTION and that is correct.  The board never emptied in
 -- 504s of pulls, so a pure-remove edge is mostly an end-of-pull event.  Do not "fix" it
 -- by firing it on swaps.
--- ⚠ THE POP AND THE GHOST ARE ARCHIVED (2026-08-02) — see archive/cue-treatment-v1.lua.
--- A cue arriving used to punch (a one-shot Scale on the cue layer) and a cue leaving used
--- to ghost (a scale-and-fade of its ring).  Both went with the v1 treatment: the cue is
--- being rebuilt as pure steady-state first, and the pop is also the one thing that was
--- uniquely true of the code path which reproduced the old spin artefact, so leaving it out
--- keeps the fresh start honest.  Add either back only after the steady cue has been flown.
+-- ⚠ v1's GHOST — a scale-and-fade of the departing ring, on its own texture — is archived
+-- and did NOT come back.  The v2 departure is the same pop played on the way out, so there
+-- is one animation and one set of ordering rules rather than two of each.
 --
--- What survives is the SET-level callback, which was never visual.
+-- The SET-level callback below is unchanged by any of that: it was never visual.
 
 -- Diff this draw's cue-active set against the last one and fire the SET-level callback at
 -- most once.  Called from R:Draw between the two channel passes and the holder cull.
@@ -765,19 +909,18 @@ end
 -- Dots/rings still cull on cue-active and key fontstrings on keybind-active — those pools
 -- are single-channel.  renderer_spec pins both directions of the independence.
 --
--- ⚠ IT USED TO HAVE A THIRD TERM, `ghosting`, AND THAT IS GONE WITH THE GHOST (2026-08-02).
--- A removed handle left both active sets in the very draw that started its out-animation,
--- so a two-term union hid the holder instantly and the ghost played invisibly.  With no
--- out-animation there is nothing to keep alive, and the union is honestly two terms again.
--- ⚠ If a departure animation is ever restored, THE THIRD TERM COMES BACK WITH IT — that
--- coupling is not optional, see archive/cue-treatment-v1.lua.
+-- ⚠ IT HAS A THIRD TERM, `leaving`, AND THAT TERM IS NOT OPTIONAL.  A departing handle
+-- leaves BOTH active sets in the very draw that starts its pop-out, so a two-term union
+-- would hide the holder in that same draw and the pop would play invisibly under it.  The
+-- term went away with v1's ghost and came straight back with the v2 pop-out — the coupling
+-- is a property of having any departure animation at all, not of a particular one.
 function R:Draw(drawList)
   drawList = drawList or {}
   local cued = self:drawCues(drawList.cues)
   local keyed = self:drawKeybinds(drawList.keybinds)
   self:drawCueEdges(cued)
   for key, h in pairs(self.cueHolders) do
-    if not (cued[key] or keyed[key]) then h:Hide() end
+    if not (cued[key] or keyed[key] or self.leaving[key]) then h:Hide() end
   end
   self:drawPanel(drawList.panel)
   self:drawResources(drawList.resourceBars)

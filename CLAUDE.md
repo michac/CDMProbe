@@ -360,22 +360,31 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   `Draw` culls the shared `cueHolders` on the UNION — both
                                   channels ride one holder per icon, so a per-channel cull
                                   would hide the other channel's decoration every frame.
-                                  ⚠ THE CULL HAS A THIRD TERM, `ghosting`: a removed handle
+                                  ⚠ THE CULL HAS A THIRD TERM, `leaving`: a removed handle
                                   leaves both active sets in the very draw that starts its
                                   out-animation, so a two-term union would hide the holder
-                                  and the ghost would play invisibly.
+                                  and the pop-out would play invisibly. (It was `ghosting`
+                                  under v1, went away with the ghost, and came straight back
+                                  with the v2 pop — the coupling belongs to having ANY
+                                  departure animation.)
                                   ⚠ THE CUE LAYER (`cueLayers`, 2026-08-01) is why the pop
-                                  can exist. `setDotGlow` re-asserts SetSize on the dot /
-                                  ring / echo / disc at ~10 Hz, which would fight a Scale
-                                  animation on those same textures — so the pop scales a
-                                  FRAME that owns them and the draw path never touches its
-                                  size. Its rect is the DOT's rect, not the icon's, so the
-                                  scale origin is the cue's own centre. The KEYBIND
-                                  FONTSTRING DELIBERATELY STAYS ON THE HOLDER: identity
-                                  chrome must not grow every time the rotation moves.
+                                  can exist. The draw path re-asserts SetSize on the dot /
+                                  rings / disc, which would fight a Scale animation on those
+                                  same textures — so the pop scales a FRAME that owns them
+                                  and the draw path never touches its size. Its rect is the
+                                  DOT's rect, not the icon's, so the scale origin is the
+                                  cue's own centre. The KEYBIND FONTSTRING DELIBERATELY
+                                  STAYS ON THE HOLDER: identity chrome must not grow every
+                                  time the rotation moves.
                                   ⚠ THE CUE IS v2 (2026-08-02): backing disc + dot + TWO
-                                  COUNTER-ROTATING RINGS, no breathe / pop / ghost (all in
-                                  archive/cue-treatment-v1.lua). Its numbers are an
+                                  COUNTER-ROTATING RINGS + a POP on both edges, no breathe
+                                  (v1 is archive/cue-treatment-v1.lua). ⚠ THE POP IS
+                                  WRITTEN FRESH, NOT RECOVERED — `popPlaying` was the one
+                                  field that differed between the path which reproduced the
+                                  old spin artefact and the one that did not, so v1's is a
+                                  suspect and none of it was copied (1.35x/0.18s vs v1's
+                                  2.0x, one animation for both edges, ordering re-derived).
+                                  Its numbers are an
                                   EXPERIMENTAL RESULT, not a dial-in — two subagents blind
                                   to this repo converged on them and both ran steady, which
                                   is why the header at RING_SCALE is worth reading before

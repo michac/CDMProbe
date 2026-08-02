@@ -229,7 +229,15 @@ function ns.SetHud(on)
       .. "|cffffffff/cdmp hud off|r to clear.")
   else
     if D.ticker then D.ticker:Cancel(); D.ticker = nil end
-    if D.renderer then pcall(D.renderer.Draw, D.renderer, {}) end  -- clear every dot/panel/pip
+    if D.renderer then
+      -- ⚠ FORGET THE LAST CUE SET FIRST.  Without this the clearing Draw below reads as a
+      -- board full of DEPARTING cues and every one of them pops out over the next ~0.18s —
+      -- so `/cdmp hud off` would not be instantly pixel-clean, which is a promise this
+      -- command makes.  (`D.on` is already false, so the sound is separately gated; this
+      -- is the visual half.  `/cdmp rt off` uses the same one-liner for the same reason.)
+      D.renderer.cuedLast = {}
+      pcall(D.renderer.Draw, D.renderer, {})                       -- clear every dot/panel/pip
+    end
     pcall(ns.HudVirtual.Clear)                                     -- ...and our own icons
     if ns.HudProcGlow then pcall(ns.HudProcGlow.Restore) end       -- native proc glow back to full alpha
     ns.State.Release()

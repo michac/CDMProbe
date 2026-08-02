@@ -108,21 +108,15 @@ SlashCmdList["CDMPROBE"] = dispatch
 -- RenderTest.lua loads after Core, so resolve ns.RenderTest at DISPATCH time, not
 -- registration time.
 ns.RegisterCommand("rt",
-  "render test: draw a DrawList fixture (states | list | rotate | fx | off)",
+  "render test: draw a DrawList fixture (states | list | rotate | off)",
   function(rest)
     if ns.RenderTest then ns.RenderTest(rest)
     else ns.Print("RenderTest not loaded") end
   end)
 
--- ⚠ TEMPORARY, rides with the `rt fx` sound experiment and is deleted with it.  A pure
--- ergonomics alias: `/cdmp rt fx sound sweep` is 24 characters to advance ONE of 235
--- candidates, which makes the audition cost more than the judgement.  Macro-friendly.
-ns.RegisterCommand("sweep",
-  "audition the next loud cue sound (alias for `rt fx sound sweep`)",
-  function(rest)
-    if ns.RenderTest then ns.RenderTest("fx sound sweep " .. (rest or ""))
-    else ns.Print("RenderTest not loaded") end
-  end)
+-- (`/cdmp sweep` — the ergonomics alias for `rt fx sound sweep` — was deleted 2026-08-02
+-- with the `rt fx` dialling rig it fronted.  It had stopped erroring and started printing
+-- "unknown view", which is worse.)
 
 -- Bootstrap -------------------------------------------------------------------
 local boot = CreateFrame("Frame")

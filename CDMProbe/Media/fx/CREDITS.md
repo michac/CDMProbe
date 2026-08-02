@@ -4,9 +4,16 @@ Glow art and cue sounds for the "the cues read too subdued in play" investigatio
 
 **Three of these are no longer experimental — they ship.** `glow/star_07.tga` is the
 Renderer's cue ring (`GLOW_ART`), and `sfx/drawKnife1.ogg` + `sfx/chip-lay-1.ogg` are the
-two cue sounds the live HUD plays (`HudDriver.lua`). Everything else in here is still a
-candidate that lost, kept because `/cdmp rt fx` is the rig for the next round of dialling.
-**Do not prune the shipped three.**
+two cue sounds the live HUD plays (`HudDriver.lua`). **Do not prune the shipped three.**
+
+Everything else here is a candidate that lost, and it stays. The reason is the tables
+below, not any particular rig: **picking one of these is a comparison, and a comparison
+needs the losers on disk.** The whole set is ~210 KiB of CC0 that costs nothing to ship,
+and re-sourcing it (finding the packs, converting palette PNG → 32-bit TGA, re-measuring
+each sprite's rotational symmetry) is most of a session's work — which is exactly the
+work this file records so it is never done twice. ⚠ The `/cdmp rt fx` auditioning rig that
+first walked this set is **archived** (`CDMProbe/archive/RenderTest-fx-v1.lua`, 2026-08-02)
+and the game no longer loads it; a successor would be a new rig reading the same files.
 
 ## Licence — CC0 1.0 Universal (public domain)
 
@@ -105,4 +112,5 @@ renamed and nothing else (its embedded Vorbis `TITLE` tag still reads `chipLay1`
 
 ⚠ `"gone"` is **rare by construction** and that is correct, not a broken file: the board
 never went empty once in those 504 s of pulls, so `chip-lay-1` is mostly an end-of-pull
-sound. `/cdmp rt fx sound 1|2` auditions both on demand.
+sound. `/cdmp rt rotate` hops one cue across five panels and is the way to hear the "new"
+sound on demand now that the `rt fx` auditioner is archived; "gone" needs an empty board.
