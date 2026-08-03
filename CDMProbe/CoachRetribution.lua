@@ -207,13 +207,36 @@ function spec:Context(state, env)
     local cur = num(ch.cur)
     return (cur ~= nil and cur >= 1) or false
   end
+  -- ⚠ A ONE-CHARGE POOL NEEDS BOTH SIGNALS — field-found 2026-08-03, and it is NOT a
+  -- weakening of the Conflagrate rule below it.
+  --
+  -- For a pool of ONE, "you have a charge" and "it is off cooldown" ARE THE SAME FACT, so
+  -- they cannot legitimately disagree.  For a pool of TWO they can, and routinely do: one
+  -- charge banked while the second recharges is the normal state, which is exactly why the
+  -- count has to outrank the cooldown there.
+  --
+  -- They DID disagree in the field, on 191 lines of one flight: `Judg=c10` (ten seconds of
+  -- cooldown left) beside `Judg~1/1` (a charge available), and Judgment won on the count.
+  -- The cause is the two-ladder hazard the state file documents: the COOLDOWN is read on the
+  -- display identity, while CHARGES use `overrideSpellID or spellID` — rungs 4+5, because
+  -- that is what Blizzard reads (ItemData.lua:283-288).  On a row whose identity flips —
+  -- Judgment's does, it alternates with Hammer of Wrath in the tracked set — those two
+  -- ladders resolve to DIFFERENT SPELLS, so we compared one ability's cooldown against
+  -- another's charges.
+  --
+  -- Requiring both is the honest resolution: it needs no guess about which ladder was right,
+  -- and it fails toward NOT promising a press.  Blade of Justice (no identity flip) reads
+  -- consistently either way, so this costs nothing where the row is well-behaved.
   local function usable(base)
     local rec = base and factsByBase[base]
     if not rec then return false end
     local ch = abilities[base] and abilities[base].charge
     if ch and ch.charged then
       local cur = num(ch.cur)
-      if cur ~= nil then return cur >= 1 end
+      if cur ~= nil then
+        if num(ch.max) == 1 then return cur >= 1 and (rec.probablyUp or false) end
+        return cur >= 1
+      end
     end
     return rec.probablyUp or chargeBanked(base)
   end

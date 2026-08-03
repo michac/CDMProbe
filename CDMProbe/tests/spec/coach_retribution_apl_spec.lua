@@ -801,6 +801,48 @@ describe("Retribution rotation list (from specs/retribution/rotation.md)", funct
       assert.equals(ID.CS, winner({ hp = 0, filler = cdReady() }).cid)
     end)
 
+    ------------------------------------------------------------------------
+    -- A ONE-charge pool: the count and the cooldown are THE SAME FACT.
+    ------------------------------------------------------------------------
+    -- ⚠ FIELD-FOUND 2026-08-03, and the reason the max is consulted at all.  On 191 lines of
+    -- one flight Judgment read `c10` (ten seconds of cooldown left) beside a charge count of
+    -- `1/1`, and won on the count.  The two readings are of DIFFERENT SPELLS: the cooldown
+    -- uses the display identity, charges use `overrideSpellID or spellID` (rungs 4+5, what
+    -- Blizzard reads), and Judgment's row alternates identity with Hammer of Wrath.  A pool
+    -- of one cannot legitimately disagree with its own cooldown, so require both — it needs
+    -- no guess about which ladder was right and fails toward not promising a press.
+    -- ⚠ `cdSoon(10)`, with a REAL remaining: `cdSoon()` leaves `remaining` nil, which
+    -- Classify reads as an EXPIRED napkin ("probably up, unconfirmed") — a different state
+    -- and not the one this case is about.
+    it("a 1-charge pool is NOT usable when the cooldown says on cooldown", function()
+      local w = winner({ hp = 0, filler = cdSoon(10),
+                         csCharge = { charged = true, cur = 1, max = 1 } })
+      assert.is_nil(w)
+    end)
+
+    it("a 1-charge pool IS usable when BOTH agree it is up", function()
+      local w = winner({ hp = 0, filler = cdReady(),
+                         csCharge = { charged = true, cur = 1, max = 1 } })
+      assert.equals(ID.CS, w.cid)
+    end)
+
+    -- The other half, and the original Blade-of-Justice latch: a charge-category cooldown
+    -- read can stay `ready` forever, so a count of ZERO must still veto it.
+    it("a 1-charge pool at ZERO vetoes a latched-ready cooldown", function()
+      local w = winner({ hp = 0, filler = cdReady(),
+                         csCharge = { charged = true, cur = 0, max = 1 } })
+      assert.is_nil(w)
+    end)
+
+    -- ⚠ AND THE CONFLAGRATE RULE IS UNTOUCHED: for a pool of TWO, one banked charge while
+    -- the second recharges is the NORMAL state, so the count still outranks the cooldown.
+    -- If this ever goes red, the fix above has been over-generalised.
+    it("a 2-charge pool still lets a banked charge outrank the cooldown", function()
+      local w = winner({ hp = 0, filler = cdSoon(10),
+                         csCharge = { charged = true, cur = 1, max = 2 } })
+      assert.equals(ID.CS, w.cid)
+    end)
+
     -- An ABSENT count (a charge pool the napkin has not seeded yet) falls back to the
     -- cooldown read — "only when there is no count at all do we fall back".  ⚠ This is NOT
     -- the same as a count of zero, and the asymmetry is deliberate: a zero is a MEASUREMENT
