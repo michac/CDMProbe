@@ -245,8 +245,28 @@ describe("State domain view — the pressable filter (field-fix A)", function()
       assert.equals("live", ch.source)
     end)
 
-    it("a max of 1 is NOT a charge pool", function()
+    -- ⚠ INVERTED 2026-08-03, on a measurement.  This asserted `is_nil(ch.charged)` and that
+    -- was the defect: a ONE-charge charge category renders like an ordinary cooldown in the
+    -- CDM, so "max of 1 means no charges" looked right and silently disabled the whole
+    -- readiness model on those rows.  Blade of Justice read ready on 4419 lines of one
+    -- flight because of it.  §3.3's GetSpellCastCount fallback, which the old expectation
+    -- cited, governs the RENDERED ChargeCount string — not what GetSpellCharges returns.
+    --     184575 Blade of Justice 1/1 rc=9.312 · 20271 Judgment 1/1 rc=10.243
+    --     31884  Avenging Wrath   nil  (ordinary cooldown — the API refuses)
+    it("a max of 1 IS a charge pool — the client answered, so believe it", function()
       withCharges(1, 1)
+      local ch = St.Build(false).abilities[CONFLAGRATE].charge
+      assert.is_true(ch.charged)
+      assert.equals(1, ch.cur)
+      assert.equals(1, ch.max)
+      assert.equals("live", ch.source)
+    end)
+
+    -- THE CONTROL: an ordinary cooldown is excluded by the API REFUSING, not by its max.
+    -- This is what makes `max >= 1` safe rather than roster-swallowing.
+    it("an ordinary cooldown (the read refuses) is still NOT a charge pool", function()
+      withCharges(1, 1)                                        -- builds the row + CDM fakes
+      _G.C_Spell.GetSpellCharges = function() return nil end    -- ...then the API refuses
       local ch = St.Build(false).abilities[CONFLAGRATE].charge
       assert.is_nil(ch.charged)
       assert.equals(0, ch.max)

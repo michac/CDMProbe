@@ -612,7 +612,37 @@ end
 local function readCharge(chargeIdent, hasCharges, cooldownID)
   local cur, max, recharge = ns.ReadCharges(chargeIdent)
   if cur ~= nil then
-    if type(max) == "number" and max > 1 then
+    -- ⚠ `>= 1`, NOT `> 1` — MEASURED 2026-08-03, and the `> 1` was a real defect.
+    --
+    -- The old threshold encoded an assumption nobody had tested: that "has charges" means
+    -- "has MORE THAN ONE charge".  A ONE-charge charge category is invisible in the CDM (it
+    -- renders like an ordinary cooldown), so the assumption looked right and cost the whole
+    -- readiness model on those rows: `charged` stayed false, the brain's `usable()` fell
+    -- through to the cooldown read, and for a charge-category ability that read LATCHES READY
+    -- FOREVER (the CDM raises `Available` on every charge restore and never `OnCooldown`).
+    -- Blade of Justice read ready on 4419 lines of one flight and starved every line below
+    -- it.  Worse, line ~1825 only binds a row for cast-decrement `if charge.charged`, so
+    -- these rows were never even wired into the charge napkin.
+    --
+    -- THE MEASUREMENT that says `>= 1` is safe — an ordinary cooldown returns nil, so this
+    -- does NOT swallow the whole roster (which is the failure the old threshold was
+    -- presumably guarding against).  Out of combat, Retribution:
+    --     184575 Blade of Justice  1/1  rc=9.312     <- 1-charge CATEGORY
+    --     20271  Judgment          1/1  rc=10.243    <- 1-charge CATEGORY
+    --     35395  Crusader Strike   2/2  rc=5.587     <- 2-charge category
+    --     85256  Templar's Verdict nil               <- no cooldown at all
+    --     31884  Avenging Wrath    nil               <- ORDINARY cooldown, the control
+    -- Avenging Wrath is the one that matters: it carries CategoryRecoveryTime on the SPELL
+    -- row, and `GetSpellCharges` refuses it.  So the client itself draws exactly the line we
+    -- want, and `cur ~= nil` was always the real predicate — `max` was never the question.
+    --
+    -- ⚠ AND THE `recharge` IT CARRIES IS HASTE-SCALED, i.e. better than any declared
+    -- constant.  Judgment 10.243/11 and Crusader Strike 5.587/6 are both 0.931 — one haste
+    -- factor, two abilities.  Applying it to Blade of Justice gives 9.312/0.931 = 10.00, so
+    -- its BASE recharge is 10 s and `SpecRetribution.chargeCD = 12` was simply wrong (it held
+    -- the button back two seconds too long every cast).  The declared numbers are a
+    -- last-resort fallback for a row this read never covered; they are not the truth.
+    if type(max) == "number" and max >= 1 then
       -- The exact read ALWAYS wins, and re-seeds the napkin (the combat-exit correction).
       -- `recharge` rides along: this OOC read is the ONLY place the gain floor can be
       -- measured, so seeding the count and seeding the floor are the same event.

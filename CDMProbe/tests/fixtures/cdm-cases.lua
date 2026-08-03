@@ -2002,21 +2002,62 @@ local F = {
   },
 
   {
-    name = "flags/a-max-of-1-is-not-a-charge-pool",
+    name = "flags/a-max-of-1-IS-a-charge-pool",
     status = "green",
     spec = 3,
-    pins = "When maxCharges <= 1 the number Blizzard renders is not charges at all — it "
-        .. "falls back to GetSpellCastCount (\"cast count\", also called \"use count\").  "
-        .. "So a max of 1 must not arm the charge machinery.",
-    ref = "cooldown-manager.md §3.3 — CooldownViewer.lua:997-1013",
+    -- ⚠ THIS CASE ASSERTED THE OPPOSITE UNTIL 2026-08-03, AND IT WAS WRONG — it took a
+    -- rule about Blizzard's RENDERED NUMBER and applied it to the DATA READ.
+    --
+    -- §3.3 says the `ChargeCount` FONT STRING falls back to GetSpellCastCount when
+    -- maxCharges <= 1 — a display decision (rendering "1/1" on an icon is useless), made
+    -- about the text Blizzard draws.  It says nothing about what `C_Spell.GetSpellCharges`
+    -- RETURNS, and the lines just above it in the same section show the CDM itself calling
+    -- that API.  `readCharge` reads the API and never reads the rendered string, so the
+    -- fallback never applied to our path.
+    --
+    -- MEASURED out of combat on Retribution, which settles it in both directions:
+    --     184575 Blade of Justice  1/1  rc=9.312    <- a 1-charge CATEGORY, with a real
+    --     20271  Judgment          1/1  rc=10.243      recharge; a cast count has none
+    --     35395  Crusader Strike   2/2  rc=5.587
+    --     31884  Avenging Wrath    nil              <- ORDINARY cooldown: the API REFUSES
+    --     85256  Templar's Verdict nil              <- no cooldown at all
+    -- So `cur ~= nil` was always the real predicate and `max` was never the question: the
+    -- client draws the charge/no-charge line itself.  The cost of the old expectation was
+    -- the whole readiness model on those rows — `charged` stayed false, the brain fell
+    -- through to a cooldown read that LATCHES READY FOREVER for a charge-category ability,
+    -- and Blade of Justice read ready on 4419 lines of one flight.
+    pins = "A max of 1 IS a charge pool.  §3.3's GetSpellCastCount fallback governs the "
+        .. "RENDERED ChargeCount string, not what GetSpellCharges returns — and an ordinary "
+        .. "cooldown is excluded by the API REFUSING (nil), not by its max.",
+    ref = "cooldown-manager.md §3.3 — CooldownViewer.lua:997-1013 (display) + "
+       .. "ItemData.lua:282-296 (the read); measured in game 2026-08-03",
     rows = { { cid = 903, category = "Essential", frame = {},
                info = { spellID = CONFLAGRATE, isKnown = true, charges = true } } },
     world = { charges = { [CONFLAGRATE] = { currentCharges = 1, maxCharges = 1 } } },
-    -- ...and this is the MEASUREMENT half of the §3.7 pair: the client answered, so
-    -- `readable = true` with `source = "live"`.  Its twin — the same `max = 0` INFERRED
-    -- from the struct flag when the read refused — must not be able to wear this shape.
-    expect = { raw = { [903] = { charge = { readable = true, max = 0, cur = ABSENT,
-                                            charged = ABSENT, source = "live" } } } },
+    expect = { raw = { [903] = { charge = { readable = true, max = 1, cur = 1,
+                                            charged = true, source = "live" } } } },
+  },
+
+  {
+    -- THE CONTROL, and the case that carries the risk the old `max > 1` was guarding:
+    -- relaxing the threshold must NOT mark the entire roster charged.  It cannot, because
+    -- an ordinary cooldown makes `GetSpellCharges` refuse outright — measured on Avenging
+    -- Wrath (31884 -> nil), which carries CategoryRecoveryTime on the SPELL row.  Absent
+    -- from `world.charges` here IS that refusal.
+    name = "flags/an-ordinary-cooldown-is-not-a-charge-pool",
+    status = "green",
+    spec = 3,
+    pins = "A spell with an ordinary cooldown is excluded because GetSpellCharges REFUSES "
+        .. "for it, not because of any max threshold — so `max >= 1` cannot swallow the "
+        .. "roster.  This is the control for the case above.",
+    ref = "measured in game 2026-08-03 (31884 Avenging Wrath -> nil, 85256 Templar's "
+       .. "Verdict -> nil) + cooldown-manager.md §3.7 (inference must not wear a "
+       .. "measurement's clothes)",
+    rows = { { cid = 904, category = "Essential", frame = {},
+               info = { spellID = CHAOS_BOLT, isKnown = true, charges = false } } },
+    world = { charges = {} },     -- the API refuses: no record at all
+    expect = { raw = { [904] = { charge = { readable = false, max = 0, cur = ABSENT,
+                                            charged = ABSENT, source = "flag" } } } },
   },
 
   {

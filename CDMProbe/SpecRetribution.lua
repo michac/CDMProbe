@@ -297,7 +297,14 @@ spec.Spec = {
     -- why L4 declines to dump at cap while this is ready.
   },
   [S.BLADE_OF_JUSTICE] = {
-    kind = "button", cadence = "reactive", charges = 1, chargeCD = 12, abbr = "BoJ",
+    -- ⚠ chargeCD WAS 12 AND THAT WAS WRONG — corrected to 10 by measurement, 2026-08-03.
+    -- Out of combat `C_Spell.GetSpellCharges` returned rc=9.312 here, rc=10.243 for Judgment
+    -- (declared 11) and rc=5.587 for Crusader Strike (declared 6).  The latter two give the
+    -- SAME haste factor, 0.931, twice over — so the factor is trustworthy, and 9.312/0.931
+    -- = 10.00 exactly.  A declared 12 held this button back two seconds too long on every
+    -- cast.  These constants are a last-resort fallback for a row the live read never
+    -- covered; the haste-scaled `recharge` off GetSpellCharges is the real number.
+    kind = "button", cadence = "reactive", charges = 1, chargeCD = 10, abbr = "BoJ",
     label = "Blade of Justice",
   },
   [S.JUDGMENT] = {
