@@ -312,7 +312,13 @@ function H.installGlobals()
   -- The alert-event enum values are Blizzard's, verbatim (Blizzard_APIDocumentationGenerated/
   -- CooldownViewerConstantsDocumentation.lua:43-55) — State branches on them by name, but the
   -- numbers are what a live TriggerAlertEvent carries, so the harness must not invent its own.
-  _G.Enum   = { PowerType = { SoulShards = 7, Mana = 0, Energy = 3 },
+  -- ⚠ `HolyPower = 9` IS NOT DECORATION.  Its absence is why the 76-case Retribution oracle
+  -- could not see the defect that shipped: `ns.Coach.CostPowerType` resolves the spec's cost
+  -- resource through `Enum.PowerType[power.name]`, so with no `HolyPower` member the whole
+  -- cost path degrades to the fallback and the real reader is never exercised.  The values
+  -- are the client's (LuaEnum.lua:5681), not invented — Fury = 17 is here for the DH specs
+  -- on the roadmap, which declare it the same way.
+  _G.Enum   = { PowerType = { SoulShards = 7, Mana = 0, Energy = 3, HolyPower = 9, Fury = 17 },
                 CooldownViewerAlertEventType = {
                   Available = 1, PandemicTime = 2, OnCooldown = 3,
                   ChargeGained = 4, OnAuraApplied = 5, OnAuraRemoved = 6,

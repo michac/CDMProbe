@@ -39,6 +39,12 @@ local H = dofile(dir .. "../mock_ns.lua")
 --------------------------------------------------------------------------------
 local NOW = 1000
 
+-- `Enum.PowerType.HolyPower`, per the harness and the client (LuaEnum.lua:5681).  A cost
+-- fixture is denominated in a RESOURCE, and using the wrong one is the whole defect this
+-- file now pins — see the `SOUL_SHARDS` cases at the bottom.
+local HOLY_POWER = 9
+local SOUL_SHARDS = 7
+
 -- Base spellIDs (SpecRetribution.SpecIDs).  The Coach consumes the DOMAIN VIEW keyed by base
 -- spellID, so these ARE the cue keys.
 local ID = {
@@ -143,16 +149,24 @@ local function build(f)
   if f.wingsUp then buffs[ID.AW] = true end
   if f.crusadeUp then buffs[ID.CRUSADE] = true end
 
-  -- The live spender cost.  `H.fx.cost` drives the harness's ns.ShardCost, which is the same
-  -- reader the shell injects as env.shardCostFn — so a fixture that sets this exercises the
-  -- REAL cost path, not a shortcut.
+  -- The live spender cost, driven at CLIENT level (`fx.powerCost` fakes
+  -- `C_Spell.GetSpellPowerCost`), so the shipping `ns.PowerCost` ladder runs for real.
   -- ⚠ ASSIGNED UNCONDITIONALLY, INCLUDING nil.  `H.fx` is minted once per test, not once per
   -- build, so a `spenderCost` set by an earlier build() in the SAME test would leak into the
   -- next one — and the leak is invisible, because a stale cost still produces a plausible
   -- press.  Clearing here is what lets one test compare "the client's cost" against "the
   -- fallback" on two consecutive pulses.
-  H.fx.cost[ID.TV] = f.spenderCost
-  H.fx.cost[ID.DS] = f.spenderCost
+  -- ⚠ DRIVEN THROUGH `powerCost`, THE CLIENT-LEVEL FAKE, not the old `fx.cost` ShardCost
+  -- stub — so the shipping type filter runs and a fixture cost has to be denominated in the
+  -- resource the brain actually asks about.  `f.spenderCost = nil` now means what it says
+  -- in game: the client offers NO Holy Power entry, the read refuses, and the brain must
+  -- fall back to its declared 3 rather than treating the absence as free.
+  local function setCost(id, cost)
+    H.fx.powerCost[id] = cost ~= nil
+      and { { type = HOLY_POWER, cost = cost, name = "HOLY_POWER" } } or nil
+  end
+  setCost(ID.TV, f.spenderCost)
+  setCost(ID.DS, f.spenderCost)
 
   -- The IN-FLIGHT projection.  Since roster-state-plan Phase 6 the pulse does not carry it —
   -- the Coach derives it from cast history via ns.SpecPowerDelta.  So the fixture drives the
@@ -161,12 +175,12 @@ local function build(f)
   -- raising the cast_started EDGE (a different question, tested elsewhere).
   local history = {}
   if f.inflightSpender then
-    -- ⚠ A COST IS REQUIRED FOR A PROJECTION TO EXIST.  SpecPowerDelta reads ns.ShardCost and
+    -- ⚠ A COST IS REQUIRED FOR A PROJECTION TO EXIST.  SpecPowerDelta reads the cost and
     -- declines (delta 0) when the client has no answer — the documented safe direction, since
     -- it never pre-deducts power we are not sure will be spent.  So an in-flight spender with
     -- no readable cost projects NOTHING, and a fixture that forgot this would be asserting
     -- the refusal path while believing it was asserting the projection.
-    H.fx.cost[ID.TV] = f.spenderCost or 3
+    setCost(ID.TV, f.spenderCost or 3)
     history[#history + 1] = { phase = "start", spellID = ID.TV, base = ID.TV, at = NOW - 2 }
   end
 
@@ -229,12 +243,21 @@ describe("Retribution rotation list (from specs/retribution/rotation.md)", funct
     H.setSpecIndex(4)
     ns.ResolveActiveSpec()
     H.load("Coach.lua")
-    -- ⚠ WIRED WITH THE COST READER, exactly as the live driver does
-    -- (`HudDriver.lua:94` — `ns.Coach.New({ shardCost = ns.ShardCost })`).  Without it
-    -- `env.shardCostFn` is nil and every cost silently falls back to the spec's constant, so
-    -- the "resolved live, never hardcoded" rule would be untested — the fixture would agree
-    -- with the fallback whatever the client said.
-    Coach = ns.Coach.New({ shardCost = ns.ShardCost })
+    -- ⚠ WIRED WITH THE COST READER, exactly as the live driver does (`HudDriver.lua`).
+    -- Without it `env.powerCostFn` is nil and every cost silently falls back to the spec's
+    -- constant, so the "resolved live, never hardcoded" rule would be untested — the fixture
+    -- would agree with the fallback whatever the client said.
+    --
+    -- ⚠⚠ AND IT MUST BE THE **REAL** `ns.PowerCost`, NOT THE HARNESS'S ShardCost STUB.  This
+    -- file wired `{ shardCost = ns.ShardCost }` until 2026-08-03 and its comment claimed
+    -- that "exercises the REAL cost path, not a shortcut".  It did not: `mock_ns.lua`
+    -- REPLACES `ns.ShardCost` with a fixture lookup that has no type filter and answers nil
+    -- where the shipping reader answered 0.  So the one behaviour that mattered — what the
+    -- brain does when the client gives it no cost for its resource — was unreachable, and 76
+    -- green cases sat over a HUD that cued Final Verdict at 0 Holy Power.  `ns.PowerCost` is
+    -- NOT stubbed by the harness, so driving `fx.powerCost` runs the shipping ladder: the
+    -- type filter, the secret guards and the three-valued return.
+    Coach = ns.Coach.New({ powerCost = ns.PowerCost, shardCost = ns.ShardCost })
   end)
 
   local function guidance(facts) return Coach:Compute(build(facts)) end
@@ -387,6 +410,80 @@ describe("Retribution rotation list (from specs/retribution/rotation.md)", funct
 
     it("still respects a real cost on the same fixture", function()
       assert.is_nil(winner({ hp = 0, spenderCost = 3 }))
+    end)
+  end)
+
+  ----------------------------------------------------------------------------
+  -- THE DEFECT THAT SHIPPED — an UNREADABLE cost must never read as FREE.
+  ----------------------------------------------------------------------------
+  -- ⚠ THIS IS THE BLOCK THE 2026-08-03 FLIGHT BOUGHT, and the reason the other 76 cases
+  -- could not have caught it.  Every one of them SETS a cost, so all of them exercised the
+  -- happy path; the shipped bug lived entirely in what happens when the client offers no
+  -- cost for the resource we asked about.  In game that was the normal case, not an edge:
+  -- the shell wired the SOUL-SHARD-filtered reader for every spec, so no Paladin spender
+  -- ever matched, `ns.PowerCost` answered 0-for-absent, `costOf` took the 0 as a fact, and
+  -- L7's `projected >= cost` became `projected >= 0` — a tautology.  Result: Final Verdict
+  -- won at 0 Holy Power on 95 lines of one flight, with 274 more at 1 and 429 at 2.
+  --
+  -- The rule these pin, in one line: A COST WE CANNOT READ MUST FALL BACK TO THE DECLARED
+  -- CONSTANT, NEVER TO ZERO.  Under-promising costs a press of latency; over-promising cues
+  -- a button that cannot be pressed, which is the failure this project cares most about.
+  describe("an UNREADABLE spender cost (the v0.32.87 defect)", function()
+    -- The direct reproduction: the client has no Holy Power entry for the spender.
+    it("falls back to the declared 3 — no spender below 3 Holy Power", function()
+      assert.is_nil(winner({ hp = 0, spenderCost = nil }))
+      assert.is_nil(winner({ hp = 1, spenderCost = nil }))
+      assert.is_nil(winner({ hp = 2, spenderCost = nil }))
+    end)
+
+    it("and still cues the spender AT the fallback cost", function()
+      local w = winner({ hp = 3, spenderCost = nil })
+      assert.equals(ID.TV, w.cid)
+    end)
+
+    -- THE ORIGINAL MIS-WIRING, pinned directly: a cost denominated in SOMEONE ELSE'S
+    -- resource is not this spec's cost.  `ns.PowerCost`'s type filter must reject it and the
+    -- brain must fall back — never read the non-match as free.  This is the exact shape
+    -- `ns.ShardCost` produced for every Paladin spell.
+    it("rejects a cost denominated in a DIFFERENT resource", function()
+      local f = { hp = 0 }
+      local g = build(f)
+      H.fx.powerCost[ID.TV] = { { type = SOUL_SHARDS, cost = 2, name = "SOUL_SHARDS" } }
+      H.fx.powerCost[ID.DS] = { { type = SOUL_SHARDS, cost = 2, name = "SOUL_SHARDS" } }
+      assert.is_nil(pressOf(Coach:Compute(g)))
+    end)
+
+    -- A SECRET cost is the worst case of all: the state where we know least would otherwise
+    -- promise the cheapest possible press.
+    it("treats a SECRET cost as unreadable, not as free", function()
+      local f = { hp = 0 }
+      local g = build(f)
+      H.fx.powerCost[ID.TV] = { { type = HOLY_POWER, cost = H.secretValue(), name = "HP" } }
+      H.fx.powerCost[ID.DS] = { { type = HOLY_POWER, cost = H.secretValue(), name = "HP" } }
+      assert.is_nil(pressOf(Coach:Compute(g)))
+    end)
+  end)
+
+  ----------------------------------------------------------------------------
+  -- The resource a cost is asked about is RESOLVED FROM THE SPEC, not hardcoded.
+  ----------------------------------------------------------------------------
+  -- ns.Coach.CostPowerType is the seam that replaced the Soul-Shard hardwire.  If it ever
+  -- silently returns nil for this spec, every cost degrades to the fallback and the "resolved
+  -- live" rule quietly stops holding — green tests, dead feature.  So pin it directly.
+  describe("ns.Coach.CostPowerType", function()
+    it("resolves Holy Power for spec 70, off the spec's own powers block", function()
+      assert.equals(HOLY_POWER, ns.Coach.CostPowerType(ns.ActiveSpec))
+    end)
+
+    it("prefers an entry explicitly flagged costPower over the first declared", function()
+      local fake = { powers = { { name = "SoulShards" }, { name = "HolyPower", costPower = true } } }
+      assert.equals(HOLY_POWER, ns.Coach.CostPowerType(fake))
+    end)
+
+    it("refuses (nil) rather than guessing when nothing resolves", function()
+      assert.is_nil(ns.Coach.CostPowerType({ powers = { { name = "NotAResource" } } }))
+      assert.is_nil(ns.Coach.CostPowerType({}))
+      assert.is_nil(ns.Coach.CostPowerType(nil))
     end)
   end)
 

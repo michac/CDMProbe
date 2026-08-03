@@ -434,15 +434,28 @@ end
 -- costs one press of latency, so omission is the safe half.
 --
 -- ⚠ AND NOTE THE UNIT: Holy Power's modifier is 1, so there is NO conversion here at all.
--- Do not copy Destruction's `cost * FRAGS_PER_SHARD` multiplication — `ns.ShardCost` already
+-- Do not copy Destruction's `cost * FRAGS_PER_SHARD` multiplication — the cost reader already
 -- speaks the only unit this spec has.
 --
 -- An UNREADABLE cost drops the spend term rather than guessing — the safe direction, since
 -- it never pre-deducts power we are not sure will be spent.
+--
+-- ⚠ THIS READ `ns.ShardCost` UNTIL 2026-08-03, WHICH MEANT IT NEVER FIRED IN GAME.  That
+-- reader filters to Soul Shards, so a Paladin spender matched nothing, the cost came back
+-- absent, and the guard below dropped the term on EVERY cast — the in-flight Holy Power
+-- projection was dead code for the life of the spec.  It failed in the safe direction (an
+-- under-projection costs a press of latency), which is exactly why nobody saw it: the same
+-- mis-wiring in CoachRetribution's `costOf` failed in the UNSAFE direction and cued a
+-- spender at 0 Holy Power.  One defect, two call sites, two very different symptoms.
+-- The resource is now an ARGUMENT, resolved from this spec's own `powers` block.
 function spec.SpecPowerDelta(spellID)
   local info = ns.SpecInfo(spellID)
-  if info.spends ~= "hp" or not ns.ShardCost then return { power = nil, delta = 0 } end
-  local cost = ns.ShardCost(spellID)
+  if info.spends ~= "hp" or not ns.PowerCost then return { power = nil, delta = 0 } end
+  -- Guarded because the .toc loads this file BEFORE Coach.lua; the call is at runtime, so
+  -- the shell kit is there by then, but a missing helper must degrade, not error.
+  local pt = ns.Coach and ns.Coach.CostPowerType and ns.Coach.CostPowerType(spec)
+  if not pt then return { power = nil, delta = 0 } end
+  local cost = ns.PowerCost(spellID, pt)
   if type(cost) ~= "number" or cost <= 0 then return { power = nil, delta = 0 } end
   return { power = "HolyPower", delta = -cost }
 end

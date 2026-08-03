@@ -46,7 +46,7 @@ spec.LATE_LEAD = 4.0    -- a probably-up press left elapsed this long => overdue
                         -- the shell's Classify off ns.ActiveSpec.LATE_LEAD.
 
 -- The spender cost, IN HOLY POWER — the only unit this spec has.  ALWAYS resolved live
--- through env.shardCostFn (talent-modifiable); this is only the fallback for a harness or an
+-- through env.powerCostFn (talent-modifiable); this is only the fallback for a harness or an
 -- unreadable read.  Never hardcode a cost at a call site.
 -- ⚠ 3, NOT 5 (T1 DB2: SpellPower @ 12.0.7 — Templar's Verdict, Divine Storm, Final Verdict
 -- and Hammer of Light all read PowerType 9, cost 3).  The KB's "spend at 5 Holy Power" is a
@@ -123,8 +123,15 @@ function spec:Context(state, env)
   }
   ctx.powers = bars
 
-  -- The live spender cost.  The shell owns the INJECTED reader (env.shardCostFn =
-  -- cfg.shardCost); this brain owns WHICH spell costs and the fallback.
+  -- WHICH RESOURCE THIS SPEC'S COSTS ARE DENOMINATED IN.  Resolved from `spec.powers` by the
+  -- shell kit, NOT written as a literal here — `Enum.PowerType.HolyPower` is 9, but a brain
+  -- that hardcodes 9 is one refactor away from the Soul-Shard bug in the other direction.
+  -- nil (no Enum / nothing declared) means every cost falls back to the declared constant,
+  -- which is the honest degradation.
+  ctx.costPowerType = ns.Coach.CostPowerType(self)
+
+  -- The live spender cost.  The shell owns the INJECTED reader (env.powerCostFn =
+  -- cfg.powerCost); this brain owns WHICH spell costs, in WHICH resource, and the fallback.
   -- ⚠ NO UNIT CONVERSION.  ns.ShardCost returns the cost in the power's DISPLAY units and
   -- Holy Power's divisor is 1, so display units ARE exact units.  Destruction multiplies by
   -- 10 at this exact point; copying that here would be a silent 10x error.
@@ -135,11 +142,26 @@ function spec:Context(state, env)
   -- back as 0, was mistaken for "unreadable", and fell through to the fallback of 3.  The HUD
   -- then refused to cue a free spender at 0-2 Holy Power, which is exactly when it is worth
   -- the most.  This is the project's own ABSENT-IS-NEVER-ZERO rule run in reverse (a real
-  -- zero impersonating a refusal), and CoachDestruction's twin never had the bug — it tests
-  -- `type(c) == "number"` alone.  Do not re-add the `> 0`.
+  -- zero impersonating a refusal).  Do not re-add the `> 0`.
+  --
+  -- ⚠⚠ BUT REMOVING THAT GUARD IS WHAT MADE THE FLIGHT OF 2026-08-03 CUE A SPENDER AT ZERO
+  -- HOLY POWER, and the reason is worth reading before touching either half.  The guard was
+  -- load-bearing for a second, ACCIDENTAL reason: the shell wired `ns.ShardCost`, which
+  -- filters to Soul Shards, so a Paladin spender matched nothing and the reader (whose old
+  -- contract returned 0 for "absent") answered 0.  `> 0` rejected it and the fallback of 3
+  -- happened to be right.  Removing `> 0` was correct in itself and turned that silent
+  -- mis-wiring into a live defect: `spenderCost = 0` makes L7's `projected >= cost` the
+  -- tautology `projected >= 0`, so Final Verdict won at 0 Holy Power on 95 log lines.
+  --
+  -- THE REAL FIX IS BELOW THIS COMMENT AND BENEATH IT: the reader is now the GENERAL
+  -- `env.powerCostFn`, asked about THIS SPEC'S resource (ns.Coach.CostPowerType, resolved
+  -- from spec.powers), and `ns.PowerCost` is three-valued — nil means unreadable, 0 means
+  -- explicitly free.  So the two zeros are finally different values and this guard can be
+  -- what it always claimed to be.  ⚠ `nil` MUST fall through to the fallback; a spec whose
+  -- cost cannot be read must under-promise, never cue a press that fails.
   local function costOf(spellID, fallback)
-    if env and env.shardCostFn and spellID then
-      local c = env.shardCostFn(spellID)
+    if env and env.powerCostFn and spellID and ctx.costPowerType then
+      local c = env.powerCostFn(spellID, ctx.costPowerType)
       if type(c) == "number" then return c end
     end
     return fallback

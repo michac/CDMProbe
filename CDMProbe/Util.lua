@@ -475,17 +475,31 @@ function ns.PowerCost(spellID, powerType)
       if powerType ~= nil then
         typeOK = (not ns.IsSecret(c.type)) and c.type == powerType
       end
-      if typeOK and c.cost > 0 then
+      if typeOK then
         local name = c.name
         if type(name) ~= "string" then name = "power" .. tostring(c.type) end
         return c.cost, name
       end
     end
   end
-  -- 0 = "no cost in the resource we asked about".  ⚠ This still reports "genuinely
-  -- free" and "unreadable" identically, so a caller gating on cost must guard the
-  -- ambiguity itself rather than reading 0 as a fact.
-  return 0, nil
+  -- ⚠ ABSENT, NOT ZERO — and this returned 0 here until 2026-08-03, which is the single
+  -- worst shape a cost reader can have.  The old contract reported "this spell is FREE" and
+  -- "I could not read it" with the same value, and its own comment told callers to guard the
+  -- ambiguity themselves.  CoachRetribution then did the opposite: it took 0 as a fact, and
+  -- because the shell wired the SOUL-SHARD-filtered reader for every spec, EVERY Paladin
+  -- spender came back "free" and the HUD cued Templar's Verdict at 0 Holy Power on 95 lines
+  -- of one flight.  The same trap swallowed a SECRET cost, which is worse: unreadable is
+  -- exactly when a spender must NOT be promised.
+  --
+  -- So the contract is now three-valued and each value means one thing:
+  --   nil = UNREADABLE — no entry for that resource, or the entry was secret.  Callers fall
+  --         back to their declared constant; they must never treat this as free.
+  --     0 = an EXPLICIT zero-cost entry for the resource asked about.  Genuinely free — a
+  --         Divine Purpose spender, an Empyrean Power Divine Storm.  This is a FACT.
+  --     n = the cost, in the client's display units (the divisor is pre-applied).
+  -- The `c.cost > 0` filter above went with it: it was what made an explicit free cost
+  -- unrepresentable, so "0 means free" could never actually be true.
+  return nil, nil
 end
 
 -- The same cost, FILTERED TO SOUL SHARDS.  Returns (shardCost, rawCost) — the same number

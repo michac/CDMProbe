@@ -50,8 +50,10 @@ describe("ns.ShardCost / ns.PowerCost (the REAL Util reader)", function()
 
   it("still filters by power type: a MANA cost is not a shard cost", function()
     fx.powerCost[264178] = { { type = MANA, cost = 5000, name = "MANA" } }
-    -- 0 = "no cost in the resource we asked about" (ns.PowerCost's documented ambiguity).
-    assert.equals(0, ns.ShardCost(264178))
+    -- ⚠ nil, NOT 0.  This asserted 0 until 2026-08-03 — "no cost in the resource we asked
+    -- about" and "genuinely free" were the same value, and CoachRetribution read that zero
+    -- as a fact and cued a 3-Holy-Power spender at 0 Holy Power.  Absent is never zero.
+    assert.is_nil(ns.ShardCost(264178))
   end)
 
   it("picks the SHARD entry out of a mixed list, whatever its position", function()
@@ -62,14 +64,31 @@ describe("ns.ShardCost / ns.PowerCost (the REAL Util reader)", function()
     assert.equals(3, ns.ShardCost(105174))
   end)
 
+  -- ⚠ THE MOST DANGEROUS OF THE THREE.  A secret cost used to read as 0 = FREE, so the one
+  -- state where we know least would have promised the cheapest possible press.
   it("refuses a SECRET cost rather than reading through it", function()
     fx.powerCost[116858] = { { type = SHARDS, cost = H.secretValue(), name = "SOUL_SHARDS" } }
-    assert.equals(0, ns.ShardCost(116858))
+    assert.is_nil(ns.ShardCost(116858))
   end)
 
   it("refuses a SECRET type rather than assuming it is the one we asked for", function()
     fx.powerCost[116858] = { { type = H.secretValue(), cost = 2, name = "SOUL_SHARDS" } }
+    assert.is_nil(ns.ShardCost(116858))
+  end)
+
+  -- THE THREE-VALUED CONTRACT, stated directly.  nil = unreadable, 0 = explicitly free,
+  -- n = the cost.  The `0` case is what the `> 0` filter used to make unrepresentable, so
+  -- "a zero cost means free" could never actually be true.
+  it("reports an EXPLICIT zero-cost entry as 0 — genuinely free, a fact", function()
+    fx.powerCost[116858] = { { type = SHARDS, cost = 0, name = "SOUL_SHARDS" } }
     assert.equals(0, ns.ShardCost(116858))
+  end)
+
+  it("distinguishes explicitly-free (0) from unreadable (nil)", function()
+    fx.powerCost[1] = { { type = SHARDS, cost = 0, name = "SOUL_SHARDS" } }
+    fx.powerCost[2] = {}
+    assert.equals(0, ns.ShardCost(1))
+    assert.is_nil(ns.ShardCost(2))
   end)
 
   it("is nil for a secret / non-number spellID", function()

@@ -77,15 +77,61 @@ local POWER_TOKEN = { SoulShards = "SOUL_SHARDS" }   -- Enum.PowerType name -> r
 -- Construction
 --------------------------------------------------------------------------------
 -- cfg (all optional):
---   shardCost  fn(spellID) -> cost   the LIVE cost reader (ns.ShardCost) when wired;
---              nil in the golden harness, where the spec's fallback answers.  The shell
---              owns the INJECTED reader (threaded to the brain's Context as env.shardCostFn);
---              the brain owns WHICH spell it costs.
+--   powerCost  fn(spellID, powerType) -> cost   THE GENERAL live cost reader (ns.PowerCost).
+--              Threaded to the brain's Context as env.powerCostFn.  The brain owns WHICH
+--              spell it costs AND which resource to ask about; the shell owns the reader.
+--   shardCost  fn(spellID) -> cost   the WARLOCK-LEGACY reader (ns.ShardCost), hardwired to
+--              Soul Shards.  Threaded as env.shardCostFn.  Both Warlock brains still read
+--              it; see the banner below before adding a third caller.
+--
+-- ⚠ WHY THERE ARE TWO, AND WHY `shardCost` IS THE ONE THAT IS WRONG.  `shardCost` was the
+-- only cost seam until 2026-08-03, and `ns.ShardCost` filters to `Enum.PowerType.SoulShards`
+-- — so it is not a cost reader, it is a *Warlock* cost reader wearing a generic name.  Every
+-- spec outside Warlock asked it for a cost, got "no Soul Shard entry", and (with PowerCost's
+-- old zero-for-absent contract) read that as FREE.  That is how Retribution shipped cueing a
+-- 3-Holy-Power spender at 0 Holy Power.
+--
+-- The fix is not to widen `ShardCost` — a reader that guesses the resource is the original
+-- defect (see ns.PowerCost's v0.10.0 banner: an unfiltered cost is a DIFFERENT RESOURCE
+-- silently wearing the right units).  It is to make the resource an ARGUMENT, supplied by
+-- the spec that knows it.  `powerCost` is that seam; `shardCost` survives only so the two
+-- Warlock brains and their oracles stay untouched, and folding them onto `powerCost` +
+-- `C.CostPowerType` is a mechanical follow-up, not a redesign.
 function C.New(cfg)
   cfg = cfg or {}
   local self = setmetatable({}, C)
+  self.powerCostFn = cfg.powerCost
   self.shardCostFn = cfg.shardCost
   return self
+end
+
+-- Which resource does THIS spec's costs live in?  Resolved from the spec's OWN declared
+-- `powers` block — the same declaration State builds the resource rail from — so a brain
+-- never writes an `Enum.PowerType` literal and a new spec gets this for free by declaring
+-- its power, which it must do anyway.
+--
+-- The rule: an entry explicitly flagged `costPower = true` wins; otherwise the first
+-- declared power whose `name` resolves in `Enum.PowerType`.  The flag exists for the specs
+-- already on the roadmap that declare TWO powers — Vengeance and Devourer carry Fury plus a
+-- derived Soul-Fragment channel, and costs are denominated in Fury, which is not
+-- necessarily the first entry.
+--
+-- Returns nil when nothing resolves (no Enum, no powers, an unknown name).  nil is a
+-- REFUSAL and callers must fall back to their declared constant — never to "free".
+function C.CostPowerType(spec)
+  local pt = Enum and Enum.PowerType
+  if not pt or not spec or type(spec.powers) ~= "table" then return nil end
+  local first
+  for _, p in ipairs(spec.powers) do
+    if type(p) == "table" and type(p.name) == "string" then
+      local v = pt[p.name]
+      if type(v) == "number" then
+        if p.costPower then return v end
+        if first == nil then first = v end
+      end
+    end
+  end
+  return first
 end
 
 --------------------------------------------------------------------------------

@@ -16,7 +16,8 @@
 -- frames); a RefreshLayout-hook-driven refresh is that same later optimisation.
 --
 -- THE TWO SEAMS wired here (the fixtures faked them in the Phase-2/4 tests):
---   * Coach cfg.shardCost  = ns.ShardCost      the live HoG-cost reader.
+--   * Coach cfg.powerCost  = ns.PowerCost      THE live cost reader (spec says the resource).
+--   * Coach cfg.shardCost  = ns.ShardCost      the Warlock-legacy, Soul-Shard-filtered one.
 --   * Binder cfg.keybindFor = ns.HudBinds.Get  the live action-bar keybind scan.
 --
 -- COMBAT-SAFE.  State.Build is Secret-Value-guarded; Coach/Binder are pure; the Renderer
@@ -91,7 +92,11 @@ end
 -- so re-use is free and holds the Renderer's frame/texture pool + handle registry.
 local function ensureInstances()
   if not D.coach then
-    D.coach = ns.Coach.New({ shardCost = ns.ShardCost })
+    -- ⚠ BOTH SEAMS ARE WIRED ON PURPOSE.  `powerCost` is the general reader (the spec says
+    -- which resource); `shardCost` is the Warlock-legacy one, still read by both Warlock
+    -- brains.  Wiring only `shardCost` is what shipped Retribution cueing a spender at 0
+    -- Holy Power — see Coach.New's banner.
+    D.coach = ns.Coach.New({ powerCost = ns.PowerCost, shardCost = ns.ShardCost })
   end
   if not D.binder then
     -- No keybindFor seam live: keybinds come from STATE (stitched onto the layout in
