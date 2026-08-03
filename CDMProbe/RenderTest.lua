@@ -413,8 +413,8 @@ end
 --              texture, its own Scale, a sibling of the spinning rings rather than a
 --              parent of them.  Closest in feel to the pop everyone actually liked.
 local DOT_POP_PEAK, DOT_POP_SECS = 2.4, 0.22
-local BURST_PEAK,   BURST_SECS   = 2.6, 0.34
 local FLASH_SECS = 0.26
+-- (the burst's numbers live in the BURST knob table below — they are dialled live)
 
 -- Shared: a candidate must never invent a colour.  Every lab cue is ROTATION, so this reads
 -- the renderer's OWN theme rather than hardcoding the green — if the token is ever retuned
@@ -481,40 +481,147 @@ local function candFlash(r, key)
   firedProbe("alpha flash (no scaling at all)", layer._flashAnim)
 end
 
--- 9 — a one-shot ring flaring outward.  Its Scale lives on its OWN texture, a SIBLING of
--- the spinning rings rather than an ancestor, which panels 6 and 7 measured safe.
-local function candBurst(r, key)
+-- 9 — THE BURST, and the one that won the look test.  A dark disc and one or more additive
+-- ring copies ride a CHILD FRAME of the layer; that frame is scaled once, so everything
+-- flares together off a single animation.  ⚠ The burst frame is a SIBLING of the spinning
+-- rings, never a parent — which is the property that keeps it clean, measured on panels 6
+-- and 7.  Do not "simplify" it by scaling the layer.
+--
+-- ⚠ THE DARK DISC IS NOT DECORATION.  The flare is additive over busy icon art, so it
+-- washes out against it; a dark hole underneath is what gives the added light something to
+-- read against.  Exactly the reasoning behind the shipped cue's own backing disc, applied
+-- to a transient — and it is why "brighter" and "darker" are the same request.
+--
+-- ⚠ AND `stack` EXISTS BECAUSE ADD BLEND HAS A CEILING.  One texture at alpha 1.0 is as
+-- bright as one texture gets; drawing the sprite twice additively is the only way past
+-- that without changing the art.
+local BURST = { size = 56, peak = 2.8, alpha = 1.0, back = 0.85, secs = 0.40, stack = 2 }
+local BURST_ORDER = { "size", "peak", "alpha", "back", "secs", "stack" }
+
+local function burstSignature()
+  return ("%.2f|%.2f|%.2f|%.2f|%.2f|%d"):format(
+    BURST.size, BURST.peak, BURST.alpha, BURST.back, BURST.secs, BURST.stack)
+end
+
+-- Built against the CURRENT knobs, and rebuilt whenever they change — so dialling is a
+-- slash command rather than a release.  (The old objects are stopped and hidden rather than
+-- destroyed; widgets cannot be freed, and this is a lab.)
+local function ensureBurst(r, key)
   local layer = r.cueLayers[key]
-  if not layer then ns.Print("rt pop: panel 9 has no cue — did NOT fire"); return end
-  local t = layer._burstTex
-  if not t then
-    t = layer:CreateTexture(nil, "ARTWORK", nil, 2)
-    t:SetTexture(R.RING_ART)
-    t:SetBlendMode("ADD")
-    local size = (r.cueRingIn[key] and r.cueRingIn[key]:GetWidth()) or 40
-    t:SetSize(size, size)
-    t:SetPoint("CENTER", layer, "CENTER", 0, 0)
-    local col = cueColor(r)
-    t:SetVertexColor(col[1], col[2], col[3], 1)
-    local g = R.BuildPop(t, BURST_PEAK, BURST_SECS * 2)   -- grow-half only; see below
-    if g then
-      -- ⚠ ONE-WAY, not a there-and-back.  BuildPop is symmetric by design; a burst has to
-      -- expand and DIE, so the return half is removed by fading the whole texture out over
-      -- the same window and hiding it at the end.
-      local fade = t:CreateAnimationGroup()
-      local a = fade:CreateAnimation("Alpha")
-      a:SetFromAlpha(0.9); a:SetToAlpha(0); a:SetDuration(BURST_SECS)
-      fade:SetScript("OnFinished", function() t:SetAlpha(0); t:Hide(); g:Stop() end)
-      layer._burstFade = fade
-    end
-    t:SetAlpha(0)
-    layer._burstTex, layer._burstAnim = t, g
+  if not layer then return nil end
+  local sig = burstSignature()
+  if layer._burstSig == sig then return layer._burst end
+  local b = layer._burst
+  if b then
+    b.scale:Stop(); b.fade:Stop(); b.frame:Hide()
   end
-  if not layer._burstAnim then ns.Print("rt pop: panel 9 got no scale group — INERT"); return end
-  t:Show()
-  layer._burstAnim:Stop(); layer._burstAnim:Play()
-  layer._burstFade:Stop(); layer._burstFade:Play()
-  firedProbe(("burst %.1fx + fade"):format(BURST_PEAK), layer._burstAnim)
+  local f = b and b.frame
+  if not f then
+    f = CreateFrame("Frame", nil, layer)
+    f:SetPoint("CENTER", layer, "CENTER", 0, 0)
+    f:SetFrameLevel(layer:GetFrameLevel() + 2)   -- the flare reads OVER the steady cue
+  end
+  f:SetSize(BURST.size, BURST.size)
+
+  -- The dark backing: a masked disc, same trick as the cue's own.
+  local disc = (b and b.disc)
+  if not disc then
+    disc = f:CreateTexture(nil, "BACKGROUND")
+    local mask = f:CreateMaskTexture()
+    mask:SetTexture(R.DISC_MASK, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+    disc:AddMaskTexture(mask)
+    disc.mask = mask
+  end
+  disc:SetColorTexture(0, 0, 0, 1)
+  disc:SetSize(BURST.size, BURST.size)
+  disc.mask:ClearAllPoints()
+  disc.mask:SetSize(BURST.size, BURST.size)
+  disc.mask:SetPoint("CENTER", disc, "CENTER", 0, 0)
+  disc:ClearAllPoints()
+  disc:SetPoint("CENTER", f, "CENTER", 0, 0)
+
+  local col = cueColor(r)
+  local rings = (b and b.rings) or {}
+  for i = 1, BURST.stack do
+    local t = rings[i]
+    if not t then
+      t = f:CreateTexture(nil, "ARTWORK", nil, i)
+      t:SetTexture(R.RING_ART)
+      t:SetBlendMode("ADD")
+      rings[i] = t
+    end
+    t:SetSize(BURST.size, BURST.size)
+    t:ClearAllPoints()
+    t:SetPoint("CENTER", f, "CENTER", 0, 0)
+    t:SetVertexColor(col[1], col[2], col[3], 1)
+    t:Show()
+  end
+  for i = BURST.stack + 1, #rings do rings[i]:Hide() end
+
+  -- ONE-WAY scale on the frame; the regions fade on their own groups.  ⚠ The fade HOLDS at
+  -- full for the first quarter before falling — a straight linear fade from the first frame
+  -- halves the average brightness and is most of why the first cut read as "too subtle".
+  local scale = R.BuildPop(f, BURST.peak, BURST.secs, true)
+  local function fadeGroup(region, peakAlpha)
+    local g = region:CreateAnimationGroup()
+    local hold = g:CreateAnimation("Alpha")
+    hold:SetFromAlpha(peakAlpha); hold:SetToAlpha(peakAlpha)
+    hold:SetOrder(1); hold:SetDuration(BURST.secs * 0.25)
+    local out = g:CreateAnimation("Alpha")
+    out:SetFromAlpha(peakAlpha); out:SetToAlpha(0)
+    out:SetOrder(2); out:SetDuration(BURST.secs * 0.75)
+    g:SetScript("OnFinished", function() region:SetAlpha(0) end)
+    return g
+  end
+  local fade = fadeGroup(rings[1], BURST.alpha)
+  fade:SetScript("OnFinished", function()
+    for _, t in ipairs(rings) do t:SetAlpha(0) end
+    disc:SetAlpha(0)
+    f:Hide()
+    if scale then scale:Stop() end
+  end)
+  local extra = {}
+  for i = 2, BURST.stack do extra[#extra + 1] = fadeGroup(rings[i], BURST.alpha) end
+  extra[#extra + 1] = fadeGroup(disc, BURST.back)
+  local discFade = extra[#extra]
+
+  b = { frame = f, disc = disc, rings = rings, scale = scale, fade = fade,
+        extra = extra, discFade = discFade }
+  layer._burst, layer._burstSig = b, sig
+  f:Hide()
+  return b
+end
+
+local function candBurst(r, key)
+  local b = ensureBurst(r, key)
+  if not b then ns.Print("rt pop: panel 9 has no cue — did NOT fire"); return end
+  if not b.scale then ns.Print("rt pop: panel 9 got no scale group — INERT"); return end
+  b.frame:Show()
+  for _, t in ipairs(b.rings) do t:SetAlpha(BURST.alpha) end
+  b.disc:SetAlpha(BURST.back)
+  b.scale:Stop(); b.scale:Play()
+  b.fade:Stop();  b.fade:Play()
+  for _, g in ipairs(b.extra) do g:Stop(); g:Play() end
+  firedProbe(("burst %.0fpx x%.1f  a%.2f  dark%.2f  %.2fs  stack%d"):format(
+    BURST.size, BURST.peak, BURST.alpha, BURST.back, BURST.secs, BURST.stack), b.scale)
+end
+
+-- `/cdmp rt pop burst [<knob> <value>]` — dial it live.  ⚠ This is a LAB dial, and the
+-- winner gets PROMOTED into Renderer.lua properly rather than shipped from here; that is
+-- the one rule the archived `rt fx` rig broke and paid for.
+local function burstKnob(rest)
+  local knob, value = (rest or ""):match("^(%a+)%s+([%d%.]+)$")
+  if knob and BURST[knob] ~= nil then
+    BURST[knob] = knob == "stack" and math.max(1, math.floor(tonumber(value))) or tonumber(value)
+    ns.Printf("rt pop burst: |cffffffff%s|r = %s — click panel 9", knob, tostring(BURST[knob]))
+    return
+  end
+  if rest and rest ~= "" then ns.Printf("rt pop burst: unknown knob '%s'", rest) end
+  local parts = {}
+  for _, k in ipairs(BURST_ORDER) do parts[#parts + 1] = ("%s %s"):format(k, tostring(BURST[k])) end
+  ns.Heading("rt pop burst — " .. table.concat(parts, " · "))
+  ns.Print("  |cffffffff/cdmp rt pop burst <knob> <value>|r — size (start px) · peak (grow x) · "
+    .. "alpha (flare) · back (dark disc) · secs · stack (additive copies)")
 end
 
 --------------------------------------------------------------------------------
@@ -679,11 +786,17 @@ function ns.RenderTest(arg)
     ns.Print("  |cff88ff88rotate|r — one cue hopping across 5 panels (live)")
     ns.Print("  |cff88ff88pop|r — the POP LAB: a steady control beside an auto-popping twin, "
       .. "plus click-to-pop and a solo pop (panels 3+4 are |cffffffffclickable|r)")
-    ns.Print("  |cff88ff88pop stats|r — MEASURE every lab panel's spin (rev/s + ratio vs the control)")
+    ns.Print("  |cff88ff88pop stats|r — MEASURE every lab panel's spin (both rings + the beat)")
+    ns.Print("  |cff88ff88pop burst <knob> <value>|r — dial panel 9's burst live, no reload")
     ns.Print("usage: |cffffffff/cdmp rt <name>|r | rotate | pop | pop stats | off")
     return
   end
   -- ⚠ BEFORE stopTicker: measuring must not tear down the very lab it is measuring.
+  local burstRest = arg:match("^pop burst%s*(.*)$")
+  if burstRest then
+    burstKnob(burstRest)
+    return
+  end
   if arg == "pop stats" or arg == "popstats" then
     popLabMeasure()
     ns.Printf("rt pop: sampling %.1fs …", MEASURE_SECS)
@@ -710,7 +823,9 @@ function ns.RenderTest(arg)
       .. "4 CLICK=solo · 5+6 safety probes · |cffffff00 7 DOT · 8 FLASH · 9 BURST|r", POP_LAB_INTERVAL)
     ns.Print("  |cffffffff7/8/9 are CANDIDATE TRANSIENTS|r — none of them scales a ring, so none "
       .. "should reproduce the artefact.  Click each: which one reads as a pop?")
-  ns.Print("  |cffffffff/cdmp rt pop stats|r measures both rings + the beat.  Every probe now "
+  ns.Print("  |cffffffff/cdmp rt pop burst <knob> <value>|r dials panel 9 LIVE (no reload): "
+      .. "size · peak · alpha · back · secs · stack.  Bare = show current values.")
+  ns.Print("  |cffffffff/cdmp rt pop stats|r measures both rings + the beat.  Every probe "
       .. "prints whether it actually fired.")
     return
   end

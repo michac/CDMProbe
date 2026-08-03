@@ -146,6 +146,8 @@ local WHITE8 = "Interface\\Buttons\\WHITE8X8"
 -- reasons (`SetMask(path)` does not clip a `SetColorTexture` fill; the round atlas ships
 -- a baked outline `SetVertexColor` cannot tint away).
 local DOT_MASK = "Interface\\CharacterFrame\\TempPortraitAlphaMask"
+R.DISC_MASK = DOT_MASK   -- public for the lab's burst, whose dark backing is the same
+                         -- "punch a hole for the additive light" trick the cue disc uses
 
 --------------------------------------------------------------------------------
 -- Factory
@@ -386,21 +388,28 @@ end
 -- shipped cue does not use: a dot-only pop at 1.35x moves a 12px dot by four pixels for
 -- 90ms, which is invisible — and an invisible preview cannot be judged, only misread as
 -- "the fix works" when in truth nothing happened.
-local function buildPop(frame, peak, secs)
+-- `oneWay` drops the return half: the thing grows and stays grown, for a transient that
+-- DIES rather than settling back (the lab's burst, which expands and fades out).  Cutting a
+-- symmetric group short with a fade instead leaves a visible snap when the second half
+-- starts, which is not a look anyone would choose on purpose.
+local function buildPop(frame, peak, secs, oneWay)
   peak, secs = peak or POP_PEAK, secs or POP_SECS
   local g = frame:CreateAnimationGroup()
-  local up, down = g:CreateAnimation("Scale"), g:CreateAnimation("Scale")
+  local up = g:CreateAnimation("Scale")
   local setFrom, setTo = scaleSetters(up)
   if not setFrom then return nil end
   setFrom(up, 1, 1)
   setTo(up, peak, peak)
+  up:SetOrder(1)
+  up:SetDuration(oneWay and secs or (secs / 2))
+  up:SetOrigin("CENTER", 0, 0)
+  if oneWay then return g end
+  local down = g:CreateAnimation("Scale")
   setFrom(down, peak, peak)
   setTo(down, 1, 1)
-  for i, a in ipairs({ up, down }) do
-    a:SetOrder(i)
-    a:SetDuration(secs / 2)
-    a:SetOrigin("CENTER", 0, 0)
-  end
+  down:SetOrder(2)
+  down:SetDuration(secs / 2)
+  down:SetOrigin("CENTER", 0, 0)
   return g
 end
 
