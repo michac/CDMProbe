@@ -326,14 +326,15 @@ end
 -- Scale animating 1 -> 1 still reproduces, so what is under test is the PRESENCE of a
 -- running animation, not anything you can see.  A probe that also moved something would
 -- confound the two back together.
-local POP_LAB_ICONS = 6
+local POP_LAB_ICONS = 7
 local POP_LAB_INTERVAL = 2.0
 local POP_LAB_CAPTIONS = {
   "1 STEADY", "2 AUTO-POP 2s", "3 CLICK=POP", "4 CLICK=SOLO", "5 CLICK=ALPHA", "6 CLICK=FAR",
+  "7 CLICK=FIX?",
 }
 -- The PERSISTENT panels — the ones carrying a ring that is measurable end to end.  Panel 4
 -- is absent by design: it only exists between a click and its teardown.
-local POP_LAB_KEYS = { "fake1", "fake2", "fake3", "fake5", "fake6" }
+local POP_LAB_KEYS = { "fake1", "fake2", "fake3", "fake5", "fake6", "fake7" }
 
 -- The resting DrawList: every persistent panel lit, panel 4 empty until it is clicked.
 local function popLabSteady()
@@ -345,7 +346,18 @@ end
 -- PROBE 5 — an Alpha animation on the layer.  ⚠ `fromAlpha` defaults to 0.0, so both ends
 -- are set explicitly to keep it inert; the Scale probe below needs no such care because
 -- every scale attribute already defaults to 1.0 (UI.xsd:1500).
+-- ⚠ EVERY PROBE REPORTS THAT IT FIRED, AND THAT IS NOT DECORATION.  These are visually
+-- inert by design, so "I clicked and nothing happened" is exactly what a probe that
+-- SILENTLY FAILED looks like — and a null result you cannot distinguish from a dead
+-- instrument is not a result at all.  `IsPlaying()` is read back from the client after the
+-- Play, so the line says what the client thinks, not what we asked for.
+local function firedProbe(label, g)
+  local playing = g and g.IsPlaying and g:IsPlaying()
+  ns.Printf("rt pop: %s fired — client reports playing=|cffffffff%s|r", label, tostring(playing))
+end
+
 local function probeAlpha(frame)
+  if not frame then ns.Print("rt pop: no cue layer on panel 5 — probe did NOT fire"); return end
   local g = frame._probeAlpha
   if not g then
     g = frame:CreateAnimationGroup()
@@ -357,6 +369,7 @@ local function probeAlpha(frame)
   end
   g:Stop()
   g:Play()
+  firedProbe("alpha-on-layer", g)
 end
 
 -- PROBE 6 — a Scale animation on a frame with no relationship to any cue.
@@ -375,6 +388,54 @@ local function probeFarScale(rig)
   end
   f._probe:Stop()
   f._probe:Play()
+  firedProbe("far-scale", f._probe)
+end
+
+-- PANEL 7 — THE FIX PREVIEW.  If the trigger really is a Scale animation on an ANCESTOR of
+-- the rotating textures, then a cue whose rings are NOT in the scaled subtree must be
+-- immune — and that is the whole proposed fix, tested here before any of it is shipped.
+-- This restructures ONE cue the way the Renderer would:
+--     layer ── disc + both rings   (anchored to the LAYER, never scaled)
+--       └── popFrame ── dot        (the ONLY thing the pop touches)
+-- ⚠ It plays `R.BuildPop` — the SHIPPED constructor, same peak, same duration, same setter
+-- resolution — on that frame.  Rolling a local imitation here is precisely how the archived
+-- `rt fx` rig ended up A/B-ing against something that was not the shipped path.
+local function fixPreview(r, key)
+  local layer, dot = r.cueLayers[key], r.cueFrames[key]
+  if not (layer and dot) then
+    ns.Print("rt pop: panel 7 has no cue to restructure — preview did NOT fire")
+    return
+  end
+  local f = layer._fixFrame
+  if not f then
+    f = CreateFrame("Frame", nil, layer)
+    f:SetSize(dot:GetWidth(), dot:GetHeight())
+    f:SetPoint("CENTER", layer, "CENTER", 0, 0)
+    f:SetFrameLevel(layer:GetFrameLevel())
+    layer._fixFrame = f
+    layer._fixAnim = R.BuildPop(f)
+  end
+  -- The DOT moves into the popped subtree...
+  dot:SetParent(f)
+  dot:ClearAllPoints()
+  dot:SetPoint("CENTER", f, "CENTER", 0, 0)
+  -- ...and the rings + disc come OFF the dot, onto the layer.  They were centred on the
+  -- dot, so without this they would inherit the pop through the ANCHOR even though they
+  -- are no longer under the scaled frame — the wrinkle that would have made a
+  -- straight-to-production version of this fix look like it had not worked.
+  for _, t in ipairs({ r.cueRingIn[key], r.cueRingOut[key], r.cueDiscs[key] }) do
+    if t then
+      t:ClearAllPoints()
+      t:SetPoint("CENTER", layer, "CENTER", 0, 0)
+    end
+  end
+  if not layer._fixAnim then
+    ns.Print("rt pop: panel 7 got no pop group (no usable Scale setter) — preview is INERT")
+    return
+  end
+  layer._fixAnim:Stop()
+  layer._fixAnim:Play()
+  firedProbe("fix-preview (dot-only subtree)", layer._fixAnim)
 end
 
 --------------------------------------------------------------------------------
@@ -404,22 +465,32 @@ local function popLabMeasure()
     return
   end
   local gen = labGen
-  local acc, prev = {}, {}
-  for _, key in ipairs(POP_LAB_KEYS) do acc[key] = 0 end
+  -- ⚠ BOTH RINGS, NOT JUST THE INNER ONE.  The first cut of this measured `cueRingIn`
+  -- alone and reported "1.00x control" across the board — which was true and useless: the
+  -- perceived rate of the PAIR is dominated by the beat between them (8-fold art, 6s
+  -- against 9s counter-rotating = 2.2 Hz, see Renderer.lua's RING_SCALE header), so an
+  -- instrument that watches one ring cannot see the quantity the eye is actually reading.
+  -- The SIZES and the layer SCALE ride along for the same reason: a ring left larger, or a
+  -- layer left at a fraction, changes what the eye clocks without touching a period.
+  local acc, prev = { inner = {}, outer = {} }, { inner = {}, outer = {} }
+  for _, key in ipairs(POP_LAB_KEYS) do acc.inner[key], acc.outer[key] = 0, 0 end
+  local pools = { inner = r.cueRingIn, outer = r.cueRingOut }
   local function sample()
-    for _, key in ipairs(POP_LAB_KEYS) do
-      local ring = r.cueRingIn[key]
-      local p = ring and ring.rot and ring.rot:GetProgress()
-      if type(p) == "number" then
-        -- Progress runs 0->1 per revolution and wraps.  At 6s and 20 Hz one step is ~0.008,
-        -- so a NEGATIVE step is a wrap and never an ambiguity — it stays unambiguous even
-        -- at ten times the nominal rate.
-        if prev[key] then
-          local d = p - prev[key]
-          if d < 0 then d = d + 1 end
-          acc[key] = acc[key] + d
+    for which, pool in pairs(pools) do
+      for _, key in ipairs(POP_LAB_KEYS) do
+        local ring = pool[key]
+        local p = ring and ring.rot and ring.rot:GetProgress()
+        if type(p) == "number" then
+          -- Progress runs 0->1 per revolution and wraps.  At 6s and 20 Hz one step is
+          -- ~0.008, so a NEGATIVE step is a wrap and never an ambiguity — it stays
+          -- unambiguous even at ten times the nominal rate.
+          if prev[which][key] then
+            local d = p - prev[which][key]
+            if d < 0 then d = d + 1 end
+            acc[which][key] = acc[which][key] + d
+          end
+          prev[which][key] = p
         end
-        prev[key] = p
       end
     end
   end
@@ -429,16 +500,22 @@ local function popLabMeasure()
   C_Timer.After(MEASURE_SECS + 0.2, function()
     if labGen ~= gen or ns._renderTestRig ~= rig then return end
     local elapsed = GetTime() - t0
-    local base = acc["fake1"] / elapsed
-    ns.Heading(("rt pop — measured spin over %.1fs (nominal: 6.00s / 0.167 rev/s)"):format(elapsed))
+    ns.Heading(("rt pop — measured over %.1fs (nominal inner 0.167 / outer 0.111 rev/s)"):format(elapsed))
+    ns.Print("  |cff808080beat = (inner + outer rev/s) x 8, the 8-fold sprite's spoke rate — "
+      .. "THE quantity the eye reads|r")
     for _, key in ipairs(POP_LAB_KEYS) do
-      local ring = r.cueRingIn[key]
-      local rev = acc[key] / elapsed
-      local told = ring and ring.rot and ring.rot:GetDuration()
       local idx = tonumber(key:match("(%d+)$"))
-      ns.Printf("  |cff88ff88%-14s|r measured %.3f rev/s (%.2fs)   told %.2fs   |cffffffff%.2fx|r control",
-        POP_LAB_CAPTIONS[idx] or key, rev, rev > 0 and (1 / rev) or 0,
-        type(told) == "number" and told or 0, base > 0 and (rev / base) or 0)
+      local inRev  = acc.inner[key] / elapsed
+      local outRev = acc.outer[key] / elapsed
+      local layer  = r.cueLayers[key]
+      local scale  = layer and layer.GetScale and layer:GetScale()
+      local ringIn, ringOut = r.cueRingIn[key], r.cueRingOut[key]
+      ns.Printf("  |cff88ff88%-14s|r in %.3f  out %.3f  |cffffffffbeat %.2f Hz|r  "
+        .. "scale %.3f  size %d/%d",
+        POP_LAB_CAPTIONS[idx] or key, inRev, outRev, (inRev + outRev) * 8,
+        type(scale) == "number" and scale or -1,
+        ringIn and math.floor(ringIn:GetWidth() + 0.5) or -1,
+        ringOut and math.floor(ringOut:GetWidth() + 0.5) or -1)
     end
   end)
 end
@@ -499,6 +576,10 @@ local function startPopLab()
   rig.icons[6]:SetScript("OnMouseDown", function()
     if alive() then probeFarScale(rig) end
   end)
+  rig.icons[7]:EnableMouse(true)
+  rig.icons[7]:SetScript("OnMouseDown", function()
+    if alive() then fixPreview(r, "fake7") end
+  end)
 end
 
 -- `/cdmp rt [<name>|rotate|pop|off|list]` — render a fixture; bare = the first one
@@ -542,9 +623,12 @@ function ns.RenderTest(arg)
   if arg == "pop" then
     startPopLab()
     ns.Printf("rt: |cffffffffpop lab|r — 1 STEADY · 2 AUTO-POP %.1fs · 3 CLICK=pop · "
-      .. "4 CLICK=solo pop · 5 CLICK=alpha probe · 6 CLICK=far-scale probe", POP_LAB_INTERVAL)
-    ns.Print("  |cffffffff/cdmp rt pop stats|r measures every panel — click 3 a few times "
-      .. "first and see whether it COMPOUNDS.")
+      .. "4 CLICK=solo · 5 CLICK=alpha probe · 6 CLICK=far probe · |cffffff00 7 CLICK=FIX PREVIEW|r",
+      POP_LAB_INTERVAL)
+    ns.Print("  |cffffffff7 is the proposed FIX|r: the same shipped pop, on a frame that owns "
+      .. "ONLY the dot — rings out of the scaled subtree.  Smooth after a click = fixed.")
+  ns.Print("  |cffffffff/cdmp rt pop stats|r measures both rings + the beat.  Every probe now "
+      .. "prints whether it actually fired.")
     return
   end
   if arg == "rotate" then

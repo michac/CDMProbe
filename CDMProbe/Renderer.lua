@@ -375,6 +375,12 @@ end
 -- ONE GROUP, TWO SYMMETRIC HALVES: SetOrder(1) grows, SetOrder(2) returns.  ONE TARGET —
 -- the layer — so disc, dot and BOTH rings scale together and the draw path never touches
 -- what is animating.  Returns nil (once, warned) if this client has no usable setter.
+--
+-- ⚠ PUBLIC as `R.BuildPop` (below) for ONE consumer: `/cdmp rt pop`'s FIX-PREVIEW panel,
+-- which plays the pop on a DIFFERENT frame to test whether taking the rings out of the
+-- scaled subtree cures the artefact.  The rig must use THIS constructor rather than roll
+-- its own, or the preview is not the shipped pop and proves nothing about it — the exact
+-- way the archived `rt fx` rig managed to be wrong for six builds.
 local function buildPop(layer)
   local g = layer:CreateAnimationGroup()
   local up, down = g:CreateAnimation("Scale"), g:CreateAnimation("Scale")
@@ -391,6 +397,8 @@ local function buildPop(layer)
   end
   return g
 end
+
+R.BuildPop = buildPop   -- see the note above: the rig's fix preview needs the SHIPPED one
 
 -- Built once per layer, on the layer (the layer object is stable per handle — ensureLayer
 -- re-parents it rather than rebuilding it).  `_popBuilt` is what stops a client with no
