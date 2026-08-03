@@ -343,6 +343,12 @@ end
 local POP_PEAK = 1.35
 local POP_SECS = 0.18
 
+-- PUBLIC, and only for one reason: `/cdmp rt pop` has to know when a pop is over so it can
+-- tear a panel down after one.  The alternative is the rig hardcoding 0.18 and drifting
+-- silently the first time this moves — which is exactly the class of bug the archived
+-- `rt fx` rig shipped for six builds.  Read it; never write it.
+R.POP_SECS = POP_SECS
+
 -- ⚠ THE SETTER NAME IS GENUINELY AMBIGUOUS, AND A SILENT MISS IS THE ONE UNACCEPTABLE
 -- FAILURE.  Blizzard's generated API doc for the Scale animation carries
 -- `SetScaleFrom` / `SetScaleTo` (Blizzard_APIDocumentationGenerated/

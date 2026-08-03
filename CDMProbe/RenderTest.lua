@@ -174,6 +174,11 @@ local function buildRig(n, captions)
     icon:ClearAllPoints()
     icon:SetPoint("LEFT", rig.container, "CENTER", -total / 2 + (i - 1) * (SIZE + GAP), 0)
     icon:Show()
+    -- ⚠ THE SQUARES ARE POOLED ACROSS VIEWS, SO CLICKABILITY HAS TO BE UNSET HERE.  The
+    -- pop lab makes two of them clickable; without this reset, `states` would inherit
+    -- live click handlers pointing at a DrawList it is not showing.  Each view opts in.
+    icon:EnableMouse(false)
+    icon:SetScript("OnMouseDown", nil)
     if captions and captions[i] then
       icon._caption:SetText(captions[i]); icon._caption:Show()
     else
@@ -245,7 +250,13 @@ end
 
 local ROTATE_ICONS, ROTATE_INTERVAL = 5, 0.8
 
-local function stopRotate()
+-- Cancel whatever live view is running.  ⚠ IT ALSO BUMPS `labGen`, and that is not
+-- bookkeeping for its own sake: the pop lab schedules C_Timer callbacks that draw, so a
+-- view change while one is in flight would repaint the pop lab's DrawList over whatever
+-- view you just asked for.  Every callback captures the generation and refuses if it moved.
+local labGen = 0
+local function stopTicker()
+  labGen = labGen + 1
   if ns._renderTestTicker then
     ns._renderTestTicker:Cancel()
     ns._renderTestTicker = nil
@@ -253,7 +264,7 @@ local function stopRotate()
 end
 
 local function startRotate()
-  stopRotate()
+  stopTicker()
   local rig = buildRig(ROTATE_ICONS)
   rig.container:Show()
   local i = 0
@@ -266,7 +277,94 @@ local function startRotate()
   ns._renderTestTicker = C_Timer.NewTicker(ROTATE_INTERVAL, step)
 end
 
--- `/cdmp rt [<name>|rotate|off|list]` — render a fixture; bare = the first one
+--------------------------------------------------------------------------------
+-- `/cdmp rt pop` — THE POP LAB.  Four panels, one open question.
+--------------------------------------------------------------------------------
+-- WHY IT EXISTS.  The pop reproduces the spin artefact (Renderer.lua, the header at
+-- POP_PEAK), and every observation of it so far has come from PLAY: a whole rotation
+-- moving, cues arriving and leaving on their own schedule, several icons at once.  That is
+-- the worst possible place to characterise a visual defect — you cannot see the control,
+-- you cannot choose the moment, and you cannot look at a pop on its own.  This gives all
+-- three.
+--
+-- ⚠ THE DESIGN RULE: EVERY PANEL IS THE SHIPPED PATH, MINUS OR PLUS EXACTLY ONE THING.
+-- Nothing here reimplements a pop, a ring or a draw — panels 1-3 differ only in WHO calls
+-- the shipped `R:popCue`, and panel 4 differs only in the shipped `R:Draw` edge it feeds.
+-- The archived `rt fx` rig is the cautionary tale: it claimed to be a faithful A/B, drifted
+-- from the shipped path, and showed a ring at over twice shipped brightness for six builds.
+--
+--   1 STEADY      the CONTROL.  Drawn once, never popped, rings turn undisturbed forever.
+--   2 AUTO-POP    identical to panel 1 in every respect except that it gets popped on a
+--                 2s timer.  Side by side with panel 1 this is the whole A/B: if the two
+--                 spins diverge, the pop is the only thing that could have done it.
+--   3 CLICK       the same pop, at a moment YOU choose.  Watch a clean ring, click, and
+--                 see whether it changes AT the click — which separates "the pop breaks
+--                 it" from "it was always going to drift".
+--   4 SOLO        a pop with nothing else on screen: click spawns the cue (a real
+--                 ARRIVAL, so the shipped edge path pops it) and tears it down once the
+--                 animation is over.  For judging the pop ITSELF, not its aftermath.
+--
+-- ⚠ NOTHING POPS ON LOAD.  `cuedLast` is seeded before the opening draw so panels 1-3 are
+-- not arrivals.  A control that got popped once before you looked at it is not a control.
+local POP_LAB_ICONS = 4
+local POP_LAB_INTERVAL = 2.0
+local POP_LAB_CAPTIONS = { "1 STEADY (control)", "2 AUTO-POP 2s", "3 CLICK=POP", "4 CLICK=SOLO POP" }
+local POP_LAB_KEYS = { "fake1", "fake2", "fake3" }   -- the three PERSISTENT panels
+
+-- The resting DrawList: panels 1-3 lit, panel 4 empty until it is clicked.
+local function popLabSteady()
+  return { cues = { cue("fake1", "ROTATION"), cue("fake2", "ROTATION"), cue("fake3", "ROTATION") },
+           keybinds = { kb("fake4", "4") } }
+end
+
+local function startPopLab()
+  stopTicker()
+  local gen = labGen                          -- ...captured AFTER the bump; see stopTicker
+  local rig = buildRig(POP_LAB_ICONS, POP_LAB_CAPTIONS)
+  rig.container:Show()
+  local r = rig.renderer
+  local alive = function() return labGen == gen and ns._renderTestRig == rig end
+
+  -- Seed the previous cue set so the opening draw is not an arrival for panels 1-3.
+  r.cuedLast = {}
+  for _, key in ipairs(POP_LAB_KEYS) do r.cuedLast[key] = true end
+  r:Draw(popLabSteady())
+
+  -- PANEL 2 — the shipped pop, out of band, on a timer.  Deliberately NOT a remove-and-
+  -- re-add: that would also exercise the departure bookkeeping (the OTHER surviving
+  -- suspect), and then a difference against panel 1 would not tell you which one did it.
+  ns._renderTestTicker = C_Timer.NewTicker(POP_LAB_INTERVAL, function()
+    if alive() then r:popCue("fake2", false) end
+  end)
+
+  -- PANEL 3 — the same call, on your click.
+  rig.icons[3]:EnableMouse(true)
+  rig.icons[3]:SetScript("OnMouseDown", function()
+    if alive() then r:popCue("fake3", false) end
+  end)
+
+  -- PANEL 4 — spawn, pop, tear down.  ⚠ The teardown drops fake4 from `cuedLast` FIRST, so
+  -- it is not a DEPARTURE: otherwise the panel would pop twice per click (in, then out) and
+  -- there would be no single pop to judge.  `busy` swallows a click mid-flight for the
+  -- same reason.
+  local busy = false
+  rig.icons[4]:EnableMouse(true)
+  rig.icons[4]:SetScript("OnMouseDown", function()
+    if busy or not alive() then return end
+    busy = true
+    local dl = popLabSteady()
+    dl.cues[#dl.cues + 1] = cue("fake4", "ROTATION")   -- NEW handle -> the shipped arrival
+    r:Draw(dl)
+    C_Timer.After(R.POP_SECS + 0.10, function()
+      busy = false
+      if not alive() then return end
+      r.cuedLast["fake4"] = nil
+      r:Draw(popLabSteady())
+    end)
+  end)
+end
+
+-- `/cdmp rt [<name>|rotate|pop|off|list]` — render a fixture; bare = the first one
 -- (`states`, the reference card).
 function ns.RenderTest(arg)
   arg = (arg or ""):gsub("^%s+", ""):gsub("%s+$", ""):lower()
@@ -277,10 +375,12 @@ function ns.RenderTest(arg)
       if name ~= "states" then ns.Printf("  |cff88ff88%s|r", name) end
     end
     ns.Print("  |cff88ff88rotate|r — one cue hopping across 5 panels (live)")
-    ns.Print("usage: |cffffffff/cdmp rt <name>|r | rotate | off")
+    ns.Print("  |cff88ff88pop|r — the POP LAB: a steady control beside an auto-popping twin, "
+      .. "plus click-to-pop and a solo pop (panels 3+4 are |cffffffffclickable|r)")
+    ns.Print("usage: |cffffffff/cdmp rt <name>|r | rotate | pop | off")
     return
   end
-  stopRotate()                               -- any view change cancels a live rotate
+  stopTicker()                               -- any view change cancels a live view
   clearProcGlow()                            -- ...and drops any native proc glow
   if arg == "off" then
     if ns._renderTestRig then
@@ -293,6 +393,13 @@ function ns.RenderTest(arg)
       ns._renderTestRig.container:Hide()
     end
     ns.Print("rt: off")
+    return
+  end
+  if arg == "pop" then
+    startPopLab()
+    ns.Printf("rt: |cffffffffpop lab|r — 1 STEADY (control) · 2 AUTO-POP every %.1fs · "
+      .. "3 CLICK to pop · 4 CLICK for a solo pop.  Watch 1 against 2 first.",
+      POP_LAB_INTERVAL)
     return
   end
   if arg == "rotate" then

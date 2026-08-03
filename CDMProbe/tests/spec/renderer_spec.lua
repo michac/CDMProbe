@@ -728,6 +728,43 @@ describe("Renderer", function()
     assert.is_false(r.cueHolders["fake1"]._shown)
   end)
 
+  ------------------------------------------------------------------------------
+  -- WHAT `/cdmp rt pop` (the POP LAB) STANDS ON.  The lab's whole value is that its
+  -- CONTROL panel is a ring nothing has touched, and that its other panels differ from it
+  -- by exactly one shipped call.  Both of those are properties of the Renderer, so they
+  -- get pinned here rather than trusted — a control that was quietly popped once before
+  -- you looked at it is worse than no lab at all.
+  ------------------------------------------------------------------------------
+  it("seeding cuedLast suppresses the opening pop — the lab's CONTROL panel", function()
+    local r = rigged(1)
+    r.cuedLast = { fake1 = true }              -- "this was already on the board"
+    r:Draw({ cues = { cue("fake1") } })
+    local layer = r.cueLayers["fake1"]
+    assert.is_nil(layer.pop, "the control panel popped on load — it is not a control")
+    assert.is_true(r.cueRingIn["fake1"]._spinOn, "the control's rings are not turning")
+    assert.is_true(r.cueFrames["fake1"]._shown)
+  end)
+
+  it("an OUT-OF-BAND popCue pops without disturbing the cue it pops", function()
+    -- Panels 2 and 3 of the lab call R:popCue directly on a cue that is already drawn,
+    -- rather than removing and re-adding it — a remove/re-add would also exercise the
+    -- DEPARTURE bookkeeping, which is the other surviving suspect, and then a difference
+    -- against the control would not say which one caused it.
+    local r = rigged(1)
+    r.cuedLast = { fake1 = true }
+    r:Draw({ cues = { cue("fake1") } })
+    local inner, outer = r.cueRingIn["fake1"], r.cueRingOut["fake1"]
+    local a, b = inner.spin._plays, outer.spin._plays
+    r:popCue("fake1", false)
+    assert.equals(1, r.cueLayers["fake1"].pop._plays, "the out-of-band pop never played")
+    assert.equals(a, inner.spin._plays, "it restarted the inner ring")
+    assert.equals(b, outer.spin._plays, "it restarted the outer ring")
+    assert.is_nil(r.leaving["fake1"], "an arrival pop marked the cue as leaving")
+    assert.is_true(r.cueFrames["fake1"]._shown, "the popped cue lost its art")
+    r:Draw({ cues = { cue("fake1") } })        -- ...and a later redraw is still steady
+    assert.equals(1, r.cueLayers["fake1"].pop._plays)
+  end)
+
   it("scales the CUE LAYER, not the regions the draw path re-asserts", function()
     -- The pop's target is the one thing no draw path calls SetSize on.  A Scale on the
     -- dot / rings / disc would be fought by their own geometry restate.

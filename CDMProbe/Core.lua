@@ -108,7 +108,7 @@ SlashCmdList["CDMPROBE"] = dispatch
 -- RenderTest.lua loads after Core, so resolve ns.RenderTest at DISPATCH time, not
 -- registration time.
 ns.RegisterCommand("rt",
-  "render test: draw a DrawList fixture (states | list | rotate | off)",
+  "render test: draw a DrawList fixture (states | list | rotate | pop | off)",
   function(rest)
     if ns.RenderTest then ns.RenderTest(rest)
     else ns.Print("RenderTest not loaded") end
