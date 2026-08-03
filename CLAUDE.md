@@ -32,8 +32,10 @@ Retired directions, code **deleted** (recover from git history if revived):
   **deleted in W4a (2026-07-24)**.
 
 Registered specs: **Demonology** (266, play-settled), **Destruction** (267, shipped
-2026-07-29, flown 2026-07-30) and **Retribution Paladin** (70, shipped 2026-08-02, not yet
-flown). Every other spec resolves passive by design.
+2026-07-29, flown 2026-07-30), **Retribution Paladin** (70, shipped 2026-08-02, cannot be
+flown — no max-level Paladin) and **Havoc Demon Hunter** (577, shipped 2026-08-03, **not yet
+flown — it is the in-game gate for the rest of the rollout**). Every other spec resolves
+passive by design.
 
 Design context + status live in the parent workspace at
 `projects/cooldown-hud/docs/` (`spec.md` vision · `notes.md` technical findings ·
@@ -297,6 +299,102 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   10x error. `RET_HOL_FROM_BUFF` is the one unsettled read,
                                   defaulted OFF (the ART_FROM_RITUAL precedent).
                                   Greened against coach_retribution_apl_spec (68 cases).
+    SpecHavoc.lua                 per-spec DATA for Havoc Demon Hunter (577) — the 4th
+                                  registered spec and the 2nd class outside Warlock.  Fury is
+                                  0-120 with MODIFIER 1, so the exact rail and the display
+                                  rail are the SAME integer: do NOT copy Destruction's
+                                  `cost * FRAGS_PER_SHARD` or the `*Frags` naming, which
+                                  would be a silent no-op teaching the next reader the wrong
+                                  lesson.  Declared `display = "none"` for Retribution's
+                                  reason (the rail reaches DecisionLog's `PW:` column; the
+                                  Renderer draws nothing).
+                                  ⚠ NO `spec.derived` BLOCK, AND THAT IS A DECISION.  The
+                                  Phase-0.3 class-resource channel exists for DH Soul
+                                  Fragments, so a DH spec is exactly where a reader expects
+                                  one — Havoc does not have that resource (simc references
+                                  `soul_fragments` ONCE vs Vengeance's 32; the castCount
+                                  reader is Soul Cleave, a VENGEANCE spell; Blizzard's own
+                                  DemonHunterSoulFragmentsBar.lua:18 is DEVOURER-ONLY).
+                                  ⚠⚠ THREE ESSENTIAL BUTTONS REPORT A BASE COOLDOWN THAT IS
+                                  **WRONG**, not merely absent — Fel Rush 195072 reads 1 s
+                                  against a real 10 s, Immolation Aura 258920 reads 2 s
+                                  against 30 s, Vengeful Retreat 198793 reads 0.5 s against
+                                  25 s (a short SHARED-CATEGORY lockout sits on the spell row
+                                  while the real recovery lives on a charge category).  A LIE
+                                  defeats the mitigation an honest zero gets: HudNapkin's
+                                  declared-`chargeCD` fallback is gated on `not (len > 0)`,
+                                  which an honest 0 trips and a lying 1 does not.  What saves
+                                  it — and it was not built for this — is that all three are
+                                  ONE-charge categories, so usable()'s one-charge rule
+                                  (`cur >= 1 AND probablyUp`) makes the count veto the early
+                                  read for the whole real duration.  THE PRESS IS PROTECTED;
+                                  ONLY THE DECORATION LIES.  Do NOT pre-emptively widen the
+                                  napkin — specs/havoc/rotation.md records the exact one-line
+                                  fix if the flight shows it biting.
+                                  ⚠ THREE ROTATIONAL PRESSES ARE FILED CDM-**UTILITY**
+                                  (Felblade 232893, Vengeful Retreat 198793, Fel Rush 195072
+                                  — which has TWO rows, one Essential one Utility) and it
+                                  needed NO pipeline edit: both fences that could block them
+                                  (Coach.lua:501, State.lua:1941) test the SPEC-AUTHORED
+                                  `cadence`, not the CDM category.  The next TANK spec will
+                                  meet the same shape.
+                                  ⚠ SpecBindAlias is LOAD-BEARING here: SkillLine 1848
+                                  teaches WRAPPER spells (Chaos Strike 344862 -> tracked
+                                  162794; Fel Rush 344865 -> tracked 195072), so without the
+                                  aliases both silently lose their keybind hint.
+                                  ⚠ Rain from Above 206803 is a KNOWINGLY DEAD ICON — a
+                                  tracked Essential with a real 90 s cooldown that appears
+                                  NOWHERE in the 140-line APL.  Registered so the log can
+                                  name it and Coverage does not report it blind;
+                                  `cadence = "utility"` keeps SOON off a button we never cue.
+                                  Every override was DISCRIMINATED by `SpellEffect.EffectAura
+                                  == 332` plus a corroborating cost/category, NEVER by name —
+                                  SpellName carries 76 rows called "Annihilation".
+    CoachHavoc.lua                the Havoc BRAIN: Context / RankWinner / Escalate on spec
+                                  577's object, implementing specs/havoc/rotation.md L1-L15.
+                                  ⚠ THE META FORK IS ONE CASCADE, NOT TWO LISTS.  simc ends
+                                  its top-level list with `run_action_list,name=meta` — a hard
+                                  fork into a second complete priority list that never returns
+                                  — but demon form is a DISPLAY OVERRIDE on frames the list
+                                  already presses (Metamorphosis 162264 carries two
+                                  `EffectAura 332` effects: Annihilation 201427, Death Sweep
+                                  210152), so the Coach cues the BASE spellID and the icon
+                                  shows the right art.  A second list would be fifteen
+                                  duplicated lines differing only in a label the pipeline
+                                  supplies for free.  What the fork genuinely changes is
+                                  ORDER, in exactly TWO places — L6 (Essence Break is
+                                  meta-only) and L7-vs-L10 (Blade Dance outranks Eye Beam in
+                                  meta) — and only those two lines read `ctx.inMeta`.  That is
+                                  read from TWO ORed sources (the Metamorphosis TrackedBuff
+                                  row 191427, and either override visibly live on its base
+                                  frame), published separately as well as ORed so the decision
+                                  log can say WHICH one forked the list.
+                                  ⚠ THE ESSENCE BREAK WINDOW COMES FROM CAST HISTORY, not an
+                                  aura: debuff 320338 has no CooldownSetSpell row, but its
+                                  SpellDuration is a flat 4000 ms and ns.Coach.CommittedWithin
+                                  answers off a channel that survives combat.  Known bias (it
+                                  cannot see a window ended early), and it fails toward a
+                                  REORDERING rather than a wasted press — which is why this
+                                  channel and not a napkin-derived aura.
+                                  ⚠ L5 IS THE FIRST CROSS-ABILITY TIMING GATE IN ANY BRAIN —
+                                  Vengeful Retreat reads EYE BEAM's napkin `remaining`.
+                                  Licensed because Eye Beam's 30 s lives on the SPELL row so
+                                  the napkin counts it honestly; Retribution DROPPED its
+                                  equivalent handshake because Wake of Ashes is
+                                  charge-category and has no napkin.  The rule: a
+                                  cross-ability timing gate is allowed when the OTHER
+                                  ability's cooldown is one the napkin can honestly count.
+                                  FIRST SUSPECT if VR misbehaves in play.
+                                  `HAVOC_RG_FROM_BUFF` is the one unsettled read, defaulted
+                                  OFF (the RET_HOL_FROM_BUFF shape verbatim — Art of the
+                                  Glaive is an 80-stack counter whose presence would jam L1).
+                                  ⚠ The Reaver's Glaive SPEND SEQUENCE is deliberately NOT a
+                                  parked switch: Rending Strike 442442, Glaive Flurry 442435
+                                  and buff.reavers_glaive 442294 have NO CooldownSetSpell row
+                                  in set 1599, so six APL lines are dark and no switch could
+                                  ever flip on.  A parked switch waits on a question a FLIGHT
+                                  can settle; this one already has an answer.
+                                  Greened against coach_havoc_apl_spec (100 cases).
     -- The W4 pipeline (State -> Coach -> Binder -> Renderer), driven each tick by
     -- HudDriver.  See docs/architecture.md.
     State.lua                     ingestion + State.Build: the ROSTER-ANCHORED domain view
@@ -636,10 +734,16 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
       mock_ns.lua                 the harness: CreateFrame stub + fake clock +
                                   global fakes + real Util + SpecRegistry +
                                   SpecDemonology + CoachDemonology + SpecDestruction +
-                                  CoachDestruction (spec 266 activated through the
-                                  resolver; H.setSpecIndex(3) + ResolveActiveSpec drives
-                                  267), + a fixture-settable ShardCost/BaseCooldown/napkin
-                                  surface
+                                  CoachDestruction + SpecRetribution + CoachRetribution +
+                                  SpecHavoc + CoachHavoc (spec 266 activated through the
+                                  resolver; H.setSpecIndex(3/4/5) + ResolveActiveSpec drives
+                                  267 / 70 / 577), + a fixture-settable
+                                  ShardCost/BaseCooldown/napkin surface.
+                                  ⚠ `H.specByIndex` IS APPEND-ONLY.  Index 2 is Affliction
+                                  265, deliberately UNREGISTERED as spec_detect_spec's
+                                  passive/unsupported fixture, and 1/3 are load-bearing in
+                                  coach_apl_spec / coach_destruction_apl_spec — renumbering
+                                  breaks suites that never mention the spec they broke.
       case_builders.lua           the CDM-case FACTORY, `(H, SECRET) -> {mint, buildItem}`:
                                   turns a case's declarative `world`/`cdm` tables into the
                                   faked database + item frames one St.Build pulse reads.
@@ -698,6 +802,35 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   the live driver does — coach_destruction_apl_spec does not,
                                   which is why the "cost is resolved live" rule is currently
                                   unasserted for Destruction (status.md backlog)
+      spec/coach_havoc_apl_spec.lua  the same gate for HAVOC (577), authored from
+                                  specs/havoc/rotation.md L1-L15 — plus the spec-specific
+                                  channels: the META FORK proved on BOTH sources
+                                  INDEPENDENTLY (the TrackedBuff row alone, either transform
+                                  alone, both together) and the two orderings it moves (L6 is
+                                  meta-only; L7-vs-L10 inverts Blade Dance against Eye Beam),
+                                  the `display = "none"` Fury rail proved all the way to the
+                                  decision log's PW: column, L1's Reaver's Glaive transform
+                                  with HAVOC_RG_FROM_BUFF on BOTH settings, `ctx.ebWindow`
+                                  from CAST HISTORY (inside / outside / no cast / the exact
+                                  boundary), the LIVE spender cost resolving to
+                                  ANNIHILATION's id in demon form, charge-aware readiness on
+                                  a ONE-charge pool in both directions (a zero count vetoes a
+                                  ready cooldown; an ABSENT count does not — that asymmetry
+                                  IS the lying-cooldown mitigation and its residual hole),
+                                  L5's cross-ability napkin gate + the Initiative veto, the
+                                  runner-up dropping BOTH occurrences of an ability, and
+                                  Rain from Above never being cued or decorated.
+                                  ⚠ It wires the REAL `ns.Coach.New({ powerCost =
+                                  ns.PowerCost })` and drives costs through the CLIENT-level
+                                  `H.fx.powerCost` fake, so the shipping cost ladder runs —
+                                  a harness that stubs the reader cannot catch a mis-wired
+                                  one, which is how Retribution's cost bug survived 76 green
+                                  cases.
+                                  ⚠ It also files Felblade / Vengeful Retreat / Fel Rush as
+                                  `category = "Utility"` in the fixture ON PURPOSE: a fixture
+                                  that quietly filed them Essential would assert nothing
+                                  about the cadence-not-category finding this spec exists to
+                                  record.
       spec/derived_resource_spec.lua  THE CLASS-RESOURCE CHANNEL: ns.ReadCastCount /
                                   ReadAuraApplications / ReadMaxAuraApplications against the
                                   REAL Util.lua, plus State's declarative `derived` block.
@@ -834,17 +967,18 @@ put `~/.luarocks/bin` on PATH.
 - **`busted CDMProbe/tests/spec`** — unit tests for the pure-logic pipeline modules
   (`Coach`, `Binder`, `Renderer`, `HudLayout`, `DecisionLog`, `HudNapkin`,
   `SpecDemonology`) + the multi-spec seam (`SpecRegistry`/`ResolveActiveSpec`, the
-  resource-array projection) + the **Destruction** and **Retribution** rotation gates +
-  **State's roster-anchored domain view** + State's hero-tree resolution + the **CDM edge
-  inventory** (see `tests/fixtures/` below). **883 tests / 4 pending** (⚠ this number has
-  drifted twice — **re-run `busted` and read the summary rather than copying it**). The
+  resource-array projection) + the **Destruction**, **Retribution** and **Havoc** rotation
+  gates + **State's roster-anchored domain view** + State's hero-tree resolution + the **CDM
+  edge inventory** (see `tests/fixtures/` below). **983 tests / 4 pending** (⚠ this number has
+  drifted repeatedly — **re-run `busted` and read the summary rather than copying it**). The
   harness is
   **`CDMProbe/tests/mock_ns.lua`**: a chainable `CreateFrame`/FontString/animation
   stub, a **settable `GetTime` fake clock**, global fakes
   (`wipe`/`InCombatLockdown`/`issecretvalue`/`C_Timer`/`Enum`/`GetSpecialization`/…),
   the **real** `Util.lua` + `Viewers.lua` + `SpecRegistry.lua` + `SpecDemonology.lua` +
-  `CoachDemonology.lua` + `SpecDestruction.lua` + `CoachDestruction.lua` + `HudBinds.lua`
-  loaded through the `local ADDON, ns = ...` vararg shim (spec
+  `CoachDemonology.lua` + `SpecDestruction.lua` + `CoachDestruction.lua` +
+  `SpecRetribution.lua` + `CoachRetribution.lua` + `SpecHavoc.lua` + `CoachHavoc.lua` +
+  `HudBinds.lua` loaded through the `local ADDON, ns = ...` vararg shim (spec
   266 activated via the resolver), and a fixture-settable `ShardCost`/`BaseCooldown`/
   napkin surface. ⚠ `HudBinds` is the REAL module with `B.map` pointed at `fx.keybind` —
   the fixture supplies the action-bar cache and the rung ladder above it is shipping code

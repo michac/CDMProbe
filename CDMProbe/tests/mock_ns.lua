@@ -81,6 +81,7 @@ H.specByIndex = {
   [2] = { 265, "Affliction" },   -- registered? NO — the unsupported/passive fixture
   [3] = { 267, "Destruction" },
   [4] = { 70,  "Retribution" },
+  [5] = { 577, "Havoc" },        -- coach_havoc_apl_spec drives it with H.setSpecIndex(5)
 }
 function H.setSpecIndex(i) H.specIndex = i end
 
@@ -524,6 +525,8 @@ function H.fresh()
   H.load("CoachDestruction.lua")-- attaches the Destruction brain to spec 267
   H.load("SpecRetribution.lua") -- self-registers spec 70 (the first non-Warlock spec)
   H.load("CoachRetribution.lua")-- attaches the Retribution brain to spec 70
+  H.load("SpecHavoc.lua")       -- self-registers spec 577 (the 2nd class outside Warlock)
+  H.load("CoachHavoc.lua")      -- attaches the Havoc brain to spec 577
 
   -- Forward-declared so the two module stubs below can close over it before it is filled.
   local fx
