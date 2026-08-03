@@ -28,11 +28,23 @@
 --                `abbr` is per-ID display.  Do not re-merge them.
 --   charges    — documented charge count, sanity-check only (State reports the live one).
 --   chargeCD   — documented CHARGE-CATEGORY recovery, in seconds.  ⚠ Documentation ONLY,
---                and it exists because `ns.BaseCooldown` cannot see it: six of the nine
---                Essential buttons have SpellCooldowns.RecoveryTime = 0 and keep their real
---                cooldown on a SpellCategory, so GetSpellBaseCooldown returns 0 and the
---                napkin has nothing to count down from.  Nothing reads this field today;
---                wiring it into the napkin is a new pipeline seam (docs/status.md backlog).
+--                and it exists because `ns.BaseCooldown` cannot see it: FOUR of the nine
+--                Essential buttons (Judgment, Crusader Strike, Blade of Justice, Wake of
+--                Ashes) have SpellCooldowns.RecoveryTime = 0 and keep their real cooldown on
+--                a CHARGE CATEGORY, so GetSpellBaseCooldown returns 0 and HudNapkin has
+--                nothing to count down from.  Nothing reads this field today.
+--                ⚠ THE NUMBER WAS "SIX" HERE AND IT WAS WRONG (corrected 2026-08-03).
+--                Avenging Wrath carries CategoryRecoveryTime = 120000 on the SPELL row, so
+--                its base cooldown reads fine; Templar's Verdict and Divine Storm read 0
+--                because they have NO cooldown at all, which is a different thing.
+--                ⚠ AND THE CONSEQUENCE IS NARROWER THAN IT SOUNDS.  Readiness for these
+--                does NOT depend on the napkin — it comes from the CHARGE COUNT, which
+--                State seeds out of combat and maintains in combat off the ChargeGained
+--                alert, with this same recovery duration as its GAIN FLOOR (State.lua's
+--                chargeGain, via ns.ReadCharges' third return).  What is genuinely lost is
+--                the SOON decoration and Escalate's overdue signal, both of which need a
+--                positive `remaining`.  Same shape Destruction already ships for
+--                Conflagrate — the only difference is that here it is four abilities.
 --   cadence    — "oncd" | "gated" | "reactive" | "filler" | "utility"
 --   judgeable  — DEFAULT TRUE.  False = the ability's TRUE gate is something we cannot
 --                read, so we must never claim it is the right press.
@@ -91,6 +103,11 @@ spec.SpecIDs = {
   -- what an override of Crusader Strike must do.
   TEMPLAR_STRIKE    = 407480,
   TEMPLAR_SLASH     = 406647,
+  -- The AoE member of the same chain.  Registered so the decision log can NAME it; without
+  -- an entry an override that surfaces here resolves to SpecInfo's NEUTRAL fallback and the
+  -- trace shows an anonymous transform — which is exactly what makes a capture unreadable
+  -- three weeks later.
+  TEMPLAR_SWEEP     = 406661,
 
   -- ── Hammer of Wrath — the one button with no home ─────────────────────────
   -- Absent from set 901 entirely, so it has NO CDM icon.  Its only possible home is a
@@ -125,6 +142,21 @@ spec.SpecIDs = {
   BLESSING_OF_ANSHE = 445206,
   DAWNLIGHT         = 431377,
   SUN_SEAR          = 431413,
+  -- Herald's Holy Power SPENDER, and a genuine hole in the delta section rather than a
+  -- deliberate omission: on Herald the spender lines are INCOMPLETE without it.  Tier-1 —
+  -- SpellPower @ 12.0.7 gives 156322 PowerType 9, cost 3, the same signature as every other
+  -- finisher, and knowledge/.../talents.md marks it ACTIVE.  Not in the tracked set, so it
+  -- has no icon of its own.  @verify-ingame whether it rides the spender frame as an
+  -- override; if it does, its entry below already names it.
+  ETERNAL_FLAME     = 156322,
+
+  -- CRUSADE — the Avenging Wrath ALTERNATIVE, and the reason L9 could have gone silently
+  -- dark.  `ctx.wingsUp` is the only readable half of Hammer of Wrath's gate, so a build
+  -- whose burst buff is not 31884 would never fire it.  Tier-1: knowledge/.../talents.md and
+  -- the Paladin trait tree both give 1253598.  ⚠ DB2 says it has NO cooldown, NO power cost
+  -- and CumulativeAura = 0, i.e. 1253598 is the TALENT NODE, not a stacking buff — so its
+  -- presence is a plain boolean and reading it is safe.  Not in the tracked set.
+  CRUSADE           = 1253598,
 }
 
 local S = spec.SpecIDs
@@ -174,7 +206,8 @@ spec.log = {
   -- abbr has to appear here or the per-ID split buys nothing.  `HoL` is the override seen on
   -- Templar's Verdict's frame and `HoL2` the one seen on Divine Storm's — which frame the
   -- client actually overrides is the open question this ordering exists to answer.
-  procOrder = { "AoW", "RC", "EP", "EL", "LD", "DP", "Exp", "UR", "StH", "HoL", "HoL2", "FV" },
+  procOrder = { "AoW", "RC", "EP", "EL", "LD", "DP", "Exp", "UR", "StH", "Cru",
+                "HoL", "HoL2", "FV", "TS", "TSl", "TSw", "EF" },
   procBuffs = {
     [406064]  = "AoW",   -- Art of War
     [402912]  = "RC",    -- Righteous Cause
@@ -185,6 +218,10 @@ spec.log = {
     [383344]  = "Exp",   -- Expurgation
     [432626]  = "UR",    -- Undisputed Ruling
     [431536]  = "StH",   -- Shake the Heavens
+    -- Crusade: the ONE buff whose absence from this map would be invisible AND load-bearing,
+    -- because ctx.wingsUp ORs it in and the log is the only place that would show which of
+    -- the two burst buffs is actually up.
+    [1253598] = "Cru",   -- Crusade (the Avenging Wrath alternative)
   },
 }
 
@@ -279,9 +316,28 @@ spec.Spec = {
     kind = "button", cadence = "filler", expect = false, abbr = "TS",
     label = "Templar Strike (Templar override)",
   },
+  -- ⚠ ONLY TEMPLAR STRIKE SHARES CRUSADER STRIKE'S CHARGE CATEGORY (1627).  Templar Slash
+  -- and Templar Sweep have ChargeCategory 0 — they are the follow-ups in the chain, not
+  -- independent presses, which is exactly why the brain presses the FRAME and lets the game
+  -- pick.  (An earlier comment here implied all three shared 1627; DB2 @ 12.0.7 says not.)
   [S.TEMPLAR_SLASH] = {
     kind = "button", cadence = "filler", expect = false, abbr = "TSl",
     label = "Templar Slash (Templar override)",
+  },
+  [S.TEMPLAR_SWEEP] = {
+    kind = "button", cadence = "filler", expect = false, abbr = "TSw",
+    label = "Templar Sweep (Templar override, AoE)",
+  },
+  -- (Herald) Eternal Flame — a real 3-Holy-Power spender with no tracked icon.
+  -- ⚠ `expect = false` IS LOAD-BEARING HERE, and for the one reason that field exists: this
+  -- is a kind="button", non-utility ability with no base cooldown, which is precisely the
+  -- shape State.virtualCandidates promotes into a self-drawn icon.  Without the fence, a
+  -- Herald build would grow a phantom Eternal Flame button that NO priority line ever cues —
+  -- worse than not registering it at all.  With the fence it stays a labelled entry the
+  -- decision log can name if it ever surfaces as an override.
+  [S.ETERNAL_FLAME] = {
+    kind = "button", spends = "hp", spender = "eternal_flame", cadence = "gated",
+    expect = false, abbr = "EF", label = "Eternal Flame (Herald spender)",
   },
 
   -- ── Hammer of Wrath: no icon, and a gate we can only half-read ────────────
@@ -334,6 +390,14 @@ spec.Spec = {
   [S.DIVINE_HAMMER]      = { kind = "aura", label = "Divine Hammer" },
   [S.CRUSADING_STRIKES]  = { kind = "aura", label = "Crusading Strikes" },
   [S.DIVINE_RESONANCE]   = { kind = "aura", label = "Divine Resonance" },
+  -- CRUSADE, twice on purpose.  As an AURA it is what ctx.wingsUp ORs in (the readable half
+  -- of Hammer of Wrath's gate on a Crusade build).  It is NOT registered as a button: DB2
+  -- gives it no cooldown and no cost, so it is the talent node rather than a press, and a
+  -- button entry would have been a guess.  If the live pass shows Crusade OVERRIDING the
+  -- Avenging Wrath frame, add an `expect = false` button entry carrying the AW bucket's
+  -- `emphasis = "burst"` — without one, Classify falls back to NEUTRAL and L2 loses its
+  -- loudest cue.  @verify-ingame
+  [S.CRUSADE]            = { kind = "aura", label = "Crusade (Avenging Wrath alternative)" },
   [S.BLESSING_OF_ANSHE]  = { kind = "aura", label = "Blessing of An'she (Herald)" },
   [S.DAWNLIGHT]          = { kind = "aura", label = "Dawnlight (Herald)" },
   [S.SUN_SEAR]           = { kind = "aura", label = "Sun Sear (Herald)" },

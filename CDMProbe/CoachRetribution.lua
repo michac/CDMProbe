@@ -9,7 +9,7 @@
 --
 -- THE LIST IT IMPLEMENTS is specs/retribution/rotation.md (the spec of record, distilled
 -- from the Tier-1 simc APL `ActionPriorityLists/default/paladin_retribution.simc` @ ab7b0b8,
--- 2026-08-01).  Line numbers L1-L12 below are that document's, so the two can be diffed by
+-- 2026-08-01).  Line numbers L1-L11 below are that document's, so the two can be diffed by
 -- eye.  Where a line's real gate is not readable the degradation is stated AT the line
 -- rather than faked — the standing rule is that absence of a read never becomes a positive
 -- claim.
@@ -123,19 +123,27 @@ function spec:Context(state, env)
   }
   ctx.powers = bars
 
-  -- The live spender cost, resolved once per pulse.  The shell owns the INJECTED reader
-  -- (env.shardCostFn = cfg.shardCost); this brain owns WHICH spell costs and the fallback.
+  -- The live spender cost.  The shell owns the INJECTED reader (env.shardCostFn =
+  -- cfg.shardCost); this brain owns WHICH spell costs and the fallback.
   -- ⚠ NO UNIT CONVERSION.  ns.ShardCost returns the cost in the power's DISPLAY units and
   -- Holy Power's divisor is 1, so display units ARE exact units.  Destruction multiplies by
   -- 10 at this exact point; copying that here would be a silent 10x error.
+  --
+  -- ⚠ A COST OF **0** IS AN ANSWER, NOT A REFUSAL, and this used to get it backwards.  The
+  -- guard read `type(c) == "number" and c > 0`, so a genuinely FREE finisher — Divine Purpose
+  -- (408459), an Empyrean Power Divine Storm, a Light's Deliverance Hammer of Light — came
+  -- back as 0, was mistaken for "unreadable", and fell through to the fallback of 3.  The HUD
+  -- then refused to cue a free spender at 0-2 Holy Power, which is exactly when it is worth
+  -- the most.  This is the project's own ABSENT-IS-NEVER-ZERO rule run in reverse (a real
+  -- zero impersonating a refusal), and CoachDestruction's twin never had the bug — it tests
+  -- `type(c) == "number"` alone.  Do not re-add the `> 0`.
   local function costOf(spellID, fallback)
     if env and env.shardCostFn and spellID then
       local c = env.shardCostFn(spellID)
-      if type(c) == "number" and c > 0 then return c end
+      if type(c) == "number" then return c end
     end
     return fallback
   end
-  ctx.spenderCost = costOf(S.TEMPLARS_VERDICT, self.SPENDER_COST_FALLBACK)
 
   -- ── Readiness, CHARGE-AWARE ────────────────────────────────────────────────
   -- An ability with a charge banked is usable even while its recharge timer runs, so a
@@ -151,13 +159,20 @@ function spec:Context(state, env)
   -- `ready` forever.  The napkin cannot rescue it either, because a charged spell's
   -- RecoveryTime is 0 in DB2 and the base-cooldown countdown has nothing to count.
   --
-  -- ⚠ AND ON THIS SPEC THAT IS NOT AN EDGE CASE.  SIX of the nine Essential buttons —
-  -- Judgment, Crusader Strike, Blade of Justice, Wake of Ashes, Hammer of Wrath and Avenging
-  -- Wrath — keep their cooldown on a SpellCategory with RecoveryTime = 0 (T1 DB2 @ 12.0.7),
-  -- so the napkin is blind on most of the rotation and this function is doing most of the
-  -- work.  Whether a ONE-charge category is even marked `charges = true` on the CDM row is
-  -- unknown offline; usable() is correct either way, because it consults the count only when
-  -- there IS one.  @verify-ingame
+  -- ⚠ AND ON THIS SPEC THAT IS NOT AN EDGE CASE.  FOUR of the nine Essential buttons —
+  -- Judgment (category 1663), Crusader Strike (1627, 2 charges), Blade of Justice (2128) and
+  -- Wake of Ashes (2285) — keep their cooldown on a CHARGE CATEGORY with RecoveryTime = 0
+  -- (T1 DB2 @ 12.0.7), so `ns.BaseCooldown` reads 0 for them and this function is doing the
+  -- work the cooldown read cannot.
+  -- ⚠ THE COUNT WAS "SIX" HERE UNTIL 2026-08-03 AND IT WAS WRONG.  Avenging Wrath is not one
+  -- (it carries CategoryRecoveryTime = 120000 on the SPELL row, so its base cooldown reads
+  -- fine); Templar's Verdict and Divine Storm read 0 because they have NO cooldown at all,
+  -- which is a different thing entirely; and the old list named Hammer of Wrath, which is not
+  -- among the nine because it is not in the tracked set.  Getting a headline fact wrong in
+  -- the direction of "worse than it is" is still getting it wrong.
+  -- Whether a ONE-charge category is even marked `charges = true` on the CDM row is unknown
+  -- offline; usable() is correct either way, because it consults the count only when there IS
+  -- one.  @verify-ingame
   --
   -- Cloned verbatim from CoachDestruction.lua's usable() — deliberately, not incidentally.
   -- Two copies of a rule this expensive to learn are better than one generalisation that
@@ -186,8 +201,25 @@ function spec:Context(state, env)
   ctx.woaUsable       = usable(S.WAKE_OF_ASHES)
   ctx.bojUsable       = usable(S.BLADE_OF_JUSTICE)
   ctx.judgmentUsable  = usable(S.JUDGMENT)
-  ctx.howUsable       = usable(S.HAMMER_OF_WRATH)
   ctx.fillerUsable    = usable(S.CRUSADER_STRIKE)
+
+  -- ⚠ WHICH HAMMER OF WRATH ID?  Not a constant — whichever of the candidates the pulse
+  -- actually carries, resolved most-specific first.  Three Paladin-side ids exist (24275 the
+  -- class skill-line castable that owns the charge category, 326730 a second skill-line row,
+  -- 1241288 the Midnight talent NODE, which `talents.md` marks PASSIVE — it grants the
+  -- ability rather than being it).  This file used to ask for 24275 alone while `notes.md`
+  -- claimed "whichever the client surfaces resolves the same cue" — a claim nothing
+  -- implemented, so if the client had surfaced a different id the line could never fire.
+  -- Same fix, same shape as CoachDestruction's `ctx.dotID`.
+  -- Keyed by NAME, not by value: a `{ S.A, S.B }` literal would have a HOLE the moment any
+  -- one id were nil, and ipairs stops at the first hole — silently dropping every candidate
+  -- after it.
+  local HOW_KEYS = { "HAMMER_OF_WRATH", "HOW_ALT", "HOW_TALENT" }
+  for _, name in ipairs(HOW_KEYS) do
+    local id = S[name]
+    if id and factsByBase[id] then ctx.howKey = id; break end
+  end
+  ctx.howUsable = usable(ctx.howKey)
 
   -- ── The spender overrides (Templar + the Final Verdict talent) ─────────────
   -- WHICH tracked frame carries an armed Hammer of Light.  `holFrame` is a BASE spellID (the
@@ -198,10 +230,11 @@ function spec:Context(state, env)
   -- recorded in SpecRetribution.lua: on Destruction a shared `abbr` made a capture unable to
   -- say which numeric override had surfaced, which was the exact question it was recording
   -- for.
+  local holLive
   for base, rec in pairs(factsByBase) do
     if rec.transformed and rec.info and rec.info.spends == "hp" then
       if rec.info.spender == "hammer_of_light" then
-        ctx.holFrame = base
+        ctx.holFrame, holLive = base, rec.live
       end
     end
   end
@@ -217,9 +250,30 @@ function spec:Context(state, env)
   ctx.righteousCause  = buffActive(S.RIGHTEOUS_CAUSE)
   ctx.empyreanPower   = buffActive(S.EMPYREAN_POWER)
   ctx.empyreanLegacy  = buffActive(S.EMPYREAN_LEGACY)
-  ctx.wingsUp         = buffActive(S.AVENGING_WRATH)
+  -- ⚠ CRUSADE COUNTS AS WINGS.  Crusade (1253598) is the Avenging Wrath alternative, and
+  -- `wingsUp` is the ONLY readable half of Hammer of Wrath's gate — so on a Crusade build,
+  -- reading 31884 alone would leave that line permanently dark and the "wings" note wrong if
+  -- it ever fired.  Whether the client surfaces Crusade as its own buff or as an override on
+  -- 31884's row is unsettled; ORing both costs nothing and covers either.  @verify-ingame
+  ctx.wingsUp         = buffActive(S.AVENGING_WRATH) or buffActive(S.CRUSADE)
 
-  -- ── Which spender the finisher block resolves to ───────────────────────────
+  -- ── WHICH SPENDER — including Hammer of Light ──────────────────────────────
+  -- ⚠ HAMMER OF LIGHT IS A SPENDER CHOICE, NOT A PRIORITY LINE, and getting that wrong is
+  -- the correction of 2026-08-03.  It used to sit at L1, above Execution Sentence and
+  -- Avenging Wrath, justified as "the top of simc's finisher block".  That is true and
+  -- irrelevant: `actions.finishers` is only ever entered from `actions.generators`, and
+  -- `actions.cooldowns` — which is where execution_sentence and avenging_wrath live — is
+  -- called BEFORE generators (simc:21-22).  The KB agrees (AW 1, ES 2, HoL 3).  Since a
+  -- hammer is armed for up to 20s after every Wake of Ashes, the old order deferred the
+  -- burst buttons for a large fraction of every pull.
+  --
+  -- The faithful reading is simc's own: `hammer_of_light` is the FIRST entry in `finishers`,
+  -- and the `divine_storm` / `templars_verdict` entries beneath it both carry
+  -- `if=(!buff.hammer_of_light_ready.up|buff.hammer_of_light_free.up)` — i.e. *do not press
+  -- an ordinary finisher while a hammer is ready*.  So "which finisher" resolves to Hammer
+  -- of Light whenever it is armed, and the two spend LINES stay exactly where simc's two
+  -- `call_action_list,name=finishers` entry points are.
+  --
   -- simc: `variable.ds_castable = (active_enemies>=3-(tempest&!jurisdiction)
   --                               | buff.empyrean_power.up) & !buff.empyrean_legacy.up`
   -- We have no target roster, so the enemy-count term becomes the MANUAL mode toggle — a
@@ -231,7 +285,15 @@ function spec:Context(state, env)
   -- Divine Storm falls back to Templar's Verdict rather than yielding no press at all.
   local dsKey, tvKey = factsByBase[S.DIVINE_STORM] and S.DIVINE_STORM,
                        factsByBase[S.TEMPLARS_VERDICT] and S.TEMPLARS_VERDICT
-  ctx.spenderKey = (ctx.dsCastable and dsKey) or tvKey or dsKey
+  ctx.spenderKey = (ctx.holArmed and ctx.holFrame)
+    or (ctx.dsCastable and dsKey) or tvKey or dsKey
+
+  -- The cost of THE SPENDER WE WILL ACTUALLY PRESS, not of Templar's Verdict always.  This
+  -- read the base TV cost unconditionally until 2026-08-03, which threw away the one thing
+  -- the zero-cost fix above buys: a free Hammer of Light or an Empyrean-Power Divine Storm
+  -- reports its own cost, and only the LIVE id carries it.  Falls back to the base id where
+  -- there is no transform, and to the declared 3 where the client refuses.
+  ctx.spenderCost = costOf(holLive or ctx.spenderKey, self.SPENDER_COST_FALLBACK)
 
   -- ── The hero tree ──────────────────────────────────────────────────────────
   -- Read off the PULSE (State's talent-API read; TraitSubTree 48 = Templar, 50 = Herald of
@@ -240,9 +302,12 @@ function spec:Context(state, env)
   -- the first live session.
   -- ⚠ NO INFERENCE FALLBACK HERE, and that is deliberate rather than an omission.  On
   -- Destruction the fallback exists because the tree GATES rotation lines.  It does not
-  -- here: L1 fires because a Hammer of Light transform is visible, which is a Templar fact
-  -- that announces itself, and no other line branches on the tree at all.  A guessed tree
-  -- would therefore buy nothing and could only mislead the log.
+  -- here: the Hammer of Light SPENDER CHOICE resolves off a visible transform, which is a
+  -- Templar fact that announces itself, and no line branches on the tree at all.  A guessed
+  -- tree would therefore buy nothing and could only mislead the log.
+  -- ⚠ `ctx.templar` is published and currently has NO reader.  That is honest rather than
+  -- useless — it is the name for the build, the decision log wants it, and the first line
+  -- that genuinely needs a tree branch must read this instead of re-inferring.
   ctx.hero = state.hero
   ctx.templar = (ctx.hero == "templar")
 
@@ -259,15 +324,27 @@ function spec:Context(state, env)
 end
 
 --------------------------------------------------------------------------------
--- RankWinner — THE FLAT PRIORITY LIST (specs/retribution/rotation.md L1–L12).
+-- RankWinner — THE FLAT PRIORITY LIST (specs/retribution/rotation.md L1–L11).
 --    Evaluated top to bottom; the FIRST line whose ability is usable is the one press.
 --    Returns winnerKey, level, note.
 --------------------------------------------------------------------------------
+-- ⚠ THE ORDER WAS WRONG UNTIL 2026-08-03, IN TWO PLACES.  Both were found by reading the
+-- generated APL's CALL STRUCTURE rather than its text order, and both are recorded here
+-- because the mistake is easy to repeat:
+--   * Hammer of Light sat at the TOP, above Execution Sentence and Avenging Wrath.  It is
+--     the first entry of `actions.finishers` — but `finishers` is only ever entered from
+--     `actions.generators`, and `actions.cooldowns` (which owns execution_sentence and
+--     avenging_wrath) is called BEFORE generators.  "First in its sub-list" is not "first".
+--     It is now a SPENDER CHOICE resolved in Context, not a line at all.
+--   * Hammer of Wrath sat ABOVE Blade of Justice, which is simc's `talent.walk_into_light`
+--     placement — while rotation.md's own Deviation 5 said we were taking the LOWER,
+--     default-build placement.  The document was right and the code disagreed with it.
+--
 -- `excluded` (contract: Coach.lua's header) matters here for the same reason it does on
--- Destruction: the SPENDER sits on three lines (L1 as Hammer of Light, L4 the anti-overcap
--- dump, L8 the main dump) and Blade of Justice on two (L7 procced, L10 plain).  All of them
--- key on the same base spellID — including the transform line, which rides its base frame —
--- so one exclusion drops every occurrence.
+-- Destruction: the SPENDER sits on two lines (L3 the anti-overcap dump, L7 the main dump)
+-- and Blade of Justice on two (L6 procced, L8 plain).  Each pair keys on one base spellID —
+-- including the Hammer of Light case, which rides its base frame — so one exclusion drops
+-- every occurrence.
 function spec:RankWinner(ctx, excluded)
   local S = ids()
   -- Holy Power throughout, plain integers: `projected` is the live rail plus the signed
@@ -287,30 +364,19 @@ function spec:RankWinner(ctx, excluded)
   end
   local k, lv, nt
 
-  -- L1 — HAMMER OF LIGHT, whenever it is armed.  The Templar payoff, and the top of simc's
-  -- finisher block.  It rides the spender frame as an OVERRIDE, so a transformed spender IS
-  -- an armed Hammer of Light — no separate readiness read exists or is needed.
-  -- ⚠ simc's four free-proc TIMING clauses are dropped (rotation.md Deviation 1): they are
-  -- all `buff.X.remains < gcd*N`, and buff durations are Secret Values in combat.  simc's
-  -- FIRST clause — "if this is the paid one, just press it" — is what we implement, and
-  -- pressing a free proc early is the safe direction: the cost is a little optimisation,
-  -- where holding risks wasting it outright.
-  -- Affordability still gates it: Hammer of Light costs 3 Holy Power like every finisher.
-  if ctx.holArmed and projected >= ctx.spenderCost then
-    local target = ctx.holFrame or ctx.spenderKey
-    k, lv, nt = pick(target, "ROTATION", "Hammer of Light")
-    if k then return k, lv, nt end
-  end
-
-  -- L2 — Execution Sentence on cooldown.  ⚠ simc pairs it with Wake of Ashes
+  -- L1 — Execution Sentence on cooldown.  ⚠ simc pairs it with Wake of Ashes
   -- (`cooldown.wake_of_ashes.remains<gcd`) and that handshake is dropped: a cooldown-remains
-  -- read of ANOTHER ability is secret in combat, and the napkin that normally covers for it
-  -- has nothing to count down from here (WoA's RecoveryTime is 0 — see usable()'s header).
+  -- read of ANOTHER ability is secret in combat.
+  -- ⚠ ABOVE AVENGING WRATH, following simc (`actions.cooldowns` lists execution_sentence at
+  -- :33 and avenging_wrath at :34) rather than the KB, which puts wings first.  The KB file
+  -- is confidence: medium and reads like an editorial "cooldowns block"; simc is Tier-1,
+  -- machine-generated against this build, and gates ES explicitly to fire just before Wake
+  -- of Ashes.  Deliberate choice, recorded in rotation.md -> Deviations.
   if ctx.executionUsable then
     k, lv, nt = pick(key(S.EXECUTION_SENTENCE), "ROTATION"); if k then return k, lv, nt end
   end
 
-  -- L3 — Avenging Wrath on cooldown: the whole burst window, as a plain press.  Nothing is
+  -- L2 — Avenging Wrath on cooldown: the whole burst window, as a plain press.  Nothing is
   -- staged for it and nothing is held, so it never reads as a hold.  On a Radiant Glory
   -- build the button does not exist and this line simply finds nothing — a free degradation
   -- that needs no talent read.
@@ -318,9 +384,9 @@ function spec:RankWinner(ctx, excluded)
     k, lv, nt = pick(key(S.AVENGING_WRATH), "ROTATION"); if k then return k, lv, nt end
   end
 
-  -- L4 — SPEND AT CAP, unless Wake of Ashes is ready.  simc:
+  -- L3 — SPEND AT CAP, unless Wake of Ashes is ready.  simc:
   -- `call_action_list,name=finishers,if=holy_power=5&cooldown.wake_of_ashes.remains`.
-  -- ⚠ THE SECOND CLAUSE IS NOT A DETAIL.  At cap with WoA READY you press WoA anyway (L5),
+  -- ⚠ THE SECOND CLAUSE IS NOT A DETAIL.  At cap with WoA READY you press WoA anyway (L4),
   -- because WoA ARMS HAMMER OF LIGHT and the armed spender is worth more than the overcap.
   -- `cooldown.wake_of_ashes.remains` means "WoA is on cooldown", which is `not woaUsable` —
   -- one of the few cooldown-remains terms in this APL that survives as a boolean.
@@ -328,63 +394,71 @@ function spec:RankWinner(ctx, excluded)
   -- an implicit resource check to every action, and the cost is read LIVE — so a talent that
   -- ever raised a spender above the cap would otherwise make this line cue a press that
   -- fails.  Every line in this file carries its ability's real gate; this one is no exception.
+  -- WHICH spender (Hammer of Light / Divine Storm / Templar's Verdict) is Context's call.
   if projected >= (ctx.hpMax or 5) and projected >= ctx.spenderCost and not ctx.woaUsable then
-    k, lv, nt = pick(ctx.spenderKey, "ROTATION", "at cap"); if k then return k, lv, nt end
+    k, lv, nt = pick(ctx.spenderKey, "ROTATION", ctx.holArmed and "Hammer of Light" or "at cap")
+    if k then return k, lv, nt end
   end
 
-  -- L5 — Wake of Ashes on cooldown.  Arms Hammer of Light for 20s, which is the reason L4
+  -- L4 — Wake of Ashes on cooldown.  Arms Hammer of Light for 20s, which is the reason L3
   -- steps aside for it.
   if ctx.woaUsable then
     k, lv, nt = pick(key(S.WAKE_OF_ASHES), "ROTATION"); if k then return k, lv, nt end
   end
 
-  -- L6 — Divine Toll on cooldown.
+  -- L5 — Divine Toll on cooldown.
   if ctx.tollUsable then
     k, lv, nt = pick(key(S.DIVINE_TOLL), "ROTATION"); if k then return k, lv, nt end
   end
 
-  -- L7 — Blade of Justice on an Art of War / Righteous Cause proc (a free instant).  Both
+  -- L6 — Blade of Justice on an Art of War / Righteous Cause proc (a free instant).  Both
   -- are tracked buffs, so this is ordinary readable presence.
   if ctx.bojUsable and (ctx.artOfWar or ctx.righteousCause) then
     local note = ctx.artOfWar and "Art of War" or "Righteous Cause"
     k, lv, nt = pick(key(S.BLADE_OF_JUSTICE), "ROTATION", note); if k then return k, lv, nt end
   end
 
-  -- L8 — SPEND.  simc's unconditional `call_action_list,name=finishers` in the middle of the
-  -- generator list.  Which spender: Divine Storm when `dsCastable`, else Templar's Verdict
-  -- (or Final Verdict, its talent override, which rides the same frame).
+  -- L7 — SPEND.  simc's unconditional `call_action_list,name=finishers` in the middle of the
+  -- generator list — the second and last of its two finisher entry points.
   if projected >= ctx.spenderCost then
-    local note = ctx.dsCastable and "Divine Storm" or nil
+    local note = ctx.holArmed and "Hammer of Light"
+      or (ctx.dsCastable and "Divine Storm") or nil
     k, lv, nt = pick(ctx.spenderKey, "ROTATION", note); if k then return k, lv, nt end
   end
 
-  -- L9 — Hammer of Wrath, WHILE AVENGING WRATH IS UP.  ⚠ Its real gate is
-  -- `target.health.pct<20 | buff.avenging_wrath.up | talent.walk_into_light`, and we can read
-  -- exactly one of those three.  So outside wings, in genuine execute range, we simply MISS
-  -- the press — a missed cue, never a wrong one (rotation.md Deviation 4).  `targetExecute`
-  -- is structurally false today and is read anyway, so the day State grows a target channel
-  -- this line is already correct.
-  -- ⚠ DOUBLY DEGRADED: Hammer of Wrath is not in the tracked set at all, so this can only
-  -- ever fire if the virtual-row walk picks it up.  @verify-ingame
-  if ctx.howUsable and (ctx.wingsUp or ctx.targetExecute) then
-    local note = ctx.wingsUp and "wings" or "execute"
-    k, lv, nt = pick(key(S.HAMMER_OF_WRATH), "ROTATION", note); if k then return k, lv, nt end
-  end
-
-  -- L10 — Blade of Justice on cooldown, no proc needed.
+  -- L8 — Blade of Justice on cooldown, no proc needed.  ⚠ ABOVE Hammer of Wrath: simc's
+  -- generator tail is `hammer_of_wrath,if=talent.walk_into_light` / `blade_of_justice` /
+  -- `hammer_of_wrath` / `judgment`, and we cannot read the talent, so we take the LOWER of
+  -- the two Hammer of Wrath placements — the one correct for the build that does not have
+  -- Walk into Light.  (This file had it backwards until 2026-08-03, contradicting its own
+  -- rotation.md Deviation 5.)
   if ctx.bojUsable then
     k, lv, nt = pick(key(S.BLADE_OF_JUSTICE), "ROTATION"); if k then return k, lv, nt end
   end
 
-  -- L11 — Judgment on cooldown.
+  -- L9 — Hammer of Wrath, WHILE WINGS ARE UP.  ⚠ Its real gate is
+  -- `target.health.pct<20 | buff.avenging_wrath.up | talent.walk_into_light`, and we can read
+  -- exactly one of those three (the buff — Avenging Wrath OR Crusade).  So outside wings, in
+  -- genuine execute range, we simply MISS the press — a missed cue, never a wrong one
+  -- (rotation.md Deviation 4).  `targetExecute` is structurally false today and is read
+  -- anyway, so the day State grows a target channel this line is already correct.
+  -- ⚠ DOUBLY DEGRADED: Hammer of Wrath is not in the tracked set at all, so this can only
+  -- ever fire if the virtual-row walk picks it up.  `ctx.howKey` resolves whichever of the
+  -- three candidate ids the pulse actually carries.  @verify-ingame
+  if ctx.howUsable and (ctx.wingsUp or ctx.targetExecute) then
+    local note = ctx.wingsUp and "wings" or "execute"
+    k, lv, nt = pick(ctx.howKey, "ROTATION", note); if k then return k, lv, nt end
+  end
+
+  -- L10 — Judgment on cooldown.
   if ctx.judgmentUsable then
     k, lv, nt = pick(key(S.JUDGMENT), "ROTATION"); if k then return k, lv, nt end
   end
 
-  -- L12 — the FILLER: the Crusader Strike frame, whatever override it is showing (Templar
-  -- Strike / Templar Slash on Templar).  We press the FRAME and let the game decide which
-  -- strike comes out, because the alternation is Blizzard's and not ours.  2 charges on a 6s
-  -- recharge, which is why usable() reads the count first.
+  -- L11 — the FILLER: the Crusader Strike frame, whatever override it is showing (Templar
+  -- Strike / Templar Slash / Templar Sweep on Templar).  We press the FRAME and let the game
+  -- decide which strike comes out, because the alternation is Blizzard's and not ours.
+  -- 2 charges on a 6s recharge, which is why usable() reads the count first.
   if ctx.fillerUsable then
     k, lv, nt = pick(key(S.CRUSADER_STRIKE), "ROTATION"); if k then return k, lv, nt end
   end
@@ -424,7 +498,7 @@ function spec:Escalate(winnerKey, level, ctx)
   --    not the projection: an in-flight spender has already committed to draining the bar,
   --    so projecting it would call you late for something you are mid-way through fixing.
   --    No burst carve-out, because Retribution never pools for a window on purpose.
-  --    ⚠ Note this deliberately does NOT respect L4's Wake-of-Ashes exception.  L4 declines
+  --    ⚠ Note this deliberately does NOT respect L3's Wake-of-Ashes exception.  L3 declines
   --    to DUMP while WoA is ready; that is a priority choice.  Sitting at a genuinely full
   --    bar is still a readable mistake, and saying so is the whole job of LATE.
   if rec.base == ctx.spenderKey and ctx.hp

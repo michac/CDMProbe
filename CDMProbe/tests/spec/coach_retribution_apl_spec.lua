@@ -12,18 +12,25 @@
 -- IMPLEMENTATION to the document, not the document to reality.
 --
 -- The list under test (specs/retribution/rotation.md; first usable line = the press):
---   L1   Hammer of Light      whenever armed (an override on the spender frame)
---   L2   Execution Sentence   on cooldown
---   L3   Avenging Wrath       on cooldown
---   L4   the spender          at cap, UNLESS Wake of Ashes is ready
---   L5   Wake of Ashes        on cooldown
---   L6   Divine Toll          on cooldown
---   L7   Blade of Justice     on an Art of War / Righteous Cause proc
---   L8   the spender          hp >= cost
---   L9   Hammer of Wrath      while Avenging Wrath is up
---   L10  Blade of Justice     on cooldown
---   L11  Judgment             on cooldown
---   L12  the filler frame     (Crusader Strike / Templar Strike / Templar Slash)
+--   L1   Execution Sentence   on cooldown
+--   L2   Avenging Wrath       on cooldown
+--   L3   the spender          at cap, UNLESS Wake of Ashes is ready
+--   L4   Wake of Ashes        on cooldown
+--   L5   Divine Toll          on cooldown
+--   L6   Blade of Justice     on an Art of War / Righteous Cause proc
+--   L7   the spender          hp >= cost
+--   L8   Blade of Justice     on cooldown
+--   L9   Hammer of Wrath      while wings are up
+--   L10  Judgment             on cooldown
+--   L11  the filler frame     (Crusader Strike / Templar Strike / Templar Slash)
+--
+-- ⚠ HAMMER OF LIGHT IS NOT A LINE.  It is the SPENDER CHOICE at L3 and L7: simc's
+-- `hammer_of_light` heads `actions.finishers`, and the `divine_storm` / `templars_verdict`
+-- entries under it are both gated `!buff.hammer_of_light_ready.up`, so "which finisher"
+-- resolves to the hammer whenever one is armed.  This suite asserted it as an L1 above every
+-- cooldown until 2026-08-03 — a bug it had faithfully transcribed from a rotation.md that
+-- was itself wrong, which is exactly the failure mode an oracle authored from the document
+-- cannot catch on its own.
 local dir = (debug.getinfo(1, "S").source:match("^@(.*[/\\])")) or "./"
 local H = dofile(dir .. "../mock_ns.lua")
 
@@ -40,8 +47,11 @@ local ID = {
   UTILITY = 96231,
   -- overrides (no icon of their own; they ride a tracked frame)
   HOL = 427453, FV = 383328, TSTRIKE = 407480,
+  -- the two Hammer of Wrath ALIASES (24275 is the primary, above)
+  HOW_ALT = 326730, HOW_TALENT = 1241288,
   -- buffs
   AOW = 406064, RC = 402912, EP = 326732, EL = 387170, LD = 433674,
+  CRUSADE = 1253598,
 }
 
 -- Distinct cooldownID display handles, decoupled from spellIDs as in a live pulse.
@@ -102,7 +112,12 @@ local function build(f)
   abilities[ID.JUDG] = ability(ID.JUDG, CID.JUDG, f.judgment or cdFar())
   abilities[ID.CS]   = ability(ID.CS,   CID.CS,   f.filler or cdFar(), { charge = f.csCharge })
   if not f.noWings then abilities[ID.AW] = ability(ID.AW, CID.AW, f.wings or cdFar()) end
-  if not f.noHow then abilities[ID.HOW] = ability(ID.HOW, CID.HOW, f.how or cdFar()) end
+  -- `howID` puts a DIFFERENT Hammer of Wrath candidate on the board (24275 / 326730 /
+  -- 1241288), which is what exercises the brain's candidate walk rather than a constant.
+  if not f.noHow then
+    local hid = f.howID or ID.HOW
+    abilities[hid] = ability(hid, CID.HOW, f.how or cdFar())
+  end
 
   -- The spenders: no cooldown at all, gated only by Holy Power.  The OVERRIDE rides one of
   -- these frames — that is the entire readable channel for Hammer of Light.
@@ -126,6 +141,7 @@ local function build(f)
   if f.el  then buffs[ID.EL]  = true end
   if f.ld  then buffs[ID.LD]  = true end
   if f.wingsUp then buffs[ID.AW] = true end
+  if f.crusadeUp then buffs[ID.CRUSADE] = true end
 
   -- The live spender cost.  `H.fx.cost` drives the harness's ns.ShardCost, which is the same
   -- reader the shell injects as env.shardCostFn — so a fixture that sets this exercises the
@@ -282,21 +298,48 @@ describe("Retribution rotation list (from specs/retribution/rotation.md)", funct
   ----------------------------------------------------------------------------
   -- L1 — Hammer of Light, whenever armed.
   ----------------------------------------------------------------------------
-  describe("L1 — Hammer of Light", function()
-    it("wins on a transformed spender frame, above every cooldown", function()
+  describe("Hammer of Light — the spender CHOICE, not a line", function()
+    -- ⚠ THE CORRECTION OF 2026-08-03.  `actions.cooldowns` (execution_sentence,
+    -- avenging_wrath) is called BEFORE `actions.generators`, and `finishers` — where
+    -- hammer_of_light lives — is only ever entered FROM generators.  So an armed hammer does
+    -- NOT outrank the burst buttons; it only decides which finisher the spend lines press.
+    it("does NOT outrank Execution Sentence or Avenging Wrath", function()
       local w = winner({ hp = 5, hol = "tv", execution = cdReady(), wings = cdReady() })
+      assert.equals(ID.ES, w.cid)
+      local w2 = winner({ hp = 5, hol = "tv", execution = cdFar(), wings = cdReady() })
+      assert.equals(ID.AW, w2.cid)
+    end)
+
+    it("IS the spender once the cooldowns are down — at cap (L3)", function()
+      local w = winner({ hp = 5, hol = "tv", woa = cdFar(), toll = cdReady() })
       assert.equals(ID.TV, w.cid)          -- keyed by the BASE frame it rides
+      assert.equals("Hammer of Light", w.cue.note)
+    end)
+
+    it("...and at the ordinary spend line (L7)", function()
+      local w = winner({ hp = 3, hol = "tv" })
+      assert.equals(ID.TV, w.cid)
+      assert.equals("Hammer of Light", w.cue.note)
+    end)
+
+    -- ⚠ It OUTRANKS the ordinary finishers, which is simc's
+    -- `!buff.hammer_of_light_ready.up` gate on divine_storm/templars_verdict: while a hammer
+    -- is armed, no plain finisher may be pressed.  So even in AoE mode with the Divine Storm
+    -- conditions met, an armed hammer on the TV frame is the press.
+    it("suppresses Divine Storm while it is armed", function()
+      local w = winner({ hp = 3, hol = "tv", mode = "aoe" })
+      assert.equals(ID.TV, w.cid)
       assert.equals("Hammer of Light", w.cue.note)
     end)
 
     -- It costs 3 Holy Power like every finisher, so affordability still gates it.
     it("does not fire when the spender is unaffordable", function()
       local w = winner({ hp = 2, hol = "tv", execution = cdReady() })
-      assert.equals(ID.ES, w.cid)          -- falls through to L2
+      assert.equals(ID.ES, w.cid)
     end)
 
     it("rides the Divine Storm frame just as well", function()
-      local w = winner({ hp = 5, hol = "ds", execution = cdReady() })
+      local w = winner({ hp = 5, hol = "ds", woa = cdFar(), toll = cdReady() })
       assert.equals(ID.DS, w.cid)
     end)
 
@@ -314,12 +357,36 @@ describe("Retribution rotation list (from specs/retribution/rotation.md)", funct
       assert.equals(ID.ES, w.cid)
     end)
 
-    it("IS armed by the buff once RET_HOL_FROM_BUFF is flipped on", function()
+    -- ⚠ AND FLIPPING IT ON IS A TRAP, measured: Light's Deliverance is a 60-STACK buff
+    -- (`SpellAuraOptions.CumulativeAura` = 60 @ 12.0.7).  It is present for essentially the
+    -- whole fight and only the 60th stack grants the free hammer — a count that is a Secret
+    -- Value in combat.  So the switch can never be safely turned on, and this case exists to
+    -- document the behaviour, not to endorse it.
+    it("IS armed by the buff once RET_HOL_FROM_BUFF is flipped on (documented, not endorsed)", function()
       ns.Specs[70].RET_HOL_FROM_BUFF = true
-      local w = winner({ hp = 5, ld = true, execution = cdReady() })
+      local w = winner({ hp = 5, ld = true, woa = cdFar(), toll = cdReady() })
       assert.equals(ID.TV, w.cid)
       assert.equals("Hammer of Light", w.cue.note)
       ns.Specs[70].RET_HOL_FROM_BUFF = false
+    end)
+  end)
+
+  ----------------------------------------------------------------------------
+  -- A FREE spender — the `cost == 0` fix.
+  ----------------------------------------------------------------------------
+  -- ⚠ The guard used to read `type(c) == "number" and c > 0`, so a genuinely free finisher
+  -- (Divine Purpose, an Empyrean Power Divine Storm, a Light's Deliverance hammer) reported 0,
+  -- was mistaken for "unreadable", and fell through to the fallback of 3 — refusing to cue a
+  -- free press at 0-2 Holy Power, exactly when it is worth most.  This is the project's own
+  -- ABSENT-IS-NEVER-ZERO rule run in reverse.
+  describe("a free spender (cost 0)", function()
+    it("is cued at ZERO Holy Power", function()
+      local w = winner({ hp = 0, spenderCost = 0 })
+      assert.equals(ID.TV, w.cid)
+    end)
+
+    it("still respects a real cost on the same fixture", function()
+      assert.is_nil(winner({ hp = 0, spenderCost = 3 }))
     end)
   end)
 
@@ -531,6 +598,38 @@ describe("Retribution rotation list (from specs/retribution/rotation.md)", funct
       local w = winner({ hp = 0, how = cdReady(), wingsUp = true, wings = cdFar() })
       assert.equals(ID.HOW, w.cid)
       assert.equals("wings", w.cue.note)
+    end)
+
+    -- ⚠ THE ORDERING CASE THAT WAS MISSING, and its absence is why the L8/L9 inversion
+    -- survived review: every Hammer of Wrath case left Blade of Justice on cooldown, so the
+    -- relative order was never exercised.  simc's generator tail is
+    -- `hammer_of_wrath,if=talent.walk_into_light` / `blade_of_justice` / `hammer_of_wrath`,
+    -- and we cannot read the talent — so we take the LOWER placement, and BLADE OF JUSTICE
+    -- WINS when both are up.  (The code had this backwards, contradicting its own
+    -- rotation.md Deviation 5, until 2026-08-03.)
+    it("sits BELOW a ready Blade of Justice", function()
+      local w = winner({ hp = 0, how = cdReady(), boj = cdReady(), wingsUp = true,
+                         wings = cdFar() })
+      assert.equals(ID.BOJ, w.cid)
+    end)
+
+    -- CRUSADE counts as wings.  It is the Avenging Wrath alternative, and `wingsUp` is the
+    -- ONLY readable half of this line's gate — so reading 31884 alone would leave L9
+    -- permanently dark on that build.
+    it("fires on CRUSADE too, not just Avenging Wrath", function()
+      local w = winner({ hp = 0, how = cdReady(), crusadeUp = true, wings = cdFar() })
+      assert.equals(ID.HOW, w.cid)
+      assert.equals("wings", w.cue.note)
+    end)
+
+    -- ⚠ WHICH Hammer of Wrath id.  Three exist and they are not interchangeable; the brain
+    -- resolves whichever the pulse actually carries (the ctx.dotID pattern).  Before this,
+    -- notes.md claimed "whichever the client surfaces resolves the same cue" and nothing
+    -- implemented it — so a client surfacing the talent-node id would have killed the line.
+    it("resolves whichever candidate ID the pulse actually carries", function()
+      local w = winner({ hp = 0, howID = ID.HOW_TALENT, how = cdReady(), wingsUp = true,
+                         wings = cdFar() })
+      assert.equals(ID.HOW_TALENT, w.cid)
     end)
 
     -- ⚠ Deviation 4: outside wings we MISS the press rather than making a wrong one.  Target
