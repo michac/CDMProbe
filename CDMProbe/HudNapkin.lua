@@ -81,10 +81,47 @@ local function onSucceeded(_, _, spellID)
   N.seen = N.seen + 1
   N.readable = true
   local len = ns.BaseCooldown(spellID)
+  local src = "cast"
+
+  -- ⚠ THE CHARGE-CATEGORY FALLBACK — the fix for a HUD that cued Blade of Justice while it
+  -- was on cooldown, on 4419 lines of one flight.
+  --
+  -- `GetSpellBaseCooldown` returns 0 for a spell whose cooldown lives on a SpellCategory
+  -- rather than on the spell row (Retribution: Judgment, Crusader Strike, Blade of Justice,
+  -- Wake of Ashes).  So the branch below stored nothing, the napkin had no countdown, and
+  -- State fell through to the alert edge — which for a CHARGED ability is a latch that never
+  -- clears: the CDM raises `Available` on every charge restore and NEVER `OnCooldown`.  Blade
+  -- of Justice therefore read `ready` forever, won its line on every tick, and starved every
+  -- line below it (Crusader Strike, at L11, was never reached at all).
+  --
+  -- ⚠ WHY THIS IS SAFE DESPITE BEING A DECLARED CONSTANT, NOT A MEASUREMENT.  The napkin's
+  -- fences already make drift one-directional and they apply unchanged here:
+  --   * an OBSERVED `Available` edge CLEARS the record outright, so a charge that comes back
+  --     early (haste, a reset proc) is honoured immediately and the constant loses;
+  --   * EXPIRY NEVER CLAIMS READINESS — an elapsed estimate is "on cooldown, remaining 0,
+  --     unconfirmed", never a laundered `ready`.
+  -- So the worst this constant can do is hold a button back for a fraction of a second too
+  -- long.  The failure it REPLACES was cueing a button that could not be pressed at all.
+  --
+  -- ⚠ AND IT IS NOT `source = "live"`.  Provenance stays honest: "declared" is a third
+  -- value beside "cast" and "read", so the decision log and any future consumer can tell a
+  -- spec-authored number from an observation.  Do not collapse it into "cast".
+  --
+  -- The number comes from the ACTIVE SPEC's own signal bucket (`chargeCD`, authored from
+  -- Tier-1 DB2 category recovery), so this stays spec-agnostic pipeline code — State and the
+  -- napkin hold no spell constants, exactly as before.
+  if not (type(len) == "number" and len > 0) then
+    local info = ns.SpecInfo and ns.SpecInfo(spellID)
+    local declared = info and info.chargeCD
+    if type(declared) == "number" and declared > 0 then
+      len, src = declared, "declared"
+    end
+  end
+
   -- 0 is meaningful, not a failure: Hand of Gul'dan and Demonbolt have no
   -- cooldown at all, so there is nothing to count down and we store nothing.
   if type(len) == "number" and len > 0 then
-    N.casts[spellID] = { started = GetTime(), length = len, source = "cast" }
+    N.casts[spellID] = { started = GetTime(), length = len, source = src }
     N.tracked = N.tracked + 1
   end
 end

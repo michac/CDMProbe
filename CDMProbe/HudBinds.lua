@@ -78,7 +78,7 @@ end
 B.map = {}        -- spellID -> short key string
 B.dirty = true
 B.stats = { slots = 0, bound = 0, scans = 0, deferred = 0, coalesced = 0,
-             retried = 0, cold = 0 }
+             retried = 0, cold = 0, settled = 0 }
 
 -- Returns true if the resolved map actually CHANGED.  Callers use that to skip
 -- re-attaching chrome across every item when nothing moved, which is the common
@@ -159,6 +159,13 @@ local scheduled = false
 local EMPTY_RETRIES = 12         -- ~6 s of cover at the debounce interval; then believe it
 local emptyRetries = 0
 
+-- The SETTLE cap — see the `changed` branch in runScan.  Smaller than EMPTY_RETRIES because
+-- this one confirms an answer we already have rather than waiting for a first one; the
+-- steady case uses exactly one of these.  Reset by `invalidate()`, so every real bar/binding
+-- event gets a fresh settle budget.
+local SETTLE_RETRIES = 6
+local settleRetries = 0
+
 -- ⚠ THE COLD-CACHE EXEMPTION (v0.32.51).  The combat fence is a COST rule, NOT a safety
 -- one: `GetActionInfo` / `GetBindingKey` are unprotected reads that taint nothing, and the
 -- reason for "never in combat" is the v0.6.0 story in the header — ~2000 full scans burned
@@ -189,11 +196,36 @@ local function runScan()
   end
   -- Refresh the cache; the pipeline reads it live off State (State.readCd -> HudBinds.Get)
   -- each tick, so there is nothing to notify.
-  scan()
+  local changed = scan()
   if B.stats.bound == 0 and emptyRetries < EMPTY_RETRIES then
     emptyRetries = emptyRetries + 1
     B.stats.retried = B.stats.retried + 1
     B.dirty = true               -- the scan does NOT get to say "done" on nothing
+    scheduled = true
+    C_Timer.After(DEBOUNCE, runScan)
+  elseif changed and settleRetries < SETTLE_RETRIES then
+    -- ⚠ A PARTIAL SCAN IS NOT AN ANSWER EITHER — the field defect of 2026-08-03.
+    --
+    -- The empty-scan fence above only fires on ZERO bindings, so a scan that resolved MOST
+    -- spells but not all of them cleared `dirty` and was cached as authoritative forever.
+    -- On a login that is the normal case: the action bars populate over several frames, and
+    -- `B.Start` (from `St.Acquire`) registers ACTIONBAR_SLOT_CHANGED *after* the client has
+    -- already fired it during load — so the slots that arrive late never invalidate anything
+    -- and their spells stay keyless for the whole session.  Reported as exactly that:
+    -- "Crusader Strike and Judgment have no key on login; log out and back in and they do."
+    --
+    -- The generalisation: an EMPTY scan is a special case of a scan that is STILL CHANGING.
+    -- So keep rescanning while the answer keeps moving, and stop as soon as two consecutive
+    -- scans agree.  `scan()` already returns exactly that signal.
+    --
+    -- Converges by construction and costs one extra 180-slot read in the steady case: the
+    -- first scan after any invalidation always reports `changed` (the map was empty or the
+    -- bar really did move), the confirming scan reports unchanged, and the loop ends.  The
+    -- cap bounds the pathological case — a player actively dragging bars around — and the
+    -- counter resets on the next real event so a genuine change always gets a fresh settle.
+    settleRetries = settleRetries + 1
+    B.stats.settled = B.stats.settled + 1
+    B.dirty = true
     scheduled = true
     C_Timer.After(DEBOUNCE, runScan)
   end
@@ -201,6 +233,9 @@ end
 
 local function invalidate()
   B.dirty = true
+  -- A real event means the world moved: give the settle loop a fresh budget so a bar swap
+  -- late in a session gets the same convergence a login does.
+  settleRetries = 0
   if scheduled then
     B.stats.coalesced = B.stats.coalesced + 1
     return

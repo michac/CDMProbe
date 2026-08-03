@@ -154,14 +154,48 @@ describe("HudBinds — the login race", function()
     assert.equals(1, B.stats.retried)
   end)
 
-  it("accepts a scan that resolved something, and stops retrying", function()
+  -- ⚠ THE PARTIAL-SCAN HOLE (field-found 2026-08-03), and why this test changed shape.
+  -- It used to assert `is_false(B.dirty)` — "resolved something" was accepted as final.  But
+  -- on a login the bars populate over several frames, so the first scan routinely resolves
+  -- MOST spells and misses the rest; `dirty` cleared, no event followed (B.Start registers
+  -- the bar events AFTER the client already fired them during load), and those spells stayed
+  -- keyless all session.  Reported as "Crusader Strike and Judgment have no key on login;
+  -- relog and they do."  An empty scan is just a special case of a scan that is STILL
+  -- CHANGING, so the fence is now `changed`, not `bound == 0`.
+  it("owes a CONFIRMING scan after a scan that changed the map", function()
     H.bar[1] = { id = IMMOLATE }
     H.bindings["ACTIONBUTTON1"] = "3"
     B.Start()
     assert.equals("3", B.Get(IMMOLATE))
     assert.equals(1, B.stats.bound)
-    assert.is_false(B.dirty)
-    assert.equals(0, B.stats.retried)
+    assert.equals(0, B.stats.retried, "not the EMPTY retry — this scan resolved something")
+    assert.is_true(B.dirty, "the map moved, so it is not yet known to have settled")
+    assert.equals(1, B.stats.settled)
+  end)
+
+  -- CONVERGENCE is the property that makes the above safe to ship: it must stop on its own,
+  -- not poll for the session.  Two consecutive scans that agree end it.
+  it("converges — a confirming scan that agrees stops the settle loop", function()
+    H.bar[1] = { id = IMMOLATE }
+    H.bindings["ACTIONBUTTON1"] = "3"
+    B.Start()
+    B.Start()                      -- stands in for the timer-driven confirming rescan
+    assert.is_false(B.dirty, "nothing moved on the confirm, so the answer is settled")
+    assert.equals(1, B.stats.settled, "and it did not arm another")
+  end)
+
+  -- THE ACTUAL FIELD CASE, end to end: a slot that arrives late is picked up rather than
+  -- being missed for the session.
+  it("picks up a slot that populates AFTER the first scan", function()
+    H.bar[1] = { id = IMMOLATE }
+    H.bindings["ACTIONBUTTON1"] = "3"
+    B.Start()                      -- Immolate resolved; Wither's slot not there yet
+    assert.is_nil(B.Get(WITHER))
+    H.bar[5] = { id = WITHER }     -- ...arrives a frame later, with no event we heard
+    H.bindings["ACTIONBUTTON5"] = "F"
+    B.Start()                      -- the settle rescan the old code never armed
+    assert.equals("F", B.Get(WITHER))
+    assert.equals("3", B.Get(IMMOLATE))
   end)
 
   -- The BAR IS POPULATED BUT THE BINDINGS ARE NOT — the specific half-loaded shape, and
@@ -197,7 +231,10 @@ describe("HudBinds — the login race", function()
     assert.equals("3", B.Get(IMMOLATE), "a cold cache must not wait for a combat exit")
     assert.equals(1, B.stats.scans)
     assert.equals(1, B.stats.cold)
-    assert.is_false(B.dirty)
+    -- ⚠ dirty stays TRUE here for the settle confirm, not because the combat scan failed —
+    -- the point of this test is that the scan RAN in combat rather than deferring.
+    assert.is_true(B.dirty)
+    assert.equals(1, B.stats.settled)
   end)
 
   it("still defers in combat once the cache is WARM", function()

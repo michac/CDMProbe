@@ -31,6 +31,70 @@ describe("HudNapkin", function()
     assert.equals(50, N.Remaining(SP))
   end)
 
+  ----------------------------------------------------------------------------
+  -- THE CHARGE-CATEGORY FALLBACK — a cooldown GetSpellBaseCooldown cannot see.
+  ----------------------------------------------------------------------------
+  -- ⚠ WHY: a spell whose cooldown lives on a SpellCategory reads base-cooldown 0, so the
+  -- napkin stored nothing, State fell through to the alert edge, and for a CHARGED ability
+  -- that edge is a latch that never clears (the CDM raises `Available` on every charge
+  -- restore and never `OnCooldown`).  Blade of Justice read `ready` on 4419 lines of one
+  -- flight and starved every line below it.
+  describe("the declared charge-category fallback", function()
+    -- `chargeCD` lives on the ACTIVE spec's signal bucket; stub SpecInfo so this file stays
+    -- about the napkin rather than about any one spec's data.
+    local function withDeclared(id, seconds)
+      H.ns.SpecInfo = function(q)
+        if q == id then return { chargeCD = seconds }, true end
+        return { kind = "button" }, false
+      end
+    end
+
+    it("files a countdown when the base cooldown reads 0", function()
+      H.fx.baseCD[SP] = 0
+      withDeclared(SP, 12)
+      succeed(SP)
+      assert.equals(12, N.Remaining(SP))
+      H.advance(5)
+      assert.equals(7, N.Remaining(SP))
+    end)
+
+    -- PROVENANCE STAYS HONEST.  A spec-authored constant is not an observation and must
+    -- never be able to pass for one.
+    it("marks it `declared`, never `cast` or `read`", function()
+      H.fx.baseCD[SP] = 0
+      withDeclared(SP, 12)
+      succeed(SP)
+      assert.equals("declared", N.SourceOf(SP))
+    end)
+
+    -- The live number is a MEASUREMENT and outranks the declaration; the fallback must only
+    -- fill a hole, never overwrite a real read.
+    it("does NOT override a real base cooldown", function()
+      H.fx.baseCD[SP] = 60
+      withDeclared(SP, 12)
+      succeed(SP)
+      assert.equals(60, N.Remaining(SP))
+      assert.equals("cast", N.SourceOf(SP))
+    end)
+
+    -- The Hand-of-Gul'dan case must survive: genuinely no cooldown => still store nothing.
+    it("stores nothing when there is no cooldown and no declaration", function()
+      H.fx.baseCD[SP] = 0
+      withDeclared(999, 12)
+      succeed(SP)
+      assert.is_nil(N.Remaining(SP))
+    end)
+
+    -- An OBSERVED edge still wins outright — the fence that makes a constant safe.
+    it("is cleared by an observed Available edge, like any other record", function()
+      H.fx.baseCD[SP] = 0
+      withDeclared(SP, 12)
+      succeed(SP)
+      N.Clear(SP)
+      assert.is_nil(N.Remaining(SP))
+    end)
+  end)
+
   it("a read seed overwrites a cast estimate (precedence 2)", function()
     H.fx.baseCD[SP] = 60
     succeed(SP)
