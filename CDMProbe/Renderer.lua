@@ -381,18 +381,24 @@ end
 -- scaled subtree cures the artefact.  The rig must use THIS constructor rather than roll
 -- its own, or the preview is not the shipped pop and proves nothing about it — the exact
 -- way the archived `rt fx` rig managed to be wrong for six builds.
-local function buildPop(layer)
-  local g = layer:CreateAnimationGroup()
+-- ⚠ `peak`/`secs` are PARAMETERS only for the lab.  The shipped call passes neither and
+-- gets POP_PEAK/POP_SECS.  They exist because the fix-preview panel has to try a peak the
+-- shipped cue does not use: a dot-only pop at 1.35x moves a 12px dot by four pixels for
+-- 90ms, which is invisible — and an invisible preview cannot be judged, only misread as
+-- "the fix works" when in truth nothing happened.
+local function buildPop(frame, peak, secs)
+  peak, secs = peak or POP_PEAK, secs or POP_SECS
+  local g = frame:CreateAnimationGroup()
   local up, down = g:CreateAnimation("Scale"), g:CreateAnimation("Scale")
   local setFrom, setTo = scaleSetters(up)
   if not setFrom then return nil end
   setFrom(up, 1, 1)
-  setTo(up, POP_PEAK, POP_PEAK)
-  setFrom(down, POP_PEAK, POP_PEAK)
+  setTo(up, peak, peak)
+  setFrom(down, peak, peak)
   setTo(down, 1, 1)
   for i, a in ipairs({ up, down }) do
     a:SetOrder(i)
-    a:SetDuration(POP_SECS / 2)
+    a:SetDuration(secs / 2)
     a:SetOrigin("CENTER", 0, 0)
   end
   return g
@@ -675,6 +681,8 @@ end
 -- sprite and RING_SCALE and both periods are invalidated together; a spokier sprite needs
 -- longer periods in proportion.
 local GLOW_ART = "Interface\\AddOns\\CDMProbe\\Media\\fx\\glow\\star_07.tga"
+R.RING_ART = GLOW_ART   -- public for `/cdmp rt pop`'s BURST candidate, which flares the
+                        -- same sprite so the transient belongs to the same visual family
 
 -- ⚠ THE RING HAS A HOLE, AND IT CANNOT BE FILLED.  Its transparent centre is baked into
 -- the art, and no tint or blend mode paints it in (SetVertexColor MULTIPLIES — it cannot

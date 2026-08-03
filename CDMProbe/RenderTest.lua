@@ -326,15 +326,15 @@ end
 -- Scale animating 1 -> 1 still reproduces, so what is under test is the PRESENCE of a
 -- running animation, not anything you can see.  A probe that also moved something would
 -- confound the two back together.
-local POP_LAB_ICONS = 7
+local POP_LAB_ICONS = 9
 local POP_LAB_INTERVAL = 2.0
 local POP_LAB_CAPTIONS = {
   "1 STEADY", "2 AUTO-POP 2s", "3 CLICK=POP", "4 CLICK=SOLO", "5 CLICK=ALPHA", "6 CLICK=FAR",
-  "7 CLICK=FIX?",
+  "7 DOT ONLY", "8 FLASH", "9 BURST",
 }
 -- The PERSISTENT panels — the ones carrying a ring that is measurable end to end.  Panel 4
 -- is absent by design: it only exists between a click and its teardown.
-local POP_LAB_KEYS = { "fake1", "fake2", "fake3", "fake5", "fake6", "fake7" }
+local POP_LAB_KEYS = { "fake1", "fake2", "fake3", "fake5", "fake6", "fake7", "fake8", "fake9" }
 
 -- The resting DrawList: every persistent panel lit, panel 4 empty until it is clicked.
 local function popLabSteady()
@@ -391,51 +391,130 @@ local function probeFarScale(rig)
   firedProbe("far-scale", f._probe)
 end
 
--- PANEL 7 — THE FIX PREVIEW.  If the trigger really is a Scale animation on an ANCESTOR of
--- the rotating textures, then a cue whose rings are NOT in the scaled subtree must be
--- immune — and that is the whole proposed fix, tested here before any of it is shipped.
--- This restructures ONE cue the way the Renderer would:
---     layer ── disc + both rings   (anchored to the LAYER, never scaled)
---       └── popFrame ── dot        (the ONLY thing the pop touches)
--- ⚠ It plays `R.BuildPop` — the SHIPPED constructor, same peak, same duration, same setter
--- resolution — on that frame.  Rolling a local imitation here is precisely how the archived
--- `rt fx` rig ended up A/B-ing against something that was not the shipped path.
-local function fixPreview(r, key)
+-- PANELS 7-9 — THE THREE CANDIDATE TRANSIENTS.
+--
+-- ⚠ WHY THE STRUCTURAL FIX ALONE IS NOT ENOUGH, and it took a flight to see it: taking the
+-- rings out of the scaled subtree DOES cure the artefact (panel 7 fires, client reports
+-- playing=true, the spin stays clean) — and it also deletes the effect.  The pop reads
+-- because the RINGS grow; a 40px and a 60px ring swelling is the whole punch.  Scale only
+-- the 12px dot and you move four pixels for 90ms, which is invisible.  So the rings growing
+-- IS the pop and IS the bug, and they cannot both be kept.  What is left is a design
+-- question, not a structural one: what else reads as strongly?
+--
+-- Two channels are now MEASURED SAFE, which is what these are built out of:
+--   * an ALPHA animation on the cue layer — panel 5, fired, no artefact.
+--   * a SCALE on a region that is not an ancestor of the rings — panels 6 and 7, same.
+--
+--   7 DOT      the structural fix, at a peak big enough to actually see.  Honest baseline:
+--              is a dot-only punch enough on its own?
+--   8 FLASH    no scaling at all — an additive flare over the cue that alphas up and back.
+--              A brightness transient instead of a size one, on the safe channel.
+--   9 BURST    a one-shot ring that flares OUTWARD from the cue and fades — its own
+--              texture, its own Scale, a sibling of the spinning rings rather than a
+--              parent of them.  Closest in feel to the pop everyone actually liked.
+local DOT_POP_PEAK, DOT_POP_SECS = 2.4, 0.22
+local BURST_PEAK,   BURST_SECS   = 2.6, 0.34
+local FLASH_SECS = 0.26
+
+-- Shared: a candidate must never invent a colour.  Every lab cue is ROTATION, so this reads
+-- the renderer's OWN theme rather than hardcoding the green — if the token is ever retuned
+-- the candidates move with it instead of quietly drifting off the cue they belong to.
+local function cueColor(r)
+  return r.theme.ROTATION
+end
+
+-- 7 — the structural fix, visible.  Moves the DOT into a child frame and the rings OFF the
+-- dot onto the layer, then pops that frame with the SHIPPED constructor at a bigger peak.
+local function candDot(r, key)
   local layer, dot = r.cueLayers[key], r.cueFrames[key]
-  if not (layer and dot) then
-    ns.Print("rt pop: panel 7 has no cue to restructure — preview did NOT fire")
-    return
-  end
+  if not (layer and dot) then ns.Print("rt pop: panel 7 has no cue — did NOT fire"); return end
   local f = layer._fixFrame
   if not f then
     f = CreateFrame("Frame", nil, layer)
     f:SetSize(dot:GetWidth(), dot:GetHeight())
     f:SetPoint("CENTER", layer, "CENTER", 0, 0)
-    f:SetFrameLevel(layer:GetFrameLevel())
+    f:SetFrameLevel(layer:GetFrameLevel() + 1)   -- the dot must stay ON TOP of the rings
     layer._fixFrame = f
-    layer._fixAnim = R.BuildPop(f)
+    layer._fixAnim = R.BuildPop(f, DOT_POP_PEAK, DOT_POP_SECS)
   end
-  -- The DOT moves into the popped subtree...
   dot:SetParent(f)
   dot:ClearAllPoints()
   dot:SetPoint("CENTER", f, "CENTER", 0, 0)
-  -- ...and the rings + disc come OFF the dot, onto the layer.  They were centred on the
-  -- dot, so without this they would inherit the pop through the ANCHOR even though they
-  -- are no longer under the scaled frame — the wrinkle that would have made a
-  -- straight-to-production version of this fix look like it had not worked.
+  -- ⚠ The rings come OFF the dot onto the layer.  They are centred on the dot today, so
+  -- without this they would inherit the pop through the ANCHOR even once they are out of
+  -- the scaled subtree — the wrinkle that would make this fix look like it had failed.
   for _, t in ipairs({ r.cueRingIn[key], r.cueRingOut[key], r.cueDiscs[key] }) do
-    if t then
-      t:ClearAllPoints()
-      t:SetPoint("CENTER", layer, "CENTER", 0, 0)
-    end
+    if t then t:ClearAllPoints(); t:SetPoint("CENTER", layer, "CENTER", 0, 0) end
   end
-  if not layer._fixAnim then
-    ns.Print("rt pop: panel 7 got no pop group (no usable Scale setter) — preview is INERT")
-    return
-  end
+  if not layer._fixAnim then ns.Print("rt pop: panel 7 got no pop group — INERT"); return end
   layer._fixAnim:Stop()
   layer._fixAnim:Play()
-  firedProbe("fix-preview (dot-only subtree)", layer._fixAnim)
+  firedProbe(("dot pop %.1fx"):format(DOT_POP_PEAK), layer._fixAnim)
+end
+
+-- 8 — a brightness transient.  NOTHING scales; an additive flare rides the layer and its
+-- ALPHA is animated, the channel panel 5 measured safe.
+local function candFlash(r, key)
+  local layer = r.cueLayers[key]
+  if not layer then ns.Print("rt pop: panel 8 has no cue — did NOT fire"); return end
+  local t = layer._flashTex
+  if not t then
+    t = layer:CreateTexture(nil, "OVERLAY", nil, 1)
+    t:SetTexture(R.RING_ART)
+    t:SetBlendMode("ADD")
+    local size = (r.cueRingIn[key] and r.cueRingIn[key]:GetWidth()) or 40
+    t:SetSize(size, size)
+    t:SetPoint("CENTER", layer, "CENTER", 0, 0)
+    local col = cueColor(r)
+    t:SetVertexColor(col[1], col[2], col[3], 1)
+    local g = t:CreateAnimationGroup()
+    local up, down = g:CreateAnimation("Alpha"), g:CreateAnimation("Alpha")
+    up:SetFromAlpha(0);   up:SetToAlpha(1);   up:SetOrder(1); up:SetDuration(FLASH_SECS * 0.25)
+    down:SetFromAlpha(1); down:SetToAlpha(0); down:SetOrder(2); down:SetDuration(FLASH_SECS * 0.75)
+    g:SetScript("OnFinished", function() t:SetAlpha(0) end)
+    t:SetAlpha(0)
+    layer._flashTex, layer._flashAnim = t, g
+  end
+  t:Show()
+  layer._flashAnim:Stop()
+  layer._flashAnim:Play()
+  firedProbe("alpha flash (no scaling at all)", layer._flashAnim)
+end
+
+-- 9 — a one-shot ring flaring outward.  Its Scale lives on its OWN texture, a SIBLING of
+-- the spinning rings rather than an ancestor, which panels 6 and 7 measured safe.
+local function candBurst(r, key)
+  local layer = r.cueLayers[key]
+  if not layer then ns.Print("rt pop: panel 9 has no cue — did NOT fire"); return end
+  local t = layer._burstTex
+  if not t then
+    t = layer:CreateTexture(nil, "ARTWORK", nil, 2)
+    t:SetTexture(R.RING_ART)
+    t:SetBlendMode("ADD")
+    local size = (r.cueRingIn[key] and r.cueRingIn[key]:GetWidth()) or 40
+    t:SetSize(size, size)
+    t:SetPoint("CENTER", layer, "CENTER", 0, 0)
+    local col = cueColor(r)
+    t:SetVertexColor(col[1], col[2], col[3], 1)
+    local g = R.BuildPop(t, BURST_PEAK, BURST_SECS * 2)   -- grow-half only; see below
+    if g then
+      -- ⚠ ONE-WAY, not a there-and-back.  BuildPop is symmetric by design; a burst has to
+      -- expand and DIE, so the return half is removed by fading the whole texture out over
+      -- the same window and hiding it at the end.
+      local fade = t:CreateAnimationGroup()
+      local a = fade:CreateAnimation("Alpha")
+      a:SetFromAlpha(0.9); a:SetToAlpha(0); a:SetDuration(BURST_SECS)
+      fade:SetScript("OnFinished", function() t:SetAlpha(0); t:Hide(); g:Stop() end)
+      layer._burstFade = fade
+    end
+    t:SetAlpha(0)
+    layer._burstTex, layer._burstAnim = t, g
+  end
+  if not layer._burstAnim then ns.Print("rt pop: panel 9 got no scale group — INERT"); return end
+  t:Show()
+  layer._burstAnim:Stop(); layer._burstAnim:Play()
+  layer._burstFade:Stop(); layer._burstFade:Play()
+  firedProbe(("burst %.1fx + fade"):format(BURST_PEAK), layer._burstAnim)
 end
 
 --------------------------------------------------------------------------------
@@ -576,10 +655,15 @@ local function startPopLab()
   rig.icons[6]:SetScript("OnMouseDown", function()
     if alive() then probeFarScale(rig) end
   end)
-  rig.icons[7]:EnableMouse(true)
-  rig.icons[7]:SetScript("OnMouseDown", function()
-    if alive() then fixPreview(r, "fake7") end
-  end)
+  -- PANELS 7-9 — the three candidate transients.  Each is clickable and each says what it
+  -- fired, so "I clicked and saw nothing" is always distinguishable from "it did not run".
+  for i, fn in ipairs({ candDot, candFlash, candBurst }) do
+    local key = "fake" .. (i + 6)
+    rig.icons[i + 6]:EnableMouse(true)
+    rig.icons[i + 6]:SetScript("OnMouseDown", function()
+      if alive() then fn(r, key) end
+    end)
+  end
 end
 
 -- `/cdmp rt [<name>|rotate|pop|off|list]` — render a fixture; bare = the first one
@@ -623,10 +707,9 @@ function ns.RenderTest(arg)
   if arg == "pop" then
     startPopLab()
     ns.Printf("rt: |cffffffffpop lab|r — 1 STEADY · 2 AUTO-POP %.1fs · 3 CLICK=pop · "
-      .. "4 CLICK=solo · 5 CLICK=alpha probe · 6 CLICK=far probe · |cffffff00 7 CLICK=FIX PREVIEW|r",
-      POP_LAB_INTERVAL)
-    ns.Print("  |cffffffff7 is the proposed FIX|r: the same shipped pop, on a frame that owns "
-      .. "ONLY the dot — rings out of the scaled subtree.  Smooth after a click = fixed.")
+      .. "4 CLICK=solo · 5+6 safety probes · |cffffff00 7 DOT · 8 FLASH · 9 BURST|r", POP_LAB_INTERVAL)
+    ns.Print("  |cffffffff7/8/9 are CANDIDATE TRANSIENTS|r — none of them scales a ring, so none "
+      .. "should reproduce the artefact.  Click each: which one reads as a pop?")
   ns.Print("  |cffffffff/cdmp rt pop stats|r measures both rings + the beat.  Every probe now "
       .. "prints whether it actually fired.")
     return
