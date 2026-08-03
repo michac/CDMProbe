@@ -162,9 +162,47 @@ local function maybeNotifyHero()
     ns.detectedSpecName or "spec", hero or res, how or "?")
 end
 
+--------------------------------------------------------------------------------
+-- THE SPLIT CADENCE (roster-state-plan Phase 5 §C8)
+--------------------------------------------------------------------------------
+-- The pipeline runs at 10 Hz because that is what a rotation cue needs IN A PULL.  Out of
+-- combat nothing is moving, and `State.Build`'s per-row client reads are the addon's whole
+-- cost — ~7,000 guarded calls a second, re-asking questions that cannot change between two
+-- frames of standing still.  So out of combat the PULSE refreshes at ~2 Hz and the rest of
+-- the tick (layout, binder, renderer, the cue sound, the decision log) still runs every
+-- tick over the last one, which keeps the animations and any newly-pooled frame correct.
+--
+-- ⚠ IN COMBAT THERE IS NO THROTTLE AT ALL.  Everything that moves a decision — the napkin
+-- countdown, the alert edges, power, the cast history — moves on the 10 Hz rhythm, and the
+-- reads that were expensive out of combat are the ones that short-circuit on
+-- `InCombatLockdown` anyway (`ns.ReadCooldown`, `ns.ReadCharges`, `ns.ReadGCD`).  The saving
+-- is exactly where the cost is, which is why the seam is the combat boundary.
+--
+-- ⚠ AND `State.PumpFrames()` RUNS EVERY TICK REGARDLESS.  `installAlertHooks` used to live
+-- inside Build; leaving it there and throttling Build would leave a re-pooled or newly
+-- created item frame unhooked for up to half a second — and for Retribution the alert edges
+-- are the ONLY in-combat readiness channel four of its buttons have.  See St.PumpFrames.
+local OOC_BUILD_PERIOD = 0.5      -- ~2 Hz out of combat (10 Hz in it)
+D.lastBuild = 0
+D.lastPulse = nil
+
+local function pulseNow()
+  local now = GetTime()
+  if D.lastPulse and not InCombatLockdown()
+      and (now - (D.lastBuild or 0)) < OOC_BUILD_PERIOD then
+    return D.lastPulse
+  end
+  D.lastBuild = now
+  D.lastPulse = ns.State.Build(false)
+  return D.lastPulse
+end
+
+D.PulseNow = pulseNow      -- test seam (the cadence proof)
+
 local function tick()
   maybeNotifyUnsupported()
-  local pulse = ns.State.Build(false)
+  ns.State.PumpFrames()      -- every tick, whatever the build cadence — see above
+  local pulse = pulseNow()
   local guidance = D.coach:Compute(pulse)
   maybeNotifyHero()          -- after Compute: the brain's Context is what publishes it
   -- Live Layout + registry from the same icon-viewer walk (Phase 5a).  Register every
@@ -224,6 +262,9 @@ function ns.SetHud(on)
   ns.db.hud = on
   if on == D.on then return end
   D.on = on
+  -- The OOC cadence cache never survives a toggle: a pulse captured before the HUD went off
+  -- describes a world that may have moved (a respec, a spec swap, a whole session).
+  D.lastPulse, D.lastBuild = nil, 0
   if on then
     ensureInstances()
     ns.State.Acquire()                    -- ingestion live (State's ref-counted lifecycle)

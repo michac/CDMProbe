@@ -159,7 +159,13 @@ local WITHER        = 445474      -- the pool's Hellcaller candidate (§2.7)
 local WITHER_CAST   = 445468      -- …and the id the bar actually holds
 local IMP_LORD      = 1276452     -- Demonology; cid 182891 carries tooltip 1288945
 local SINGE_MAGIC   = 132411      -- the pet dispel that takes over the Grimoire button
-local TYRANT        = 265187
+local TYRANT        = 265187      -- Demonology's Summon Demonic Tyrant (spec 1 cases only)
+-- ⚠ THE SUMMON FOR A DESTRUCTION CASE HAS TO BE DESTRUCTION'S.  Several cases used Tyrant
+-- under `spec = 3` for its "never-cast summon" shape, which was harmless while State
+-- anchored on the CDM database and folded whatever it enumerated.  Under the roster anchor
+-- (Phase 5) `abilities` carries only what the ACTIVE spec declares, so a Demonology id in a
+-- Destruction case yields no row at all — a green assertion about nothing.
+local SUMMON_INFERNAL = 1122
 local DEMONIC_CORE  = 264173      -- cid 777: selfAura = true, hasAura = FALSE (§7)
 local BACKDRAFT     = 117828      -- cid 18797, TrackedBuff — the measured `auraDataUnit=player`
 local GCD           = 61304
@@ -184,17 +190,19 @@ local A = {
     name = "family/an-essential-row-is-the-pressable-representative",
     status = "green",
     spec = 3,
-    pins = "A tab-1 row is a press: it reaches `abilities` under its base spellID and "
-        .. "carries the cooldownID the Binder anchors to.",
+    pins = "A tab-1 row is a press: the declared ability finds it, reaches `abilities` under "
+        .. "the id the SPEC named, and carries the cooldownID the Binder anchors to.",
     ref = "cooldown-manager.md §1.1 — tab 1 answers \"can I press this\"",
+    world = { known = { [CHAOS_BOLT] = true } },
     rows = {
       { cid = 903, category = "Essential", frame = {},
         info = { spellID = CHAOS_BOLT, isKnown = true } },
     },
     expect = {
       abilities = { [CHAOS_BOLT] = { spellID = CHAOS_BOLT, category = "Essential",
+                                     identity = CHAOS_BOLT,
                                      display = { cooldownID = 903 } } },
-      dropped   = { [CHAOS_BOLT] = ABSENT },
+      known     = { [CHAOS_BOLT] = true },
     },
   },
 
@@ -217,20 +225,49 @@ local A = {
   },
 
   {
-    name = "family/a-trackedbuff-row-is-never-a-press-and-never-a-drop",
+    name = "family/a-tab2-aura-entry-is-never-a-press",
     status = "green",
     spec = 3,
-    pins = "A tab-2 row has no pressable member by construction; excluding it is not a "
-        .. "filter drop, and reporting it as one would drown the real signal.",
+    pins = "A tab-2 row answers \"is this running\", and an ability the roster declares as "
+        .. "`kind = \"aura\"` is an INPUT to a decision, never a press — so it stays in the "
+        .. "raw CDM view and claims no `abilities` entry.  (Under the roster anchor this is "
+        .. "the roster's statement, not the CDM's: Immolate is ALSO tracked as a tab-2 row, "
+        .. "and it is declared a button, so it does get one.)",
     ref = "cooldown-manager.md §1.1 — tab 2 answers \"is this running\"",
+    world = { known = { [BACKDRAFT] = true } },
+    rows = {
+      { cid = 18797, category = "TrackedBuff", frame = {},
+        info = { spellID = BACKDRAFT, isKnown = true } },
+    },
+    expect = {
+      raw       = { [18797] = { category = "TrackedBuff", spellID = BACKDRAFT } },
+      abilities = { [BACKDRAFT] = ABSENT },
+    },
+  },
+
+  {
+    name = "family/a-declared-button-the-cdm-tracks-only-as-a-bar-still-gets-a-row",
+    status = "green",
+    fixed = "Phase 5 §6",
+    spec = 3,
+    pins = "THE INVERSION, in one row.  Immolate is declared a BUTTON and the Cooldown "
+        .. "Manager tracks it as the DoT aura on a tab-2 bar, so the old CDM-anchored fold "
+        .. "— whose representative had to be Essential or Utility — gave the spec's spine no "
+        .. "`abilities` entry at all.  Anchored on the roster it has one, keyed by the id the "
+        .. "spec named, carrying the cooldownID its alert edges arrive on; the `cd` stays "
+        .. "honestly `unknown` because tab 2 has no spell-cooldown source in its cascade.",
+    ref = "cooldown-manager.md §1.1 + §3.2 — the tab-2 value cascade has no cooldown rung",
+    world = { known = { [IMMOLATE_AURA] = true } },
     rows = {
       { cid = 133441, category = "TrackedBuff", frame = {},
         info = { spellID = IMMOLATE_AURA, isKnown = true } },
     },
     expect = {
       raw       = { [133441] = { category = "TrackedBuff", spellID = IMMOLATE_AURA } },
-      abilities = { [IMMOLATE_AURA] = ABSENT },
-      dropped   = { [IMMOLATE_AURA] = ABSENT },
+      abilities = { [IMMOLATE_AURA] = { identity = IMMOLATE_AURA, category = "TrackedBuff",
+                                        cd = { state = "unknown", source = "none" },
+                                        display = { cooldownID = 133441 } } },
+      known     = { [IMMOLATE_AURA] = true },
     },
   },
 
@@ -593,15 +630,17 @@ local B = {
     spec = 3,
     pins = "characterisation: adopting an override as the DISPLAY identity is the "
         .. "project's own conservatism, not Blizzard's — Blizzard would show it.  An id "
-        .. "the spec table does not declare is not an identity we will key rows under.",
+        .. "the spec table does not declare is not an identity we will key rows under, and "
+        .. "under the roster anchor it is not one we will build a row for either.",
     ref = "cooldown-manager.md §2 (the ladder this deliberately narrows) + §8 rule 2",
+    world = { known = { [CHAOS_BOLT] = true } },
     rows = {
       { cid = 66181, category = "Essential", frame = {},
-        info = { spellID = SHADOW_BOLT, isKnown = true, overrideSpellID = 999999 } },
+        info = { spellID = CHAOS_BOLT, isKnown = true, overrideSpellID = 999999 } },
     },
     expect = {
       raw       = { [66181] = { liveSpellID = 999999 } },
-      abilities = { [SHADOW_BOLT] = { identity = SHADOW_BOLT }, [999999] = ABSENT },
+      abilities = { [CHAOS_BOLT] = { identity = CHAOS_BOLT }, [999999] = ABSENT },
     },
   },
 
@@ -673,13 +712,20 @@ local B = {
 --------------------------------------------------------------------------------
 local G = {
   {
-    name = "draw/no-item-frame-is-a-reported-drop-not-a-silence",
+    name = "draw/no-item-frame-means-WE-draw-it-keeping-the-rows-real-readings",
     status = "green",
+    fixed = "Phase 5 §C7",
     spec = 3,
     pins = "A cooldownID with no item frame in any live viewer has nothing for the Binder "
-        .. "to anchor to.  The row leaves `abilities` — and says why, so a wrong filter "
-        .. "shows up in the next capture instead of being silently absent.",
+        .. "to anchor to — which is a DISPLAY limit, and it used to be enforced at the "
+        .. "DECISION layer: the row left `abilities` as a `no-icon` drop and, if the fences "
+        .. "allowed, a from-scratch STATIC row was synthesised in its place, throwing away "
+        .. "the cooldown, charges and alert edges the real row was carrying.  Now the row "
+        .. "stays, keeps every reading, and merely takes OUR negative display handle.",
     ref = "cooldown-manager.md §7 Tier 2 — item.cooldownID is the binding key",
+    world = { known = { [CHAOS_BOLT] = true, [INCINERATE] = true },
+              cd = { [INCINERATE] = { duration = 30, startTime = 990 },
+                     [GCD] = READY_GCD }, now = 1000 },
     rows = {
       { cid = 903, category = "Essential", frame = {},
         info = { spellID = CHAOS_BOLT, isKnown = true } },
@@ -688,8 +734,14 @@ local G = {
     },
     expect = {
       raw       = { [904] = { displayable = false }, [903] = { displayable = true } },
-      abilities = { [INCINERATE] = ABSENT },
-      dropped   = { [INCINERATE] = "no-icon" },
+      abilities = { [INCINERATE] = {
+        displayable = false, virtual = true,
+        display = { cooldownID = -INCINERATE },     -- ours to draw…
+        -- …and the row's own measurement survives, which is the whole point: a synthesised
+        -- replacement would have claimed `ready` here.
+        cd = { state = "on-cooldown", source = "live", readable = true },
+      } },
+      virtual   = { INCINERATE },
     },
   },
 
@@ -701,14 +753,20 @@ local G = {
         .. "mid-pulse), not that nothing on the board can be drawn.  Nothing is registered "
         .. "while a viewer is hidden, so this state is normal, not exceptional.",
     ref = "cooldown-manager.md §4 — \"Nothing is registered while a viewer is hidden\"",
+    world = { known = { [CHAOS_BOLT] = true } },
     rows = {
       { cid = 903, category = "Essential", frame = false,
         info = { spellID = CHAOS_BOLT, isKnown = true } },
     },
     expect = {
       abilities = { [CHAOS_BOLT] = { displayable = false } },
-      dropped   = { [CHAOS_BOLT] = ABSENT },
+      -- ⚠ AND NOTHING IS SYNTHESISED EITHER.  With no frame map we cannot see what Blizzard
+      -- is drawing, so "we would draw our own icon" is a negative over a refused read — and
+      -- acting on it would put OUR icon on screen for the whole rotation at login.
+      virtual   = {},
+      known     = { [CHAOS_BOLT] = true },
     },
+    exact = { virtual = true },
   },
 
   {
@@ -939,17 +997,44 @@ local C = {
     ref = "cooldown-manager.md §7 Tier 3 — readable OUT of combat, secret IN",
     rows = {
       { cid = 903, category = "Essential", frame = {},
-        info = { spellID = TYRANT, isKnown = true } },
+        info = { spellID = SUMMON_INFERNAL, isKnown = true } },
     },
-    world = { now = 1000, cd = { [TYRANT] = { duration = 0, startTime = 0 },
-                                 [GCD] = READY_GCD } },
+    world = { now = 1000, known = { [SUMMON_INFERNAL] = true },
+              cd = { [SUMMON_INFERNAL] = { duration = 0, startTime = 0 },
+                     [GCD] = READY_GCD } },
     script = { { build = true }, { combat = true }, { advance = 2 }, { build = true } },
     expect = {
-      abilities = { [TYRANT] = { cd = { state = "ready", remaining = 0, source = "live" } } },
-      -- Two reads TOTAL across both pulses — the spell and the GCD, both on the OOC one.
-      -- The in-combat pulse asked nothing at all and still answered `ready`.
-      asked     = { cooldownCount = 2, gcdCount = 1, cooldown = { [TYRANT] = true } },
+      abilities = { [SUMMON_INFERNAL] = { cd = { state = "ready", remaining = 0,
+                                                 source = "live" } } },
+      -- ONE GCD read across both pulses, on the OOC one; the in-combat pulse asked nothing
+      -- at all and still answered `ready`.  ⚠ `cooldownCount` is NOT asserted here any more:
+      -- under the roster anchor the OOC pulse also reads the roster's UNTRACKED half, so the
+      -- total is a function of how many buttons Destruction declares rather than of this
+      -- case.  "The in-combat pulse takes no read" has its own case below, where the count
+      -- is exactly 0 and cannot drift.
+      asked     = { gcdCount = 1, cooldown = { [SUMMON_INFERNAL] = true } },
     },
+  },
+
+  {
+    name = "combat/an-in-combat-pulse-takes-no-cooldown-read-at-all",
+    status = "green",
+    spec = 3,
+    pins = "`C_Spell.GetSpellCooldown` reads secret in restricted combat (13/13 out, 0/13 "
+        .. "in), so both `ns.ReadCooldown` and `ns.ReadGCD` short-circuit on "
+        .. "InCombatLockdown rather than burning a guarded call that can only refuse.  A "
+        .. "pulse that never left combat therefore asks the client NOTHING about cooldowns "
+        .. "— every readiness answer in a pull comes from the OOC baseline, the napkin or an "
+        .. "observed alert edge.",
+    ref = "cooldown-manager.md §7 Tier 3 — readable OUT of combat, secret IN",
+    rows = {
+      { cid = 903, category = "Essential", frame = {},
+        info = { spellID = SUMMON_INFERNAL, isKnown = true } },
+    },
+    world = { combat = true, known = { [SUMMON_INFERNAL] = true },
+              cd = { [SUMMON_INFERNAL] = { duration = 0, startTime = 0 },
+                     [GCD] = READY_GCD } },
+    expect = { asked = { cooldownCount = 0, gcdCount = 0 } },
   },
 
   {
@@ -1078,13 +1163,13 @@ local C = {
        .. "firing in restricted combat",
     rows = {
       { cid = 903, category = "Essential", frame = {},
-        info = { spellID = TYRANT, isKnown = true } },
+        info = { spellID = SUMMON_INFERNAL, isKnown = true } },
     },
-    world = { combat = true },
+    world = { combat = true, known = { [SUMMON_INFERNAL] = true } },
     script = { { alert = "Available", cid = 903 }, { build = true } },
     expect = {
-      abilities = { [TYRANT] = { cd = { state = "ready", remaining = 0, readable = true,
-                                        source = "live" } } },
+      abilities = { [SUMMON_INFERNAL] = { cd = { state = "ready", remaining = 0,
+                                                 readable = true, source = "live" } } },
     },
   },
 
@@ -1202,19 +1287,83 @@ local D = {
   },
 
   {
-    name = "read/isKnown-false-is-the-one-value-that-removes-a-row",
+    name = "read/an-unlearned-ability-is-MARKED-not-deleted",
     status = "green",
+    fixed = "Phase 5 §6.1",
     spec = 3,
-    pins = "characterisation: `isKnown` is a struct field with no consumer in Blizzard's "
-        .. "own Lua, so what we do with it is our invention.  We trust it in exactly one "
-        .. "direction — an explicit FALSE removes the row, because a phantom ability reads "
-        .. "ready forever and wins the priority list.",
+    pins = "characterisation, and it INVERTED in Phase 5.  Knownness used to DELETE the row "
+        .. "(`isKnown == false` was the one struct value trusted, because a phantom ability "
+        .. "reads ready forever and wins the priority list).  Deleting is what made the "
+        .. "failure invisible: an absent row and a row nobody wanted look identical.  So the "
+        .. "row now stays, carrying `known = false`, and it is `Coach.Classify` that refuses "
+        .. "it as a candidate — the same protection, with the evidence still on the pulse, "
+        .. "in the decision log's DR: column and in Coverage.",
     ref = "cooldown-manager.md §7 Tier 1 (the struct's fields) + §8 rule 8",
     rows = { { cid = 903, category = "Essential", frame = {},
                info = { spellID = SOUL_FIRE, isKnown = false } } },
     expect = {
-      abilities = { [SOUL_FIRE] = ABSENT },
-      dropped   = { [SOUL_FIRE] = "unlearned" },
+      abilities = { [SOUL_FIRE] = { identity = SOUL_FIRE, known = false } },
+      known     = { [SOUL_FIRE] = false },
+    },
+  },
+
+  {
+    name = "read/the-spellbook-outranks-the-struct-flag-for-knownness",
+    status = "green",
+    fixed = "Phase 5 §6.1",
+    spec = 3,
+    pins = "THE INVERSION APPLIED TO KNOWNNESS ITSELF.  `C_SpellBook.IsSpellKnown(id)` asks "
+        .. "about THE ABILITY; a row's `isKnown` describes the row's BASE, which for a "
+        .. "display-overridden row is a different spell entirely — on Hellcaller cid 66181's "
+        .. "base (Shadow Bolt) is unlearned while the ability it draws is pressed every GCD.  "
+        .. "So the spellbook is the authority and the struct flag is the fallback for when it "
+        .. "refuses.  Here the two disagree in the harmless direction and the spellbook wins.",
+    ref = "SpellBookDocumentation.lua:684 — IsSpellKnown, SecretArguments = "
+       .. "\"AllowedWhenUntainted\"; cooldown-manager.md §7 Tier 1 (the struct's fields)",
+    world = { known = { [SOUL_FIRE] = true } },
+    rows = { { cid = 903, category = "Essential", frame = {},
+               info = { spellID = SOUL_FIRE, isKnown = false } } },
+    expect = {
+      raw   = { [903] = { isKnown = false } },   -- the struct's own answer, carried verbatim
+      known = { [SOUL_FIRE] = true },            -- …and overruled for the ability
+    },
+  },
+
+  {
+    name = "read/a-refused-spellbook-falls-back-to-the-struct-flag",
+    status = "green",
+    fixed = "Phase 5 §6.1",
+    spec = 3,
+    pins = "`IsSpellKnown` CAN refuse — it is `SecretArguments = \"AllowedWhenUntainted\"`, "
+        .. "and load order and the respec-scoped cache window are two more ways the answer "
+        .. "comes back empty.  A refusal must not become a verdict, so the CDM's own flag is "
+        .. "consulted next; only when BOTH are silent does the ability read \"unknown\".",
+    ref = "SpellBookDocumentation.lua:684 — IsSpellKnown, SecretArguments = "
+       .. "\"AllowedWhenUntainted\"",
+    world = { throws = { "C_SpellBook.IsSpellKnown" } },
+    rows = { { cid = 903, category = "Essential", frame = {},
+               info = { spellID = CHAOS_BOLT, isKnown = true } } },
+    expect = { known = { [CHAOS_BOLT] = true } },
+  },
+
+  {
+    name = "read/neither-source-answering-is-unknown-never-a-guess",
+    status = "green",
+    fixed = "Phase 5 §6.1",
+    spec = 3,
+    pins = "THE THIRD VALUE, and the whole reason §6.1 exists.  With the spellbook refusing "
+        .. "and no struct flag either, both of the old defaults are wrong: dropping silently "
+        .. "deletes a real ability, keeping reintroduces the untalented-Soul-Fire failure.  "
+        .. "So the answer is a POSITIVE `\"unknown\"` — the string, not nil, because nil has "
+        .. "to keep meaning \"nobody asked\" — and the Coach caps it at available rather than "
+        .. "either filtering or trusting it.",
+    ref = "cooldown-manager.md §8 rule 5 — trust and meaning are independent axes",
+    world = { throws = { "C_SpellBook.IsSpellKnown" } },
+    rows = { { cid = 903, category = "Essential", frame = {},
+               info = { spellID = CHAOS_BOLT } } },
+    expect = {
+      raw   = { [903] = { isKnown = ABSENT } },
+      known = { [CHAOS_BOLT] = "unknown" },
     },
   },
 
@@ -1248,9 +1397,10 @@ local D = {
         .. "knowing before a design is built on the three values.  Fails in the "
         .. "UNDER-SHOW direction: a real button silently disappears.",
     ref = "cooldown-manager.md §7 Tier 1 — the documented struct return",
+    world = { known = { [CHAOS_BOLT] = true } },
     rows = { { cid = 903, category = "Essential", frame = {},
                info = { spellID = CHAOS_BOLT } } },
-    expect = { raw = { [903] = { isKnown = ABSENT } }, dropped = { [CHAOS_BOLT] = ABSENT } },
+    expect = { raw = { [903] = { isKnown = ABSENT } }, known = { [CHAOS_BOLT] = true } },
   },
 
   {
@@ -1744,12 +1894,12 @@ local E = {
         .. "the honest shape, not a fabricated countdown.",
     ref = "cooldown-manager.md §5.1 — CooldownViewer.lua:483-494; OnCooldown = 3",
     rows = { { cid = 903, category = "Essential", frame = {},
-               info = { spellID = TYRANT, isKnown = true } } },
-    world = { combat = true },
+               info = { spellID = SUMMON_INFERNAL, isKnown = true } } },
+    world = { combat = true, known = { [SUMMON_INFERNAL] = true } },
     script = { { alert = "OnCooldown", cid = 903 }, { build = true } },
     expect = {
-      abilities = { [TYRANT] = { cd = { state = "on-cooldown", remaining = 0,
-                                        readable = false, source = "napkin" } } },
+      abilities = { [SUMMON_INFERNAL] = { cd = { state = "on-cooldown", remaining = 0,
+                                                 readable = false, source = "napkin" } } },
     },
   },
 
@@ -2152,24 +2302,34 @@ local F = {
   },
 
   {
-    name = "flags/charges-are-read-on-the-DISPLAY-identity",
+    name = "flags/charges-and-the-cooldown-are-read-about-the-SAME-id",
     status = "green",
-    fixed = "phase2 §3.2",
+    fixed = "Phase 5 §C2",
     spec = 3,
-    pins = "Blizzard reads charges off `info.overrideSpellID or info.spellID` — rungs 4 "
-        .. "and 5 ONLY — and comments why: \"To ensure that charges work correctly for "
-        .. "cooldown items that are actively cast, apply auras, and have charges only "
-        .. "check the override or base spell ids.\"  State keys the read on the DISPLAY "
+    pins = "THE TWO-LADDER HAZARD, closed by construction.  Blizzard reads charges off "
+        .. "`info.overrideSpellID or info.spellID` (rungs 4-5, commented \"only check the "
+        .. "override or base spell ids\") while the COOLDOWN read was keyed on the DISPLAY "
         .. "identity, which can resolve to overrideTooltipSpellID (rung 3) — the very rung "
-        .. "Blizzard excludes.  Two ladders on one row, and we are reading a different "
-        .. "spell than the client is.  (The `ident` keying for the COOLDOWN read stays: "
-        .. "that was the right fix for the foreign-override bug; charges just need the "
-        .. "narrower ladder.)",
-    ref = "cooldown-manager.md §8 rule 3 / §3.3 — ItemData.lua:282-296",
+        .. "Blizzard excludes.  Two ladders over one row, and on a row whose identity FLIPS "
+        .. "they name different spells: Retribution's Judgment alternates with Hammer of "
+        .. "Wrath in the tracked set and was cued while on cooldown on 191 of 226 "
+        .. "disagreeing lines, `CD: Judg=c10` beside `CH: Judg~1/1`.  Anchored on the "
+        .. "roster BOTH reads take the declared spellID, so they can no longer describe "
+        .. "different abilities — and the fix is the absence of a choice, not a third rule.",
+    ref = "cooldown-manager.md §8 rule 3 / §3.3 — ItemData.lua:282-296; the shipped "
+       .. "measurement is docs/multi-class-rollout.md → THE ARCHITECTURAL FINDING",
+    world = { known = { [INCINERATE] = true } },
     rows = { { cid = 66181, category = "Essential", frame = {},
                info = { spellID = SHADOW_BOLT, isKnown = true,
                         overrideTooltipSpellID = INCINERATE, charges = true } } },
-    expect = { asked = { charges = { [SHADOW_BOLT] = true, [INCINERATE] = false } } },
+    expect = {
+      -- The row DISPLAYS Incinerate, so Incinerate is the ability it is — and the ability is
+      -- what both reads ask about.  Shadow Bolt (the row's raw base, and not declared by
+      -- this spec at all) is never asked.
+      abilities = { [INCINERATE] = { identity = INCINERATE, spellID = SHADOW_BOLT } },
+      asked = { charges  = { [INCINERATE] = true, [SHADOW_BOLT] = false },
+                cooldown = { [INCINERATE] = true, [SHADOW_BOLT] = false } },
+    },
   },
 
   {

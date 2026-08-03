@@ -288,7 +288,17 @@ end
 local VIEWS = {
   raw       = function(p) return p.cooldowns end,
   abilities = function(p) return p.abilities end,
-  dropped   = function(p) return p.dropped end,
+  -- ⚠ `known` REPLACED `dropped` (roster-state-plan Phase 5 §C6), and the replacement is a
+  -- requirement rather than a rename.  `pulse.dropped` was the per-pulse "the filter removed
+  -- a real button, and why"; Phase 5 retired the filter (knownness MARKS the row now instead
+  -- of deleting it), and §8 is explicit that removing that visibility without a replacement
+  -- trades a loud failure for a quiet one.  This view is strictly wider: `dropped` could only
+  -- ever name an ability that WOULD have been a press, this names every declared one.
+  known     = function(p)
+    local t = {}
+    for id, row in pairs(p.abilities or {}) do t[id] = row.known end
+    return t
+  end,
   buffs     = function(p) return p.buffs end,
   dotEdges  = function(p) return p.dotEdges end,
   -- The base-keyed fold of the per-frame aura verdict (§3.10), the exact twin of dotEdges:
@@ -300,7 +310,7 @@ local VIEWS = {
   asked     = function() return askedView() end,
   pulse     = function(p) return p end,                -- escape hatch: combat / hero / at
 }
-local VIEW_ORDER = { "raw", "abilities", "dropped", "buffs", "dotEdges", "auraFrames",
+local VIEW_ORDER = { "raw", "abilities", "known", "buffs", "dotEdges", "auraFrames",
                      "virtual", "edges", "asked", "pulse" }
 
 local function runCase(case)

@@ -1,14 +1,22 @@
--- state_domainview_spec.lua — State's DOMAIN VIEW: the pressable filter (field-fix A), the
+-- state_domainview_spec.lua — State's DOMAIN VIEW: the ROSTER ANCHOR (Phase 5), the
 -- aura-lifecycle latch (C) and the charge napkin (C2).
 --
 -- WHY THIS FILE EXISTS.  The first live session proved `state.abilities` was NOT what its
--- own contract says it is.  State anchors on the CDM database with `allowUnlearned = true`,
+-- own contract says it is.  State anchored on the CDM database with `allowUnlearned = true`,
 -- so the fold promoted rows for spells the character has not talented and rows the Layout
 -- can never draw; both read `ready` forever, so they won the priority list every GCD.  One
 -- session logged **216 dropped Soul Fire cues** from an untalented Soul Fire outranking the
--- whole rotation.  The fix removes rows — which is exactly the kind of change that can
--- silently delete a REAL button, so the tests below pin both directions: the phantom is
--- gone, AND the survivor is still there, AND the drop was reported.
+-- whole rotation.
+--
+-- ⚠ ROSTER-STATE-PLAN PHASE 5 CHANGED THE ANSWER, NOT THE QUESTION.  The fix used to be a
+-- FILTER — remove rows we cannot trust — and a filter's failure mode is that it silently
+-- deletes a REAL button.  The domain view is now anchored on the SPEC'S DECLARED ROSTER, so
+-- the phantom never enters in the first place (it is not declared, or it is declared and
+-- marked `known = false`, which `Coach.Classify` refuses), and NOTHING is deleted: every
+-- declared ability is present and visible in the pulse, the decision log and Coverage.  The
+-- tests below therefore pin BOTH directions of the new contract — the phantom cannot win,
+-- AND the survivor is still there, AND the knownness verdict is on the row where a capture
+-- can see it.
 --
 -- It loads the REAL State.lua and stubs only what genuinely needs a live client (the
 -- C_CooldownViewer database and frame discovery) — the `viewers_spec` doctrine: a stub
@@ -16,7 +24,10 @@
 local dir = (debug.getinfo(1, "S").source:match("^@(.*[/\\])")) or "./"
 local H = dofile(dir .. "../mock_ns.lua")
 
--- Real Destruction ids, so a drop reads as the ability it actually is.
+-- Real Destruction ids, so a verdict reads as the ability it actually is.  ⚠ AND THE SPEC
+-- MUST BE DESTRUCTION EVERYWHERE IN THIS FILE: under the roster anchor an id the active spec
+-- does not declare gets no row at all, so running these under the harness's default
+-- Demonology would assert absences that are true for the wrong reason.
 local SOUL_FIRE   = 6353
 local INCINERATE  = 29722
 local CHAOS_BOLT  = 116858
@@ -33,8 +44,9 @@ local function row(cid, base, opts)
     cooldownID = cid,
     category   = opts.category or "Essential",
     spellID    = base,
+    identity   = opts.identity or base,
     liveSpellID = opts.live or base,
-    isKnown    = opts.isKnown,           -- nil = unreadable, and NOT a drop
+    isKnown    = opts.isKnown,           -- nil = unreadable, and NOT a verdict
     displayable = opts.displayable ~= false,
     cd = opts.cd or { state = "unknown", readable = false, source = "none" },
     charge = opts.charge,
@@ -44,87 +56,156 @@ local function row(cid, base, opts)
 end
 
 --------------------------------------------------------------------------------
-describe("State domain view — the pressable filter (field-fix A)", function()
-  local ns, St
+describe("State domain view — the ROSTER ANCHOR (Phase 5)", function()
+  local ns, St, fx
   before_each(function()
-    ns = H.fresh()
+    ns, fx = H.fresh()
+    H.setSpecIndex(3)            -- Destruction: every id in this file is one of its own
+    ns.ResolveActiveSpec()
     H.load("State.lua")
     St = ns.State
   end)
 
   ------------------------------------------------------------------------------
-  describe("St.DomainView (pure)", function()
-    it("keeps a known, displayable row", function()
-      local abilities, dropped = St.DomainView({ [901] = row(901, CHAOS_BOLT) }, nil, true, nil)
+  -- `St.RosterView` is PURE given its injected `known` reader, which is what lets the
+  -- whole anchor be arbitrated off-game.  Signature:
+  --   (cooldowns, foldKey, roster, edges, drawable, known)
+  --     -> abilities, dotEdges, auraFrames, virtual, knownReadable
+  ------------------------------------------------------------------------------
+  describe("St.RosterView (pure)", function()
+    local function view(cooldowns, opts)
+      opts = opts or {}
+      local knownMap = opts.known or {}
+      return St.RosterView(cooldowns, opts.fold, ns.Spec, opts.edges,
+                           opts.drawable ~= false,
+                           function(id) return knownMap[id] end)
+    end
+
+    it("a declared ability finds its row and is keyed by the id the SPEC named", function()
+      local abilities = view({ [901] = row(901, CHAOS_BOLT) }, { known = { [CHAOS_BOLT] = true } })
       assert.is_not_nil(abilities[CHAOS_BOLT])
       assert.equals(901, abilities[CHAOS_BOLT].display.cooldownID)
-      assert.is_nil(dropped[CHAOS_BOLT])
+      assert.equals(CHAOS_BOLT, abilities[CHAOS_BOLT].identity)
+      assert.is_true(abilities[CHAOS_BOLT].known)
     end)
 
-    it("an UNLEARNED row never reaches abilities, and says so", function()
-      local abilities, dropped = St.DomainView(
-        { [902] = row(902, SOUL_FIRE, { isKnown = false }) }, nil, true, nil)
-      assert.is_nil(abilities[SOUL_FIRE])
-      assert.equals("unlearned", dropped[SOUL_FIRE])
+    it("a row NO declared ability claims never reaches abilities at all", function()
+      -- 999999 is not in any roster.  Before Phase 5 the CDM database decided what existed,
+      -- so this row would have become a pressable ability nobody asked for.
+      local abilities = view({ [901] = row(901, 999999) })
+      assert.is_nil(abilities[999999])
+      assert.is_nil(next(abilities))
     end)
 
-    it("an UNDISPLAYABLE row never reaches abilities, and says so", function()
-      -- Incinerate: known, talented, pressed constantly — and absent from the live CDM set,
-      -- so there is no frame to anchor a cue to.  `isKnown` alone cannot catch this.
-      local abilities, dropped = St.DomainView(
-        { [903] = row(903, INCINERATE, { isKnown = true, displayable = false }) }, nil, true, nil)
-      assert.is_nil(abilities[INCINERATE])
-      assert.equals("no-icon", dropped[INCINERATE])
+    it("an UNLEARNED ability is MARKED, not deleted — the §6.1 decision", function()
+      local abilities = view({ [902] = row(902, SOUL_FIRE, { isKnown = false }) },
+                             { known = { [SOUL_FIRE] = false } })
+      assert.is_not_nil(abilities[SOUL_FIRE], "the row must still be visible in the pulse")
+      assert.is_false(abilities[SOUL_FIRE].known)
     end)
 
-    it("an UNREADABLE isKnown is not a drop — absence of a read is not evidence", function()
-      local abilities, dropped = St.DomainView(
-        { [904] = row(904, CHAOS_BOLT, { isKnown = nil }) }, nil, true, nil)
+    it("an UNREADABLE knownness is the STRING \"unknown\", never nil and never a guess", function()
+      -- nil has to keep meaning "nobody asked", which is what a hand-built fixture carries;
+      -- "we asked and came away with nothing" needs a positive value of its own.
+      local abilities = view({ [904] = row(904, CHAOS_BOLT, { isKnown = nil }) })
       assert.is_not_nil(abilities[CHAOS_BOLT])
-      assert.is_nil(dropped[CHAOS_BOLT])
+      assert.equals("unknown", abilities[CHAOS_BOLT].known)
     end)
 
-    it("SKIPS the displayable filter entirely when no frame map exists", function()
-      -- The v0.32.25 outage shape: an empty frame map must never mean "nothing is drawable".
-      local abilities, dropped = St.DomainView(
-        { [905] = row(905, INCINERATE, { isKnown = true, displayable = false }) },
-        nil, false --[[ no frame map ]], nil)
-      assert.is_not_nil(abilities[INCINERATE])
-      assert.is_nil(dropped[INCINERATE])
+    it("the SPELLBOOK outranks the row's isKnown — it asks about the ABILITY", function()
+      -- The Hellcaller shape: cid 66181's base (Shadow Bolt) is unlearned while the ability
+      -- it draws is pressed every GCD.  Letting the row's flag win bars the floor press.
+      local abilities = view({ [905] = row(905, CHAOS_BOLT, { isKnown = false }) },
+                             { known = { [CHAOS_BOLT] = true } })
+      assert.is_true(abilities[CHAOS_BOLT].known)
     end)
 
-    it("still drops an unlearned row when the frame map is absent (isKnown is independent)", function()
-      local abilities, dropped = St.DomainView(
-        { [906] = row(906, SOUL_FIRE, { isKnown = false }) }, nil, false, nil)
-      assert.is_nil(abilities[SOUL_FIRE])
-      assert.equals("unlearned", dropped[SOUL_FIRE])
+    it("...and the row's isKnown is the FALLBACK when the spellbook refuses", function()
+      local abilities = view({ [906] = row(906, CHAOS_BOLT, { isKnown = false }) })
+      assert.is_false(abilities[CHAOS_BOLT].known)
     end)
 
-    it("keeps the ability when only ONE of its rows is filtered", function()
-      local abilities, dropped = St.DomainView({
-        [907] = row(907, CHAOS_BOLT, { isKnown = true, displayable = false }),
-        [908] = row(908, CHAOS_BOLT, { isKnown = true, category = "Utility" }),
-      }, nil, true, nil)
-      assert.is_not_nil(abilities[CHAOS_BOLT])
+    it("Essential outranks Utility for the same ability", function()
+      local abilities = view({
+        [907] = row(907, CHAOS_BOLT, { category = "Utility" }),
+        [908] = row(908, CHAOS_BOLT, { category = "Essential" }),
+      }, { known = { [CHAOS_BOLT] = true } })
       assert.equals(908, abilities[CHAOS_BOLT].display.cooldownID)
-      assert.is_nil(dropped[CHAOS_BOLT])
     end)
 
-    it("does NOT report a tracked-only row as dropped (it was never a press)", function()
-      -- A BuffBar/TrackedBuff row has no pressable member by construction — the pre-existing
-      -- exclusion, not a filter drop.  Reporting it would drown the real signal.
-      local abilities, dropped = St.DomainView(
-        { [909] = row(909, IMMOLATE_AURA, { category = "TrackedBuff", displayable = false }) },
-        nil, true, nil)
-      assert.is_nil(abilities[IMMOLATE_AURA])
-      assert.is_nil(dropped[IMMOLATE_AURA])
+    it("ONE ROW, ONE ABILITY — a contested row goes to the identity match", function()
+      -- cid 66181 carries Incinerate on rung 3 and Chaos Bolt on rung 4, so both declared
+      -- ids match it.  Letting both claim it is how one ability's cooldown ends up filed
+      -- under another's key, which is the whole defect family Phase 5 removes.
+      local contested = row(66181, 686, { identity = INCINERATE })
+      contested.overrideSpellID = CHAOS_BOLT
+      contested.overrideTooltipSpellID = INCINERATE
+      local abilities = view({ [66181] = contested },
+                             { known = { [INCINERATE] = true, [CHAOS_BOLT] = true } })
+      assert.is_not_nil(abilities[INCINERATE])
+      assert.equals(686, abilities[INCINERATE].spellID)   -- the raw base is still carried
+      assert.is_nil(abilities[CHAOS_BOLT])
+    end)
+
+    it("an UNDRAWABLE row keeps its readings and takes OUR display handle", function()
+      -- The Hellcaller shape again, from the drawing side.  Before Phase 5 this was a
+      -- `no-icon` DROP followed by a from-scratch static row, throwing the readings away.
+      local abilities, _, _, virtual = view({
+        [903] = row(903, CHAOS_BOLT),                                   -- something IS drawn
+        [909] = row(909, INCINERATE, { displayable = false,
+                                       cd = { state = "on-cooldown", remaining = 4,
+                                              readable = true, source = "live" } }),
+      }, { known = { [INCINERATE] = true, [CHAOS_BOLT] = true } })
+      assert.is_not_nil(abilities[INCINERATE])
+      assert.equals("on-cooldown", abilities[INCINERATE].cd.state)      -- the real reading
+      assert.equals(4, abilities[INCINERATE].cd.remaining)
+      -- …and ours to draw.  (Membership, not equality: with only two rows on this synthetic
+      -- board every other declared button is untracked too, which is correct and beside the
+      -- point here — `exactly one virtual row per spec` below is where that is pinned.)
+      local drawnByUs = false
+      for _, id in ipairs(virtual) do if id == INCINERATE then drawnByUs = true end end
+      assert.is_true(drawnByUs)
+    end)
+
+    it("NO FRAME MAP ⇒ nothing is synthesised (the v0.32.25 wholesale shape)", function()
+      local _, _, _, virtual = view(
+        { [905] = row(905, CHAOS_BOLT, { displayable = false }) },
+        { drawable = false, known = { [CHAOS_BOLT] = true, [INCINERATE] = true } })
+      assert.are.same({}, virtual)
     end)
 
     it("folds by the OOC-cached base when a combat row's spellID is unreadable", function()
       local r = row(910, nil)
-      r.spellID = nil
-      local abilities = St.DomainView({ [910] = r }, { [910] = CONFLAGRATE }, true, nil)
-      assert.is_not_nil(abilities[CONFLAGRATE])
+      r.spellID, r.identity, r.liveSpellID = nil, nil, nil
+      local abilities = view({ [910] = r },
+        { fold = { [910] = CONFLAGRATE }, known = { [CONFLAGRATE] = true } })
+      -- The join is by ID, so a row with no readable id claims nothing — but the fold key
+      -- still resolves it for the SIGNAL folds, and its unreadability is what suppresses
+      -- synthesis (an unprovable negative is not a licence to draw a second icon).
+      assert.is_nil(abilities[CONFLAGRATE])
+    end)
+
+    ----------------------------------------------------------------------------
+    -- THE KNOWNNESS WHOLESALE GUARD (§6.1).  ⚠ MUTATION-CHECKED: delete the
+    -- `(asked == 0) or sawReadable` term in State.lua's rosterView and this goes red.
+    ----------------------------------------------------------------------------
+    it("knownReadable is TRUE when at least one ability answered", function()
+      local _, _, _, _, ok = view({ [901] = row(901, CHAOS_BOLT) },
+                                  { known = { [CHAOS_BOLT] = true } })
+      assert.is_true(ok)
+    end)
+
+    it("knownReadable is FALSE when the whole roster refused — a broken read, not a bare character", function()
+      -- No spellbook answer and no struct flag anywhere: every declared ability reads
+      -- "unknown".  Left unguarded that bars the ENTIRE roster from winning at once, which
+      -- is the v0.32.25 total-outage shape with no CDM breadth left to fall back on.
+      local _, _, _, _, ok = view({ [901] = row(901, CHAOS_BOLT, { isKnown = nil }) })
+      assert.is_false(ok)
+    end)
+
+    it("an EMPTY roster is not a refused read — there was nothing to ask", function()
+      local _, _, _, _, ok = St.RosterView({}, nil, {}, nil, true, function() return nil end)
+      assert.is_true(ok)
     end)
   end)
 
@@ -152,6 +233,11 @@ describe("State domain view — the pressable filter (field-fix A)", function()
       local items = { { cooldownID = CID.sf }, { cooldownID = CID.cb } }
       ns.GetViewer     = function(name) return name == "EssentialCooldownViewer" and { n = 1 } or nil end
       ns.GetItemFrames = function() return items end
+      -- The spellbook is the AUTHORITY for knownness (Phase 5), so the world has to state
+      -- it: Chaos Bolt and Incinerate are talented, Soul Fire is not.  The CDM struct above
+      -- agrees, which is the normal case — where they disagree is its own test.
+      fx.known[CHAOS_BOLT] = true
+      fx.known[INCINERATE] = true
       ns.OnLogin()   -- builds the category/power name caches
     end)
 
@@ -169,31 +255,47 @@ describe("State domain view — the pressable filter (field-fix A)", function()
       assert.is_true(pulse.cooldowns[CID.cb].displayable)
     end)
 
-    it("abilities carries ONLY the row that is both known and drawable", function()
+    it("abilities carries every declared ability, MARKED rather than filtered", function()
+      -- The Phase-5 inversion, end to end.  All three rows survive; what tells them apart is
+      -- `known`, and it is `Coach.Classify` — not this stage — that refuses a `false` one.
       local pulse = St.Build(false)
-      assert.is_nil(pulse.abilities[SOUL_FIRE])    -- unlearned
-      assert.is_nil(pulse.abilities[INCINERATE])   -- no CDM icon
       assert.is_not_nil(pulse.abilities[CHAOS_BOLT])
+      assert.is_not_nil(pulse.abilities[INCINERATE])
+      assert.is_not_nil(pulse.abilities[SOUL_FIRE])
+      assert.is_true(pulse.abilities[CHAOS_BOLT].known)
+      assert.is_false(pulse.abilities[SOUL_FIRE].known)   -- the spellbook default
     end)
 
-    it("reports both drops on the pulse, with their reasons", function()
+    it("the knownness verdict rides the ROW, where a capture can see it", function()
+      -- The replacement for `pulse.dropped`: the reason an ability will not be picked is on
+      -- the pulse rather than inferable only from its absence.  (The decision log's `DR:`
+      -- column reads exactly this.)
       local pulse = St.Build(false)
-      assert.equals("unlearned", pulse.dropped[SOUL_FIRE])
-      assert.equals("no-icon", pulse.dropped[INCINERATE])
-      assert.is_nil(pulse.dropped[CHAOS_BOLT])
+      assert.is_false(pulse.abilities[SOUL_FIRE].known)
+      assert.is_true(pulse.knownReadable)
     end)
 
-    it("NO viewers at all ⇒ Build does not filter on displayability", function()
+    it("an UNDRAWABLE declared ability keeps its row and becomes ours to draw", function()
+      -- Incinerate: known, talented, pressed constantly — and with no live item frame.  That
+      -- is a DISPLAY limit, and Phase 5 stops it being enforced at the decision layer.
+      local pulse = St.Build(false)
+      assert.is_false(pulse.cooldowns[CID.inc].displayable)
+      assert.is_true(pulse.abilities[INCINERATE].virtual)
+      assert.equals(-INCINERATE, pulse.abilities[INCINERATE].display.cooldownID)
+    end)
+
+    it("NO viewers at all ⇒ abilities is NOT empty, and nothing is synthesised", function()
       -- The guard with the largest blast radius, asserted where it is actually DECIDED (a
       -- pure-function test of the flag proves nothing about how Build computes it).  Viewers
       -- absent — login, CDM off, a relayout mid-pulse — must never empty `abilities`, which
-      -- is precisely the shape of the v0.32.25 total outage.
+      -- is precisely the shape of the v0.32.25 total outage; and it must not put OUR icon on
+      -- screen for the whole rotation on the strength of a read that refused either.
       ns.GetItemFrames = function() return {} end
       local pulse = St.Build(false)
       assert.is_not_nil(pulse.abilities[INCINERATE])
       assert.is_not_nil(pulse.abilities[CHAOS_BOLT])
-      assert.is_nil(pulse.dropped[INCINERATE])
-      assert.is_nil(pulse.abilities[SOUL_FIRE])       -- isKnown is independent of the map
+      assert.is_nil(pulse.abilities[INCINERATE].virtual)
+      assert.are.same({}, pulse.virtual)
     end)
   end)
 
@@ -295,6 +397,12 @@ describe("State domain view — the pressable filter (field-fix A)", function()
 
   ------------------------------------------------------------------------------
   -- The point of the whole phase: the ROTATION falls through instead of vanishing.
+  --
+  -- ⚠ THE MECHANISM MOVED IN PHASE 5, THE OUTCOME DID NOT.  It used to be State's filter
+  -- that stopped an untalented Soul Fire winning; now State MARKS the row and
+  -- `Coach.Classify` refuses it.  These run the real pipeline end to end — the real
+  -- `St.RosterView`, then the real Coach — so the seam between the two is under test rather
+  -- than either half in isolation.
   ------------------------------------------------------------------------------
   describe("the Coach falls through to the next line", function()
     local Coach
@@ -303,19 +411,17 @@ describe("State domain view — the pressable filter (field-fix A)", function()
                                       changedAt = NOW - 2 } end
 
     before_each(function()
-      H.setSpecIndex(3)          -- Destruction
-      ns.ResolveActiveSpec()
       H.load("Coach.lua")
       Coach = ns.Coach.New()
     end)
 
-    -- A pulse whose `abilities` came through the REAL fold, so the filter is in the path.
-    local function pulseFrom(cooldowns)
-      local abilities, dropped = St.DomainView(cooldowns, nil, true, nil)
+    local function pulseFrom(cooldowns, known)
+      local abilities, _, _, _, knownReadable =
+        St.RosterView(cooldowns, nil, ns.Spec, nil, true, function(id) return known[id] end)
       return {
         at = NOW, combat = true, combatStartedAt = NOW - 60, mode = "st",
         power = { SoulShards = { value = 3, max = 5, readable = true } },
-        buffs = {}, history = {}, abilities = abilities, dropped = dropped,
+        buffs = {}, history = {}, abilities = abilities, knownReadable = knownReadable,
       }
     end
 
@@ -325,33 +431,42 @@ describe("State domain view — the pressable filter (field-fix A)", function()
       end
     end
 
+    local function rows()
+      return {
+        [901] = row(901, SOUL_FIRE, { cd = cdReady() }),
+        [902] = row(902, CONFLAGRATE, { cd = cdReady() }),
+        [903] = row(903, CHAOS_BOLT),
+      }
+    end
+
     it("an UNLEARNED Soul Fire does not win — Conflagrate does", function()
-      -- The live bug in miniature: untalented Soul Fire reads `ready` forever, so before the
-      -- filter it took L2 every single GCD and the cue was then dropped by the Binder.
-      local g = Coach:Compute(pulseFrom({
-        [901] = row(901, SOUL_FIRE, { isKnown = false, cd = cdReady() }),
-        [902] = row(902, CONFLAGRATE, { isKnown = true, cd = cdReady() }),
-        [903] = row(903, CHAOS_BOLT, { isKnown = true }),
-      }))
+      -- The live bug in miniature: untalented Soul Fire reads `ready` forever, so before any
+      -- of this it took L2 every single GCD and the cue was then dropped by the Binder.
+      local g = Coach:Compute(pulseFrom(rows(),
+        { [SOUL_FIRE] = false, [CONFLAGRATE] = true, [CHAOS_BOLT] = true }))
       assert.equals(CONFLAGRATE, press(g))
     end)
 
-    it("a TALENTED Soul Fire still wins L2 — the filter removes phantoms, not presses", function()
-      local g = Coach:Compute(pulseFrom({
-        [901] = row(901, SOUL_FIRE, { isKnown = true, cd = cdReady() }),
-        [902] = row(902, CONFLAGRATE, { isKnown = true, cd = cdReady() }),
-        [903] = row(903, CHAOS_BOLT, { isKnown = true }),
-      }))
+    it("a TALENTED Soul Fire still wins L2 — the cap removes phantoms, not presses", function()
+      local g = Coach:Compute(pulseFrom(rows(),
+        { [SOUL_FIRE] = true, [CONFLAGRATE] = true, [CHAOS_BOLT] = true }))
       assert.equals(SOUL_FIRE, press(g))
     end)
 
-    it("an UNDISPLAYABLE Soul Fire does not win either", function()
-      local g = Coach:Compute(pulseFrom({
-        [901] = row(901, SOUL_FIRE, { isKnown = true, displayable = false, cd = cdReady() }),
-        [902] = row(902, CONFLAGRATE, { isKnown = true, cd = cdReady() }),
-        [903] = row(903, CHAOS_BOLT, { isKnown = true }),
-      }))
+    it("an UNREADABLE Soul Fire does not win either — it caps at available", function()
+      -- §6.1's third value.  The row is present and in `ctx.facts`; it simply may not be the
+      -- call.  AVAILABLE renders as nothing (guidance-contract.json), so "cap at available"
+      -- and "never cue" are the same pixels.
+      local g = Coach:Compute(pulseFrom(rows(),
+        { [CONFLAGRATE] = true, [CHAOS_BOLT] = true }))     -- Soul Fire: no answer at all
       assert.equals(CONFLAGRATE, press(g))
+    end)
+
+    it("...but the WHOLESALE guard overrides that — a refused channel bars nobody", function()
+      -- Nothing answered, so `knownReadable` is false and knownness is ignored entirely.
+      -- Without this a single load-order slip empties the rotation instead of one ability.
+      local g = Coach:Compute(pulseFrom(rows(), {}))
+      assert.equals(SOUL_FIRE, press(g))
     end)
   end)
 end)
@@ -359,11 +474,18 @@ end)
 --------------------------------------------------------------------------------
 -- VIRTUAL ROWS — the other direction: putting back a row State cannot observe.
 --
--- ⚠ THIS IS THE RISKIEST TEST FILE IN THE ADDON, because this feature and field-fix A pull
--- in OPPOSITE directions over the same table.  A is "remove rows we cannot trust"; this is
--- "add a row we never saw".  So EVERY fence below is mutation-checked: drop it in State.lua
--- and one of these must go red.  A fence that passes both ways is exactly the failure mode
--- that shipped the phantom-ability bug in the first place.
+-- ⚠ THIS IS THE RISKIEST TEST FILE IN THE ADDON, because this feature and the knownness cap
+-- pull in OPPOSITE directions over the same table.  The cap is "refuse a row we cannot
+-- trust"; this is "add a row we never saw".  So EVERY fence below is mutation-checked: drop
+-- it in State.lua and one of these must go red.  A fence that passes both ways is exactly
+-- the failure mode that shipped the phantom-ability bug in the first place.
+--
+-- ⚠ PHASE 5 RETIRED THREE OF THE SEVEN FENCES (§C7) — the zero-base-cooldown one, the
+-- dropped-as-unlearned one and the knownness one — because the ROSTER already answers "is
+-- this a press this spec cares about".  What survives is `kind == "button"`, `cadence ~=
+-- "utility"`, `expect ~= false` and "Blizzard is not already drawing it".  Knownness did not
+-- vanish: it moved to the DRAW LIST (`pulse.virtual`), because a row buys visibility for
+-- free while an icon on screen does not.
 --
 -- The walk is DETECTION, not declaration: `ns.Spec` already IS the spec's ability library,
 -- so there is no per-ability flag to forget.  That makes the "exactly one" tests at the
@@ -385,16 +507,32 @@ describe("State virtual rows (the untracked floor press)", function()
   -- silently sees no candidates at all and passes for the wrong reason.
   after_each(function() _G.C_SpellBook = realSpellBook end)
 
-  -- The permissive world: Incinerate known, no base cooldown, nothing tracked.
   local function known(...)
     for _, id in ipairs({ ... }) do fx.known[id] = true end
   end
   local function zeroCD(...)
     for _, id in ipairs({ ... }) do fx.baseCD[id] = 0 end
   end
-  local function candidates(abilities, dropped)
-    return St.VirtualCandidates(ns.Spec, abilities or {}, dropped,
-                                St.SpellKnown, ns.BaseCooldown)
+  local function candidates(abilities)
+    return St.VirtualCandidates(ns.Spec, abilities or {}, true)
+  end
+
+  -- ⚠ THE REALISTIC WORLD, and it is what makes the "exactly one" claim mean anything now.
+  -- The fence list asks "which declared buttons is Blizzard NOT drawing", so asking it
+  -- against an EMPTY board answers "all of them" — true, and useless as a guard.  This
+  -- builds the board the live CDM actually presents: every declared entry on screen except
+  -- the ones named.  It reads the roster rather than listing ids, so a spec-table edit
+  -- cannot silently fall out of the fixture.
+  local function onScreenExcept(...)
+    local except = {}
+    for _, id in ipairs({ ... }) do except[id] = true end
+    local abilities = {}
+    for _, e in ipairs(St.RosterEntries(ns.Spec)) do
+      if not except[e.spellID] then
+        abilities[e.spellID] = { spellID = e.spellID, displayable = true }
+      end
+    end
+    return abilities
   end
 
   ------------------------------------------------------------------------------
@@ -402,28 +540,78 @@ describe("State virtual rows (the untracked floor press)", function()
     before_each(function() known(INCINERATE); zeroCD(INCINERATE) end)
 
     it("nominates the spec's untracked floor press", function()
-      assert.are.same({ INCINERATE }, candidates())
+      assert.are.same({ INCINERATE }, candidates(onScreenExcept(INCINERATE)))
     end)
 
     it("the synthesised row is keyed by base spellID and marked virtual", function()
-      local r = St.VirtualRow(INCINERATE)
+      local r = St.VirtualRow(INCINERATE, true)
       assert.is_true(r.virtual)
       assert.are.equal(INCINERATE, r.spellID)
+      assert.are.equal(INCINERATE, r.identity)
     end)
 
     it("carries the NEGATIVE display handle — no collision with a real cooldownID", function()
-      assert.are.equal(-INCINERATE, St.VirtualRow(INCINERATE).display.cooldownID)
-      assert.is_true(St.VirtualRow(INCINERATE).display.cooldownID < 0)
+      assert.are.equal(-INCINERATE, St.VirtualRow(INCINERATE, true).display.cooldownID)
+      assert.is_true(St.VirtualRow(INCINERATE, true).display.cooldownID < 0)
     end)
 
     it("says READY, and says WHY — `source = static`, never laundered as a read", function()
       -- A 0-cooldown spell has no cooldown to be unsure about, so `ready` is a statement
       -- about the spell's NATURE.  Calling it "live" would claim an observation we never
       -- made, which is the one thing this project refuses to do.
-      local cd = St.VirtualRow(INCINERATE).cd
+      local cd = St.VirtualRow(INCINERATE, true).cd
       assert.are.equal("ready", cd.state)
       assert.are.equal("static", cd.source)
       assert.are.equal(0, cd.remaining)
+    end)
+
+    it("carries the three-valued `known` it was handed, not an assumed `true`", function()
+      assert.are.equal("unknown", St.VirtualRow(INCINERATE, "unknown").known)
+      assert.is_false(St.VirtualRow(INCINERATE, false).known)
+    end)
+  end)
+
+  ----------------------------------------------------------------------------
+  -- THE COOLDOWN OF A ROW WITH NO CDM ENTRY — Phase 5's replacement for the retired
+  -- zero-base-cooldown FENCE.  The fence was the honesty guard: a synthesised `ready` on
+  -- an ability with a real cooldown is an invention, and inventions win priority lists.
+  -- Dropping the fence without replacing the guard would have re-shipped that; instead the
+  -- static `ready` narrowed to the case it was ever true for, and everything else takes
+  -- the ordinary read ladder.
+  ----------------------------------------------------------------------------
+  describe("the virtual row's cd", function()
+    it("a REAL base cooldown ⇒ the honest read, never a static `ready`", function()
+      known(SOUL_FIRE); fx.baseCD[SOUL_FIRE] = 45
+      fx.cd[SOUL_FIRE] = { duration = 45, startTime = H.clock - 10 }
+      fx.cd[61304] = { duration = 0, startTime = 0 }
+      local cd = St.VirtualRow(SOUL_FIRE, true).cd
+      assert.are.equal("on-cooldown", cd.state)
+      assert.are.equal("live", cd.source)
+    end)
+
+    it("an UNREADABLE base cooldown is NOT treated as zero", function()
+      -- `ns.BaseCooldown` returns nil when the read refuses, and nil ~= 0.  Under the old
+      -- fence that meant NO ROW; now it means no STATIC claim — the read ladder answers, and
+      -- with nothing to read the answer is `unknown`, which can never win a line.
+      known(SOUL_FIRE)                                   -- baseCD left nil
+      local cd = St.VirtualRow(SOUL_FIRE, true).cd
+      assert.are.equal("unknown", cd.state)
+      assert.are.equal("none", cd.source)
+    end)
+
+    it("HAMMER OF WRATH: a row exists whatever its base cooldown turns out to be", function()
+      -- `specs/retribution/observability-map.md` open question 1 is whether
+      -- `ns.BaseCooldown(24275)` reads 0 for a charge-category spell.  Under the old fences
+      -- the answer decided whether the ability existed at all, so `CoachRetribution`'s L9 was
+      -- dead code pending a live pass.  It is now live by construction.
+      local HAMMER_OF_WRATH = 24275
+      H.setSpecIndex(4)                                  -- Retribution
+      ns.ResolveActiveSpec()
+      known(HAMMER_OF_WRATH)                             -- baseCD deliberately unreadable
+      local nominated = candidates(onScreenExcept(HAMMER_OF_WRATH))
+      local found = false
+      for _, id in ipairs(nominated) do if id == HAMMER_OF_WRATH then found = true end end
+      assert.is_true(found, "Hammer of Wrath must be nominated with no base-cooldown read")
     end)
   end)
 
@@ -431,34 +619,18 @@ describe("State virtual rows (the untracked floor press)", function()
   -- One test per fence.  Each names the mutation it guards.
   ------------------------------------------------------------------------------
   describe("the fences", function()
-    it("NOT KNOWN ⇒ no row (the surviving half of field-fix A)", function()
+    it("NOT KNOWN ⇒ a row, but NOT an icon (knownness moved to the draw list)", function()
+      -- ⚠ THE PHASE-5 SPLIT.  Candidacy no longer consults knownness — the row exists so it
+      -- is visible in the pulse, the decision log and Coverage — but `pulse.virtual`, which
+      -- is what pools a frame and lights an icon, still requires an affirmative `true`.
       zeroCD(INCINERATE)                       -- known deliberately not set
-      assert.are.same({}, candidates())
-    end)
-
-    it("a REFUSED knownness read ⇒ no row (under-show, never a guess)", function()
-      zeroCD(INCINERATE)
-      _G.C_SpellBook = { IsSpellKnown = function() error("secret") end }
-      assert.are.same({}, candidates())
-      _G.C_SpellBook = nil
-      assert.are.same({}, candidates())        -- API absent entirely: same answer
-    end)
-
-    it("a NON-ZERO base cooldown ⇒ no row", function()
-      -- The load-bearing fence: with a real cooldown there is no alert channel, no OOC
-      -- baseline and no napkin, so `ready` would be an invention.
-      known(INCINERATE); fx.baseCD[INCINERATE] = 45
-      assert.are.same({}, candidates())
-    end)
-
-    it("an UNREADABLE base cooldown ⇒ no row (nil is not zero)", function()
-      known(INCINERATE)                        -- baseCD left nil
-      assert.are.same({}, candidates())
+      assert.are.same({ INCINERATE }, candidates(onScreenExcept(INCINERATE)))
+      assert.is_false(St.SpellKnown(INCINERATE))
     end)
 
     it("ALREADY PRESENT in abilities ⇒ no row (additive only, never a duplicate)", function()
       known(INCINERATE); zeroCD(INCINERATE)
-      assert.are.same({}, candidates({ [INCINERATE] = { spellID = INCINERATE } }))
+      assert.are.same({}, candidates(onScreenExcept()))
     end)
 
     ----------------------------------------------------------------------------
@@ -473,19 +645,24 @@ describe("State virtual rows (the untracked floor press)", function()
     describe("already DISPLAYED by Blizzard (under another base) ⇒ no row", function()
       local SHADOW_BOLT = 686
 
+      -- The board with Incinerate's own key absent but SOME row displaying it.
+      local function boardShowing(shadowBoltRow)
+        local ab = onScreenExcept(INCINERATE)
+        ab[SHADOW_BOLT] = shadowBoltRow
+        return ab
+      end
+
       before_each(function() known(INCINERATE); zeroCD(INCINERATE) end)
 
       it("a row keyed 686 whose overrideTooltipSpellID is 29722 suppresses ours", function()
-        assert.are.same({}, candidates({
-          [SHADOW_BOLT] = { spellID = SHADOW_BOLT, liveSpellID = SHADOW_BOLT,
-                            overrideTooltipSpellID = INCINERATE },
-        }))
+        assert.are.same({}, candidates(boardShowing(
+          { spellID = SHADOW_BOLT, liveSpellID = SHADOW_BOLT,
+            overrideTooltipSpellID = INCINERATE })))
       end)
 
       it("...and via overrideSpellID alone (the other static field)", function()
-        assert.are.same({}, candidates({
-          [SHADOW_BOLT] = { spellID = SHADOW_BOLT, overrideSpellID = INCINERATE },
-        }))
+        assert.are.same({}, candidates(boardShowing(
+          { spellID = SHADOW_BOLT, overrideSpellID = INCINERATE })))
       end)
 
       it("THE FLICKER REGRESSION: still no row while the Demonic Art is ARMED", function()
@@ -494,40 +671,61 @@ describe("State virtual rows (the untracked floor press)", function()
         -- exactly when the ability is most active.  The STATIC override fields carry 29722
         -- throughout, which is why unioning all three is load-bearing rather than tidy.
         local INFERNAL_BOLT = 433891
-        assert.are.same({}, candidates({
-          [SHADOW_BOLT] = { spellID = SHADOW_BOLT, liveSpellID = INFERNAL_BOLT,
-                            overrideSpellID = INCINERATE,
-                            overrideTooltipSpellID = INCINERATE },
-        }))
+        assert.are.same({}, candidates(boardShowing(
+          { spellID = SHADOW_BOLT, liveSpellID = INFERNAL_BOLT,
+            overrideSpellID = INCINERATE, overrideTooltipSpellID = INCINERATE })))
       end)
 
       it("...and a row displaying it under its OWN base (liveSpellID) suppresses ours too", function()
-        assert.are.same({}, candidates({
-          [SHADOW_BOLT] = { spellID = SHADOW_BOLT, liveSpellID = INCINERATE },
-        }))
+        assert.are.same({}, candidates(boardShowing(
+          { spellID = SHADOW_BOLT, liveSpellID = INCINERATE })))
       end)
 
-      it("HELLCALLER: the same row DROPPED as unlearned ⇒ we DO draw ours", function()
-        -- 686 is unlearned on Hellcaller, so it never enters `abilities` at all — nothing is
-        -- on screen, and the 31 %→0 % win from Phase 1 has to survive intact.
-        assert.are.same({ INCINERATE }, candidates({}, { [SHADOW_BOLT] = "unlearned" }))
+      it("HELLCALLER: the same row UNDRAWABLE ⇒ we DO draw ours", function()
+        -- 686 is unlearned on Hellcaller, so Blizzard hides the frame — nothing is on
+        -- screen, and the 31 %→0 % win from Phase 1 has to survive intact.  ⚠ Phase 5 states
+        -- this through DRAWABILITY rather than through a `dropped` reason: the row may still
+        -- be in `abilities` (marked, not deleted), and what decides whether we draw is
+        -- whether the CDM is drawing.
+        local ab = onScreenExcept(INCINERATE)
+        ab[SHADOW_BOLT] = { spellID = SHADOW_BOLT, overrideSpellID = INCINERATE,
+                            overrideTooltipSpellID = INCINERATE, displayable = false }
+        assert.are.same({ INCINERATE }, candidates(ab))
       end)
 
       it("a row displaying something ELSE does not suppress us", function()
         -- The fence must be a lookup, not a blanket "any override present" test.
-        assert.are.same({ INCINERATE }, candidates({
-          [SHADOW_BOLT] = { spellID = SHADOW_BOLT, overrideTooltipSpellID = 433891 },
-        }))
+        assert.are.same({ INCINERATE }, candidates(boardShowing(
+          { spellID = SHADOW_BOLT, overrideTooltipSpellID = 433891 })))
       end)
 
       it("St.DisplayedIdentities unions base + live + BOTH static override fields", function()
         local on = St.DisplayedIdentities({
           [SHADOW_BOLT] = { spellID = SHADOW_BOLT, liveSpellID = 433891,
                             overrideSpellID = 1, overrideTooltipSpellID = INCINERATE },
-        })
+        }, true)
         assert.is_true(on[SHADOW_BOLT])
         assert.is_true(on[433891])
         assert.is_true(on[1])
+        assert.is_true(on[INCINERATE])
+      end)
+
+      it("...and an UNDRAWABLE row contributes none of them", function()
+        local on = St.DisplayedIdentities({
+          [SHADOW_BOLT] = { spellID = SHADOW_BOLT, overrideTooltipSpellID = INCINERATE,
+                            displayable = false },
+        }, true)
+        assert.is_nil(on[SHADOW_BOLT])
+        assert.is_nil(on[INCINERATE])
+      end)
+
+      it("...unless there is NO frame map, in which case drawability is not asked", function()
+        -- The wholesale guard: with the viewers down, "undrawable" is a statement about the
+        -- viewers, not about the row.
+        local on = St.DisplayedIdentities({
+          [SHADOW_BOLT] = { spellID = SHADOW_BOLT, overrideTooltipSpellID = INCINERATE,
+                            displayable = false },
+        }, false)
         assert.is_true(on[INCINERATE])
       end)
 
@@ -535,44 +733,33 @@ describe("State virtual rows (the untracked floor press)", function()
         H.markSecret(INCINERATE)
         local on = St.DisplayedIdentities({
           [SHADOW_BOLT] = { spellID = SHADOW_BOLT, overrideTooltipSpellID = INCINERATE },
-        })
+        }, true)
         assert.is_nil(on[INCINERATE])
       end)
-    end)
-
-    it("DROPPED AS UNLEARNED ⇒ no row, even when the spellbook disagrees", function()
-      -- A conflict between the CDM struct and the spellbook resolves to NOT DRAWING.
-      known(INCINERATE); zeroCD(INCINERATE)
-      assert.are.same({}, candidates({}, { [INCINERATE] = "unlearned" }))
-    end)
-
-    it("dropped as NO-ICON is NOT a bar — that is exactly what we are here to fix", function()
-      known(INCINERATE); zeroCD(INCINERATE)
-      assert.are.same({ INCINERATE }, candidates({}, { [INCINERATE] = "no-icon" }))
     end)
 
     it("NOT SPEC-DECLARED ⇒ no row, however known and cooldownless", function()
       local NOT_OURS = 999999
       known(NOT_OURS); zeroCD(NOT_OURS)
-      assert.are.same({}, candidates())
+      assert.are.same({}, candidates(onScreenExcept()))
     end)
 
     it("a UTILITY ⇒ no row (defensives are never cued, and never ours to draw)", function()
       local UNENDING_RESOLVE = 104773
       known(UNENDING_RESOLVE); zeroCD(UNENDING_RESOLVE)
-      assert.are.same({}, candidates())
+      assert.are.same({}, candidates(onScreenExcept(UNENDING_RESOLVE)))
     end)
 
     it("an AURA row ⇒ no row (an input to a decision, never a press)", function()
       local BACKDRAFT = 117828
       known(BACKDRAFT); zeroCD(BACKDRAFT)
-      assert.are.same({}, candidates())
+      assert.are.same({}, candidates(onScreenExcept(BACKDRAFT)))
     end)
 
     it("EXPECT=FALSE ⇒ no row — a transform is not a second ability", function()
       local INFERNAL_BOLT = 433891   -- an override on the Incinerate frame, never its own icon
       known(INFERNAL_BOLT); zeroCD(INFERNAL_BOLT)
-      assert.are.same({}, candidates())
+      assert.are.same({}, candidates(onScreenExcept(INFERNAL_BOLT)))
     end)
 
     it("EXPECT=FALSE ⇒ no row — nor is a cast-id ALIAS", function()
@@ -580,53 +767,51 @@ describe("State virtual rows (the untracked floor press)", function()
       -- cooldown, so without `expect = false` on the alias this would be drawn as a SECOND
       -- Immolate icon beside the real one.
       known(IMMOLATE_CAST); zeroCD(IMMOLATE_CAST)
-      assert.are.same({}, candidates({ [IMMOLATE_AURA] = { spellID = IMMOLATE_AURA } }))
+      assert.are.same({}, candidates(onScreenExcept(IMMOLATE_CAST)))
     end)
   end)
 
   ------------------------------------------------------------------------------
   -- THE GUARD.  Detection means no per-ability flag to forget — and no per-ability flag
   -- stopping a spec-table edit from admitting something new.  These pin the whole result.
+  --
+  -- ⚠ THEY READ THE ROSTER RATHER THAN LISTING IDS (Phase 5).  The fence list asks "which
+  -- declared buttons is Blizzard NOT drawing", so the board it is asked against IS the
+  -- assertion: `onScreenExcept(X)` says "everything the spec declares is on screen except
+  -- X", and the answer must be exactly X.  Listing the board by hand — which is what these
+  -- used to do — quietly stopped covering any entry added to the spec table afterwards.
   ------------------------------------------------------------------------------
   describe("exactly one virtual row per spec", function()
     it("Destruction yields EXACTLY Incinerate", function()
-      -- A realistic world: every 0-cooldown button of the spec, with the ones the live CDM
-      -- actually tracks present in `abilities`.  Incinerate and the cast-id alias are the
-      -- two absentees; only Incinerate may be drawn.
-      local CHAOS_BOLT_, RAIN_OF_FIRE = 116858, 5740
-      known(INCINERATE, IMMOLATE_CAST, CHAOS_BOLT_, RAIN_OF_FIRE, IMMOLATE_AURA)
-      zeroCD(INCINERATE, IMMOLATE_CAST, CHAOS_BOLT_, RAIN_OF_FIRE, IMMOLATE_AURA)
-      assert.are.same({ INCINERATE }, candidates({
-        [CHAOS_BOLT_]   = { spellID = CHAOS_BOLT_ },
-        [RAIN_OF_FIRE]  = { spellID = RAIN_OF_FIRE },
-        [IMMOLATE_AURA] = { spellID = IMMOLATE_AURA },
-      }))
+      known(INCINERATE); zeroCD(INCINERATE)
+      assert.are.same({ INCINERATE }, candidates(onScreenExcept(INCINERATE)))
+    end)
+
+    it("...and the cast-id ALIAS beside it changes nothing", function()
+      -- 348 is Immolate's cast id; the CDM tracks the DoT aura 157736.  Both absent from the
+      -- board, and only `expect = false` keeps the alias out — remove that fence and this
+      -- goes red rather than being silently protected by the alias's own cooldown.
+      known(INCINERATE, IMMOLATE_CAST); zeroCD(INCINERATE, IMMOLATE_CAST)
+      assert.are.same({ INCINERATE }, candidates(onScreenExcept(INCINERATE, IMMOLATE_CAST)))
     end)
 
     it("Demonology yields EXACTLY Shadow Bolt (the seam is per-spec DATA, not code)", function()
       H.setSpecIndex(1)
       ns.ResolveActiveSpec()
-      local SHADOW_BOLT, HAND_OF_GULDAN, DEMONBOLT, IMPLOSION = 686, 105174, 264178, 196277
-      local IMP_LORD_ALIAS = 136726
-      known(SHADOW_BOLT, HAND_OF_GULDAN, DEMONBOLT, IMPLOSION, IMP_LORD_ALIAS)
-      -- ⚠ The Imp Lord ALIAS is given a zero cooldown DELIBERATELY, though the real ability
-      -- has 120s.  Its real cooldown would exclude it anyway — and that is the problem: it
-      -- would be excluded by ACCIDENT rather than by being an alias.  Zeroing it here means
-      -- only `expect = false` can keep it out, so removing that fence turns this test red
-      -- instead of leaving it silently protected.
-      zeroCD(SHADOW_BOLT, HAND_OF_GULDAN, DEMONBOLT, IMPLOSION, IMP_LORD_ALIAS)
-      assert.are.same({ SHADOW_BOLT }, candidates({
-        [HAND_OF_GULDAN] = { spellID = HAND_OF_GULDAN },
-        [DEMONBOLT]      = { spellID = DEMONBOLT },
-        [IMPLOSION]      = { spellID = IMPLOSION },
-      }))
+      local SHADOW_BOLT, IMP_LORD_ALIAS = 686, 136726
+      known(SHADOW_BOLT, IMP_LORD_ALIAS)
+      -- ⚠ The Imp Lord ALIAS is absent from the board DELIBERATELY, alongside Shadow Bolt.
+      -- Only `expect = false` can keep it out, so removing that fence turns this test red
+      -- instead of leaving it silently protected by its own 120 s cooldown.
+      assert.are.same({ SHADOW_BOLT },
+                      candidates(onScreenExcept(SHADOW_BOLT, IMP_LORD_ALIAS)))
     end)
 
     it("no active spec ⇒ nothing at all (the passive path stays silent)", function()
       known(INCINERATE); zeroCD(INCINERATE)
       H.setSpecIndex(2)          -- Affliction: registered nowhere, HUD goes passive
       ns.ResolveActiveSpec()
-      assert.are.same({}, St.VirtualCandidates(ns.Spec, {}, nil, St.SpellKnown, ns.BaseCooldown))
+      assert.are.same({}, St.VirtualCandidates(ns.Spec, {}, true))
     end)
   end)
 
@@ -691,22 +876,35 @@ describe("State virtual rows (the untracked floor press)", function()
       assert.equals(686, shown.spellID)                     -- the raw base is still carried
     end)
 
-    it("HELLCALLER: an UNLEARNED 686 row keeps its base, so ours still synthesises", function()
-      -- The fence on the fence.  Re-keying a DROPPED row onto Incinerate would make
-      -- `virtualCandidates`' "not dropped-unlearned" test see Incinerate as unlearned and
-      -- refuse to draw ours — silently killing the one path that already works in the field
-      -- (Hellcaller: 0 % w:- , Incinerate cued 10x and drawn 50x, 2026-07-30).  Only a row
-      -- that SURVIVED the filter may claim a display identity.
+    it("HELLCALLER: the same row UNDRAWN ⇒ ours is drawn instead, readings intact", function()
+      -- 686 is unlearned on Hellcaller, so Blizzard hides the frame and the row draws
+      -- nothing — and Incinerate is still pressed every GCD (0 % w:- , cued 10x and drawn
+      -- 50x in the field, 2026-07-30).  ⚠ Phase 5 states this through DRAWABILITY rather
+      -- than through a `dropped` reason, and the row is no longer replaced: it keeps its
+      -- cooldownID and every reading, and merely takes our negative display handle.  The
+      -- ROW's own `isKnown = false` describes Shadow Bolt, not the ability the row draws,
+      -- which is exactly why the spellbook outranks it.
       local SHADOW_BOLT = 686
       _G.C_CooldownViewer.GetCooldownViewerCooldownInfo = function()
         return { spellID = SHADOW_BOLT, isKnown = false, overrideSpellID = INCINERATE,
                  overrideTooltipSpellID = INCINERATE }
       end
+      ns.GetItemFrames = function() return {} end             -- …but SOMETHING is drawn:
+      ns.VIEWERS = { { frame = "EssentialCooldownViewer" }, { frame = "UtilityCooldownViewer" } }
+      local other = { { cooldownID = 999 } }
+      ns.GetViewer = function(name)
+        return name == "UtilityCooldownViewer" and { n = 2 } or { n = 1 }
+      end
+      ns.GetItemFrames = function(v) return v.n == 2 and other or {} end
       local pulse = St.Build(false)
-      assert.equals("unlearned", pulse.dropped[SHADOW_BOLT])  -- the DROP keeps the raw base
-      assert.is_nil(pulse.dropped[INCINERATE])
-      assert.is_not_nil(pulse.abilities[INCINERATE])          -- ...so ours is synthesised
-      assert.is_true(pulse.abilities[INCINERATE].virtual)
+      local shown = pulse.abilities[INCINERATE]
+      assert.is_not_nil(shown)
+      assert.is_true(shown.known)                             -- the spellbook, not the row
+      assert.is_false(shown.displayable)
+      assert.is_true(shown.virtual)                           -- …so ours is the icon
+      assert.equals(-INCINERATE, shown.display.cooldownID)
+      assert.equals(903, shown.cooldownID)                    -- …over the REAL row
+      assert.are.same({ INCINERATE }, pulse.virtual)
     end)
 
     it("stops synthesising the moment Blizzard starts tracking it", function()
@@ -731,6 +929,8 @@ describe("State aura-lifecycle latch (field-fix C)", function()
 
   before_each(function()
     ns = H.fresh()
+    H.setSpecIndex(3)            -- Destruction: Immolate is one of its own
+    ns.ResolveActiveSpec()
     H.load("State.lua")
     St = ns.State
     St.Acquire()                 -- the latch is gated on a live consumer, like readyEdge
@@ -800,20 +1000,24 @@ describe("State aura-lifecycle latch (field-fix C)", function()
       }
     end
 
+    -- ⚠ `St.FoldSignals` is the fold, split out of the old `St.DomainView` in Phase 5.  It is
+    -- a property of the ROWS, not of the roster — an ability's aura signal can live on a row
+    -- no declared id claims — so it survived the inversion unchanged and keeps its own seam.
     it("either cooldownID's latch surfaces under its own base spellID", function()
       alert(IMM_AURA_CID, A.PandemicTime)
-      local _, _, edges = St.DomainView(rows(), nil, true, St.dotEdge)
+      local edges = St.FoldSignals(rows(), nil, St.dotEdge)
       assert.equals("pandemic", edges[IMMOLATE_AURA].state)
 
       H.advance(1)
       alert(IMM_CAST_CID, A.PandemicTime)
-      local _, _, edges2 = St.DomainView(rows(), nil, true, St.dotEdge)
+      local edges2 = St.FoldSignals(rows(), nil, St.dotEdge)
       assert.equals("pandemic", edges2[IMMOLATE_CAST].state)
     end)
 
-    it("rides the pressable row so the brain never sees a cooldownID", function()
+    it("rides the declared ability's row so the brain never sees a cooldownID", function()
       alert(IMM_CAST_CID, A.PandemicTime)
-      local abilities = St.DomainView(rows(), nil, true, St.dotEdge)
+      local abilities = St.RosterView(rows(), nil, ns.Spec, St.dotEdge, true,
+                                      function() return true end)
       assert.equals("pandemic", abilities[IMMOLATE_CAST].dot.state)
     end)
 
@@ -826,12 +1030,14 @@ describe("State aura-lifecycle latch (field-fix C)", function()
       alert(770, A.PandemicTime)
       H.advance(5)
       alert(771, A.OnAuraRemoved)
-      local _, _, edges = St.DomainView(twoRows, nil, true, St.dotEdge)
+      local edges = St.FoldSignals(twoRows, nil, St.dotEdge)
       assert.equals("absent", edges[CONFLAGRATE].state)
     end)
 
     it("no alert seen ⇒ no latch, and the brain stays silent", function()
-      local abilities, _, edges = St.DomainView(rows(), nil, true, St.dotEdge)
+      local edges = St.FoldSignals(rows(), nil, St.dotEdge)
+      local abilities = St.RosterView(rows(), nil, ns.Spec, St.dotEdge, true,
+                                      function() return true end)
       assert.is_nil(edges[IMMOLATE_CAST])
       assert.is_nil(abilities[IMMOLATE_CAST].dot)
     end)

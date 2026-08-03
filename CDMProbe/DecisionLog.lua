@@ -242,17 +242,35 @@ function DL.Render(pulse, guidance, drawList)
   table.sort(chList)
   local chStr = (#chList > 0) and table.concat(chList, ",") or "-"
 
-  -- DR — what State's domain-view filter REMOVED this pulse and why (field-fix A):
-  -- `SF:unlearned`, `Inc:no-icon`.  The filter's whole job is deleting rows, so it must
-  -- never delete one QUIETLY — a wrong signal that drops a real button has to be visible in
-  -- the trace, not merely absent from it.  Stable across ticks, so the change-only dedup
-  -- keeps it to one line, not one per pulse.
-  local drList = {}
-  for base, why in pairs(pulse.dropped or {}) do
-    drList[#drList + 1] = (abbrOf(base) or tostring(base)) .. ":" .. tostring(why)
+  -- DR — the declared abilities State will NOT let the Coach pick, and why:
+  -- `SF:unlearned`, `HoW:unknown`.  ⚠ RE-SOURCED, NOT DELETED (roster-state-plan Phase 5
+  -- §C6).  It used to read `pulse.dropped`, the field-fix-A record of what the domain-view
+  -- FILTER removed; Phase 5 retired that filter — knownness marks the row instead of
+  -- deleting it — but the visibility it bought is the whole reason the Soul Fire bug was
+  -- findable, and §8 is explicit that dropping it without a replacement trades a loud
+  -- failure for a quiet one.  So the same column now reads the three-valued `known` off the
+  -- rows themselves, which is strictly MORE than before: `dropped` could only ever name an
+  -- ability that would have been a press, while this names every declared one.
+  --
+  -- ⚠ AND IT SAYS SO WHEN THE WHOLE CHANNEL REFUSED.  `knownReadable == false` is the
+  -- wholesale guard firing — not one ability answered — which the Coach responds to by
+  -- ignoring knownness altogether.  That is exactly the state a reader must not mistake for
+  -- "everything is fine": it renders as `!refused`.
+  local drStr
+  if pulse.knownReadable == false then
+    drStr = "!refused"
+  else
+    local drList = {}
+    for base, ab in pairs(pulse.abilities or {}) do
+      local k = ab.known
+      if k == false or k == "unknown" then
+        drList[#drList + 1] = (abbrOf(base) or tostring(base))
+          .. ":" .. (k == false and "unlearned" or "unknown")
+      end
+    end
+    table.sort(drList)
+    drStr = (#drList > 0) and table.concat(drList, ",") or "-"
   end
-  table.sort(drList)
-  local drStr = (#drList > 0) and table.concat(drList, ",") or "-"
 
   -- G — Coach output by emphasis.  Cues keyed by BASE spellID (the re-layer).  ROTATION/
   -- LATE = winner (w:/w!), else w:- (the nil-winner smoking gun); ROTATION_FALLBACK = fb;

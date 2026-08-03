@@ -132,4 +132,98 @@ describe("Coach.Classify", function()
     local rec = classify(cd(104316))
     assert.equals(104316, rec.base)
   end)
+
+  ------------------------------------------------------------------------------
+  -- KNOWNNESS — the Phase 5 §C5 cap, and the ONLY Coach edit the inversion needed.
+  ------------------------------------------------------------------------------
+  -- State stopped FILTERING on knownness and started MARKING with it: every declared
+  -- ability reaches `abilities` now, carrying three-valued `known`, so the decision about
+  -- what an unlearned or unreadable ability may DO is made here, once, for all three
+  -- brains.  These are that decision — and the fourth case is the one that matters most,
+  -- because it is every fixture in every other suite.
+  describe("the three-valued `known` cap", function()
+    -- Classify against a pulse whose wholesale-guard field can be varied.
+    local function classifyIn(entry, stateFields)
+      local state = { at = NOW, abilities = { [entry.spellID] = entry } }
+      for k, v in pairs(stateFields or {}) do state[k] = v end
+      return ns.Coach.Classify(entry, state)
+    end
+
+    -- `false` — the client says the character does not have this spell.  Never a
+    -- candidate, exactly as an aura row is not: this is what killed the 216-dropped-
+    -- Soul-Fire-cues bug, and it has to keep killing it.
+    it("known == false ⇒ nil, the same floor an aura row gets", function()
+      local row = cd(265187, { cd = napkin(0, 10) })   -- otherwise a hard ROTATION candidate
+      row.known = false
+      assert.is_nil(classifyIn(row))
+    end)
+
+    -- `"unknown"` — we asked and came away with nothing.  The row STAYS (it is in
+    -- ctx.facts, in the decision log, in Coverage) and merely may not win: zeroing the
+    -- three readiness flags IS "cap at available", read against guidance-contract.json
+    -- where AVAILABLE is "off cooldown but not a call — no cue".
+    it('known == "unknown" ⇒ a record whose readiness flags are all false', function()
+      local row = cd(265187, { cd = napkin(0, 10) })
+      row.known = "unknown"
+      local rec = classifyIn(row)
+      assert.is_truthy(rec)                    -- the row survives...
+      assert.is_true(rec.knownUnknown)         -- ...and says why
+      assert.is_false(rec.ready)
+      assert.is_false(rec.probablyUp)
+      assert.is_false(rec.anticipated)
+      assert.is_false(rec.overdue)
+    end)
+
+    -- ...but the cap is applied over the FINISHED record, so the trace keeps its honest
+    -- readings.  A capped row that reports `remaining = nil` cannot be told from one that
+    -- was never read.
+    it("the cap does not erase the underlying reading (the trace stays honest)", function()
+      local row = cd(104316, { cd = napkin(7.5) })
+      row.known = "unknown"
+      local rec = classifyIn(row)
+      assert.is_true(rec.onCd)                 -- the 3-state contract is untouched
+      assert.equals(7.5, rec.remaining)
+      assert.equals("napkin", rec.cdSource)
+      assert.is_false(rec.anticipated)         -- only the READINESS flags are capped
+    end)
+
+    -- ⚠ THE WHOLESALE GUARD OVERRIDES BOTH.  `knownReadable == false` means not one
+    -- declared ability answered — a broken read, not a bare character — so barring the
+    -- roster would blank the HUD for a whole session.  Knownness is ignored in BOTH
+    -- directions: the unlearned row comes back, and the unknown row is uncapped.
+    it("state.knownReadable == false ignores knownness in both directions", function()
+      local unlearned = cd(265187, { cd = napkin(0, 10) })
+      unlearned.known = false
+      local rec = classifyIn(unlearned, { knownReadable = false })
+      assert.is_truthy(rec)                    -- NOT nil — the guard fired
+      assert.is_true(rec.probablyUp)
+
+      local unsure = cd(265187, { cd = napkin(0, 10) })
+      unsure.known = "unknown"
+      local rec2 = classifyIn(unsure, { knownReadable = false })
+      assert.is_nil(rec2.knownUnknown)         -- uncapped, not merely un-nil'd
+      assert.is_true(rec2.probablyUp)
+    end)
+
+    -- ⚠ AND `nil` MUST KEEP MEANING "NOBODY ASKED".  That is why the third value is the
+    -- STRING "unknown" and not nil: every hand-built fixture pulse in every other suite
+    -- omits the field, and making absence mean "unreadable" would have capped the entire
+    -- Coach corpus at once.
+    it("an ABSENT known field changes nothing (the pre-Phase-5 fixture shape)", function()
+      local row = cd(265187, { cd = napkin(0, 10) })
+      assert.is_nil(row.known)
+      local rec = classifyIn(row)
+      assert.is_truthy(rec)
+      assert.is_true(rec.probablyUp)
+      assert.is_nil(rec.knownUnknown)
+    end)
+
+    it("known == true is likewise a plain pass-through", function()
+      local row = cd(265187, { cd = napkin(0, 10) })
+      row.known = true
+      local rec = classifyIn(row)
+      assert.is_true(rec.probablyUp)
+      assert.is_nil(rec.knownUnknown)
+    end)
+  end)
 end)

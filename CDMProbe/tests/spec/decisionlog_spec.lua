@@ -46,6 +46,9 @@ local function ability(base, cid, cd, extra)
     cd = cd or cdUnknown(),
     glow = { active = extra.glow or false, readable = true },
     display = { cooldownID = cid, category = extra.category or "Essential" },
+    -- Three-valued knownness (Phase 5): true | false | "unknown" | nil ("nobody asked").
+    -- Absent by default, which is the pre-Phase-5 pulse shape every case above relies on.
+    known = extra.known,
   }
 end
 
@@ -67,12 +70,19 @@ local function build(f)
   abilities[ID.SB]  = ability(ID.SB, CID.SB, cdUnknown(), sbExtra)
   abilities[ID.DB]  = ability(ID.DB, CID.DB, cdUnknown(), { glow = f.core or false })
 
+  -- Knownness, stamped over the finished rows: `f.known` is a base-spellID -> value map,
+  -- so a case names only the abilities it cares about and every other row keeps `nil`.
+  for base, k in pairs(f.known or {}) do abilities[base].known = k end
+
   -- Demonic Core is tracked-only (no pressable twin): presence rides `buffs`, keyed by
   -- spellID, not `abilities`.
   local buffs = {}
   if f.core then buffs[ID.CORE] = true end
 
   return {
+    -- The WHOLESALE GUARD (Phase 5): `false` = not one declared ability answered.  Absent
+    -- by default — the field simply did not exist before Phase 5.
+    knownReadable = f.knownReadable,
     -- `f.combat` defaults TRUE, so every existing call site is unchanged; the Record block
     -- at the bottom of this file drives it both ways for the combat-edge marker.
     at = 1000, combat = (f.combat ~= false),
@@ -298,6 +308,65 @@ describe("DecisionLog.Render", function()
     it("an edge with no frame still renders, on the other side of the slash", function()
       local s = dotOf(build{ dotEdges = { [ID.TYRANT] = { state = "absent", at = 998 } } })
       assert.truthy(s:find("T=-/absent@2.0", 1, true), s)
+    end)
+  end)
+
+  ------------------------------------------------------------------------------
+  -- DR — the declared abilities State will not let the Coach pick, and why.
+  --
+  -- ⚠ RE-SOURCED, NOT DELETED (Phase 5 §C6).  It used to read `pulse.dropped`, the record
+  -- of what State's domain-view FILTER removed; Phase 5 retired that filter — knownness
+  -- MARKS the row instead of deleting it — but the visibility it bought is the whole
+  -- reason the Soul Fire bug was findable, and dropping it without a replacement would
+  -- trade a loud failure for a quiet one.  So the same column reads the three-valued
+  -- `known` off the rows themselves, which is strictly MORE than before: `dropped` could
+  -- only ever name an ability that would otherwise have been a press.
+  ------------------------------------------------------------------------------
+  describe("the DR field", function()
+    local function drOf(pulse)
+      return ns.DecisionLog.Render(pulse, { cues = {} }, { cues = {} }):match("DR:([^}]*)}")
+    end
+
+    it("nothing to report ⇒ -", function()
+      assert.equals("-", drOf(build{}))
+    end)
+
+    it("an UNLEARNED row renders <abbr>:unlearned", function()
+      assert.equals("SB:unlearned", drOf(build{ known = { [ID.SB] = false } }))
+    end)
+
+    it("an UNKNOWN row renders <abbr>:unknown — a different finding, not a synonym", function()
+      assert.equals("SB:unknown", drOf(build{ known = { [ID.SB] = "unknown" } }))
+    end)
+
+    it("a KNOWN row is not reported at all (the column is exceptions only)", function()
+      assert.equals("-", drOf(build{ known = { [ID.SB] = true, [ID.HOG] = true } }))
+    end)
+
+    it("lists several, sorted, so two captures diff", function()
+      local dr = drOf(build{ known = {
+        [ID.TYRANT] = false, [ID.DREAD] = "unknown", [ID.SB] = false } })
+      assert.equals("D:unknown,SB:unlearned,T:unlearned", dr)
+    end)
+
+    -- ⚠ AND IT SAYS SO WHEN THE WHOLE CHANNEL REFUSED.  `knownReadable == false` is the
+    -- wholesale guard firing, which the Coach answers by ignoring knownness ALTOGETHER —
+    -- so the per-row values on screen are not being enforced.  A reader must not mistake
+    -- that for "everything is fine", and a `-` would read exactly like the healthy case.
+    it("the WHOLESALE GUARD renders !refused, not the per-row list", function()
+      assert.equals("!refused", drOf(build{
+        knownReadable = false, known = { [ID.SB] = false, [ID.DREAD] = "unknown" } }))
+    end)
+
+    it("!refused fires even with nothing else to report — it is about the CHANNEL", function()
+      assert.equals("!refused", drOf(build{ knownReadable = false }))
+    end)
+
+    -- `true` is the healthy answer and must stay indistinguishable from the pre-Phase-5
+    -- shape; only an explicit `false` is the guard.
+    it("knownReadable == true is not the guard", function()
+      assert.equals("SB:unlearned", drOf(build{
+        knownReadable = true, known = { [ID.SB] = false } }))
     end)
   end)
 

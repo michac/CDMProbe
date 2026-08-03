@@ -269,11 +269,18 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   restricted combat). Hammer of Light 427453 was
                                   DISCRIMINATED, not picked: SpellName carries eight
                                   "Hammer of Light" rows and exactly one costs Holy Power.
-                                  ⚠ SIX of the nine Essential buttons have
+                                  ⚠ FOUR of the nine Essential buttons (Judgment, Crusader
+                                  Strike, Blade of Justice, Wake of Ashes) have
                                   SpellCooldowns.RecoveryTime = 0 and keep their cooldown on
-                                  a SpellCategory, so ns.BaseCooldown reads 0 and the napkin
-                                  is BLIND on most of the spec. `chargeCD` documents the real
-                                  numbers; nothing reads it yet (status.md backlog).
+                                  a CHARGE CATEGORY, so ns.BaseCooldown reads 0 and the
+                                  napkin has nothing to count down from. ⚠ This said SIX
+                                  until 2026-08-03 — Avenging Wrath keeps its cooldown on the
+                                  spell row, and the two spenders read 0 because they have NO
+                                  cooldown, which is a different condition. Readiness is NOT
+                                  what is lost (it comes from the charge count); SOON and
+                                  Escalate's overdue call are. `chargeCD` documents the real
+                                  recovery numbers and HudNapkin.lua:113-119 now READS it,
+                                  filed source = "declared".
     CoachRetribution.lua          the Retribution BRAIN: Context / RankWinner / Escalate on
                                   spec 70's object, implementing specs/retribution/
                                   rotation.md L1-L12. Structurally Destruction, not Demo: no
@@ -292,10 +299,49 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   Greened against coach_retribution_apl_spec (68 cases).
     -- The W4 pipeline (State -> Coach -> Binder -> Renderer), driven each tick by
     -- HudDriver.  See docs/architecture.md.
-    State.lua                     ingestion + State.Build: folds the CDM rows into
-                                  the base-spellID domain view (abilities/buffs/
-                                  power); Secret-Value-guarded, napkin + edge
-                                  fused for honest readiness. The pipeline's INPUT.
+    State.lua                     ingestion + State.Build: the ROSTER-ANCHORED domain view
+                                  (abilities/buffs/power), keyed by base spellID;
+                                  Secret-Value-guarded, napkin + edge fused for honest
+                                  readiness. The pipeline's INPUT.
+                                  ⚠ THE ANCHOR INVERTED IN PHASE 5 (2026-08-03,
+                                  roster-state-plan §6.3 — READ IT BEFORE EDITING THIS FILE;
+                                  eleven decisions there are not in the plan text). Build used
+                                  to ENUMERATE the whole CDM database and filter back down to
+                                  what is pressable, with the spec table entering only at the
+                                  end as the source for virtual rows. Now the spec's declared
+                                  ROSTER is the anchor and the CDM is ONE EVIDENCE SOURCE
+                                  joined against it. Three pure seams carry it:
+                                    St.RosterEntries(specTable) — the roster walk, factored
+                                      once and sorted by spellID so a contested claim never
+                                      depends on pairs() order. Coverage.lua uses it too.
+                                    St.RosterClaims — ranks claims GLOBALLY (identity match >
+                                      base match > bare mention; Essential > Utility > tab 2)
+                                      and assigns greedily, so ONE ROW IS CLAIMED BY AT MOST
+                                      ONE ABILITY. `pulse.cooldowns` stays intact.
+                                    St.RosterView — builds the rows off those claims.
+                                  ⚠ THE ROOT FIX IS ONE INTENT: `readAbilityFacts(rid, rep)`
+                                  passes the ROSTER spellID to BOTH readCd and readCharge, so
+                                  an ability's cooldown and its charges are asked about the
+                                  SAME id. They used to run two ladders — cooldown on the
+                                  DISPLAY identity, charges on `overrideSpellID or spellID` —
+                                  and on a row whose identity flips mid-session (Judgment
+                                  alternates with Hammer of Wrath in the tracked set) those
+                                  resolve to DIFFERENT SPELLS, i.e. one ability's cooldown
+                                  compared against another's charges. Three of the five
+                                  Retribution flight defects, one cause. Do not re-derive
+                                  either fact through a row's identity.
+                                  ⚠ UNCLAIMED ROWS COST NO READS — a row no declared ability
+                                  claims gets `cd = {state="unknown", source="none"}` /
+                                  `charge = {readable=false}` rather than its own read. That
+                                  is where the sizing win actually comes from.
+                                  ⚠ SYNTHESIS HAS THREE WHOLESALE GUARDS, not one: no frame
+                                  map, empty database, and ANY ROW WITH NO RESOLVABLE BASE
+                                  (an unreadable row makes every "untracked" negative
+                                  unprovable). Without them a refused CDM read puts OUR icon
+                                  on screen for the whole rotation — the v0.32.32 duplicate at
+                                  roster scale. Guard 3 keys on `baseOfRow(entry, fold) ==
+                                  nil`, NOT on "the spellID read secret", so a warm in-combat
+                                  pulse keeps drawing.
                                   ⚠ `power` is RAW — value/max/readable per
                                   Enum.PowerType NAME, no `incoming` — PLUS the EXACT rail
                                   (Phase 6.2): `unmodified`/`unmodifiedMax`/`modifier` from
@@ -315,12 +361,32 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   they push history's `"stopped"` phase, which is what
                                   lets the COACH cancel a mid-flight spender. Do not
                                   drop them or the phase.
-                                  ⚠ `abilities` is FILTERED (field-fix A): a row that is
-                                  unlearned (isKnown==false) or undrawable (no item frame)
-                                  never enters it — both read `ready` forever, so they won
-                                  the priority list (216 dropped Soul Fire cues in one live
-                                  session). Drops are reported on `pulse.dropped`, never
-                                  silent. Consumes ALL SIX alert types now: the two cooldown
+                                  ⚠ `abilities` IS NO LONGER FILTERED — it MARKS (Phase 5,
+                                  §6.1). Field-fix A used to DELETE an unlearned or undrawable
+                                  row, because both read `ready` forever and so won the
+                                  priority list (216 dropped Soul Fire cues in one live
+                                  session). Anchored on the roster there is one base set and
+                                  no safe default, so every declared ability enters `abilities`
+                                  carrying THREE-VALUED `known`: true | false | "unknown" |
+                                  nil. ⚠ THE THIRD VALUE IS THE STRING, NOT nil — `nil` has to
+                                  keep meaning "nobody asked" (every hand-built fixture pulse
+                                  carries it). The SPELLBOOK is the authority and the row's
+                                  `isKnown` only the fallback, because a row's isKnown
+                                  describes its BASE, which on a display-overridden row is a
+                                  different spell (Hellcaller cid 66181's base Shadow Bolt is
+                                  unlearned while the Incinerate it draws is pressed every
+                                  GCD). Coach.Classify makes the decision: false => nil,
+                                  "unknown" => the row survives with its readiness flags
+                                  zeroed (that IS "available"). `pulse.knownReadable == false`
+                                  is the WHOLESALE GUARD and overrides both — not one ability
+                                  answered means a broken read, not a bare character.
+                                  ⚠ `pulse.dropped` IS DELETED. Its visibility is what made
+                                  the Soul Fire bug findable, so the decision log's `DR:` field
+                                  was RE-SOURCED off the rows' `known` (and renders `!refused`
+                                  when the guard fires) — strictly more than `dropped` carried,
+                                  which could only ever name a would-be press. `displayable`
+                                  survives on the raw row as a diagnostic.
+                                  Consumes ALL SIX alert types now: the two cooldown
                                   edges (readiness), the three aura edges (`dotEdge`, the
                                   pandemic latch) and `ChargeGained` (the charge napkin) —
                                   each promoted on measurement, see knowledge/addon-dev/
@@ -487,6 +553,16 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   `ns.db.virtualPanel` (BucketBinds Console.lua's shape).
     HudDriver.lua                 the LIVE driver: the ~10 Hz ticker that runs the
                                   pipeline + the `/cdmp hud` command.
+                                  ⚠ THE CADENCE IS SPLIT (Phase 5 §C8), and the two halves
+                                  are not interchangeable. `pulseNow()` throttles the PULSE to
+                                  OOC_BUILD_PERIOD = 0.5s OUT OF COMBAT ONLY (in combat every
+                                  tick still builds — a stale pulse mid-pull is the one thing
+                                  the HUD may never serve), while St.PumpFrames() runs EVERY
+                                  tick regardless: it hoists `installAlertHooks` out of Build,
+                                  so a frame that appears between throttled pulses still gets
+                                  hooked and no alert edge is lost. ns.SetHud clears the cache
+                                  on toggle, so turning the HUD on never serves a pulse from
+                                  before it was off.
     Coverage.lua                  THE ROSTER COVERAGE PROBE (roster-state-plan Phase 4):
                                   does the CDM actually TRACK every id the spec's roster
                                   declares? Asked OUT OF COMBAT, where it is cheap.
@@ -496,8 +572,22 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   PLAYER_SPECIALIZATION_CHANGED) so the State->Coverage
                                   dependency stays ONE-WAY. Per id: coverage
                                   (tracked/untracked/unreadable) + verdict (ok / virtual /
-                                  expected / BLIND / unknown). Also the REQUIRED replacement
-                                  for `pulse.dropped`, which Phase 5 deletes.
+                                  expected / BLIND / unknown). It was the REQUIRED replacement
+                                  for `pulse.dropped`, which Phase 5 deleted (the decision
+                                  log's `DR:` field is the other half).
+                                  ⚠ ITS `blind` VERDICT NARROWED TO AURAS IN PHASE 5, and the
+                                  probe is weaker for it. Every declared non-utility BUTTON now
+                                  gets a virtual row by construction, so the HUD cannot be
+                                  blind to a button any more — only a `kind = "aura"` entry can
+                                  still be blind. Do not read a quiet coverage report as broad
+                                  coverage; filed in status.md alongside roster gap #2 (the
+                                  aura half of the roster is still write-only for State).
+                                  ⚠ It joins on `linkedSpellIDs` and the DOMAIN VIEW
+                                  DELIBERATELY DOES NOT — Coverage asks "does the CDM know this
+                                  id at all", the join asks "which ability IS this row", and
+                                  the pool is a bag of alternatives, so joining on it there
+                                  would let one id claim a row that visibly draws another
+                                  ability. The asymmetry is intentional; do not "align" them.
                                   ⚠ THE WHOLESALE GUARD IS THE POINT: an empty scan is
                                   `ok=false, reason="cdm-empty"` and reports NO entry as
                                   untracked (an empty database means the read refused, not
@@ -562,14 +652,26 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   hand-built State pulses assert winner + fallback + SOON
                                   per BRANCH of the flat list + shard boundaries, authored
                                   from apl-prototype/pseudocode.md (the independent oracle)
-      spec/state_domainview_spec.lua  State's DOMAIN VIEW + its HERO-TREE read, loaded
-                                  from the REAL State.lua
-                                  with only the CDM database + frame discovery faked: the
-                                  PRESSABLE filter (an unlearned or undrawable row never
-                                  reaches `abilities`, the raw `cooldowns` view keeps both,
-                                  and every drop is reported), the aura-lifecycle latch
-                                  across Immolate's TWO cooldownIDs, and the charge napkin's
-                                  full loop. The filter is mutation-checked three ways.
+      spec/state_domainview_spec.lua  State's ROSTER-ANCHORED DOMAIN VIEW + its HERO-TREE
+                                  read, loaded from the REAL State.lua with only the CDM
+                                  database + frame discovery faked: St.RosterEntries /
+                                  St.RosterClaims / St.RosterView as pure functions (a row is
+                                  claimed by AT MOST ONE ability, and the claim ranking is
+                                  global so pairs() order cannot decide a contest), the
+                                  three-valued knownness MARK and its wholesale guard, the
+                                  aura-lifecycle latch across Immolate's TWO cooldownIDs, and
+                                  the charge napkin's full loop.
+                                  ⚠ It runs DESTRUCTION throughout (H.setSpecIndex(3)), and
+                                  the "exactly one virtual row per spec" guards build their
+                                  board from St.RosterEntries (onScreenExcept) rather than a
+                                  hand-listed id set — a hand-listed board silently stops
+                                  covering anything added to the spec table later.
+                                  ⚠ TWO MUTATION CHECKS ARE OWED TO IT AND WERE RUN 2026-08-03:
+                                  delete the `(asked == 0) or sawReadable` term in rosterView's
+                                  return and "knownReadable is FALSE when the whole roster
+                                  refused" goes red; delete the `info.expect ~= false` fence in
+                                  virtualCandidates and four cases go red, including both
+                                  EXPECT=FALSE ones.
       spec/viewers_spec.lua       the item->identity resolvers, loaded from the REAL
                                   Viewers.lua with only frame DISCOVERY faked — the
                                   companion that proves ns.ItemCooldownID actually SHIPS.
@@ -606,7 +708,21 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   carries one because GetSpellCharges was MEASURED secret,
                                   and pre-emptively copying it here would make the
                                   measurement impossible
-      spec/coach_classify_spec.lua Classify in isolation (probably-up, transforms)
+      spec/coach_classify_spec.lua Classify in isolation (probably-up, transforms) + THE
+                                  KNOWNNESS CAP (Phase 5 §C5, the phase's only Coach edit):
+                                  known == false returns nil, "unknown" keeps the record with
+                                  ready/probablyUp/anticipated/overdue zeroed and knownUnknown
+                                  set, the underlying remaining/cdSource survive the cap so
+                                  the trace stays honest, `state.knownReadable == false`
+                                  ignores knownness in BOTH directions, and — the one that
+                                  guards every other suite — an ABSENT `known` field changes
+                                  nothing, which is why the third value is the STRING
+                                  "unknown" and not nil
+      spec/huddriver_cadence_spec.lua  the SPLIT CADENCE (Phase 5 §C8): the pulse throttles
+                                  to 0.5s OUT OF COMBAT ONLY, in combat every tick rebuilds,
+                                  the frame PUMP runs every tick either way (so no alert edge
+                                  is lost between throttled pulses), and ns.SetHud clears the
+                                  cache on toggle
       spec/binder_spec.lua        spellID cue -> display cooldownID/icon resolution, and
                                   the SECOND channel: cues carry decisions only, keybinds[]
                                   carries the key hint for every displayed icon (Phase 3)
@@ -649,7 +765,7 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   round-trip, the default fallback, `reset`, lock/unlock
                                   over mouse+chrome+alpha, and the extents floor
       fixtures/cdm-cases.lua      THE CDM EDGE INVENTORY (pure data, never auto-collected —
-                                  busted's pattern is `_spec.lua`).  99 declarative
+                                  busted's pattern is `_spec.lua`).  107 declarative
                                   (CDM input -> expected State row) cases in 7 axes,
                                   authored from knowledge/addon-dev/cooldown-manager.md
                                   (NOT from State.lua — a suite transcribed from the source
@@ -661,7 +777,7 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   fix commit flips it to green + `fixed = "<phase> <§>"` in
                                   its own diff; do NOT "repair" one by weakening the
                                   expectation.  Phase 2 cleared all 11, so the corpus is
-                                  currently **0 pinned-defect / 21 `fixed`** — the `fixed`
+                                  currently **0 pinned-defect / 29 `fixed`** — the `fixed`
                                   tag is the permanent record that the case once failed, and
                                   a meta-test floors `#pinned + #fixed` so the history can
                                   never be quietly deleted.  Read the file header for the
@@ -680,7 +796,12 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   `issecrettable` sat hardcoded `false` for the life of the
                                   addon, making six real refusal branches unreachable while
                                   every suite stayed green — the v0.32.25 shape exactly
-      spec/decisionlog_spec.lua   the decision-log Record/Render split
+      spec/decisionlog_spec.lua   the decision-log Record/Render split — including the `DR:`
+                                  field RE-SOURCED off the rows' three-valued `known`
+                                  (Phase 5 §C6): `<abbr>:unlearned`, `<abbr>:unknown`, `-`
+                                  when there is nothing to report, and `!refused` when
+                                  pulse.knownReadable == false, which a reader must never
+                                  mistake for the healthy case
       spec/hudnapkin_spec.lua     anticipation countdown + honesty rules
       spec/specdelta_spec.lua     SpecDemonology signal-bucket deltas
       spec/spec_registry_spec.lua RegisterSpec/SetActiveSpec + legacy-global rebind
@@ -713,9 +834,11 @@ put `~/.luarocks/bin` on PATH.
 - **`busted CDMProbe/tests/spec`** — unit tests for the pure-logic pipeline modules
   (`Coach`, `Binder`, `Renderer`, `HudLayout`, `DecisionLog`, `HudNapkin`,
   `SpecDemonology`) + the multi-spec seam (`SpecRegistry`/`ResolveActiveSpec`, the
-  resource-array projection) + the **Destruction** rotation gate + **State's domain-view
-  fold** + State's hero-tree resolution + the **CDM edge inventory** (see `tests/fixtures/`
-  below). **688 tests / 4 pending.** The harness is
+  resource-array projection) + the **Destruction** and **Retribution** rotation gates +
+  **State's roster-anchored domain view** + State's hero-tree resolution + the **CDM edge
+  inventory** (see `tests/fixtures/` below). **883 tests / 4 pending** (⚠ this number has
+  drifted twice — **re-run `busted` and read the summary rather than copying it**). The
+  harness is
   **`CDMProbe/tests/mock_ns.lua`**: a chainable `CreateFrame`/FontString/animation
   stub, a **settable `GetTime` fake clock**, global fakes
   (`wipe`/`InCombatLockdown`/`issecretvalue`/`C_Timer`/`Enum`/`GetSpecialization`/…),

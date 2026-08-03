@@ -197,6 +197,37 @@ local function flagOf(rec, key)
 end
 
 --------------------------------------------------------------------------------
+-- St.RosterEntries — THE ROSTER WALK, one copy (roster-state-plan Phase 5 §C1)
+--------------------------------------------------------------------------------
+-- A spec table is a signal bucket keyed by spellID, but it is NOT only that: it also
+-- carries named fields (`ns.Spec.log`, the alias maps, the tunables).  So "walk the roster"
+-- is a PREDICATE — a numeric key whose value is a table — and that predicate was written
+-- out by hand in two places (`Coverage.lua`'s classification loop and `virtualCandidates`'
+-- fence walk), byte for byte.
+--
+-- ⚠ IT IS FACTORED FOR THE SAME REASON `Coverage.lua` REFUSES TO COPY THE VIRTUAL FENCES:
+-- two copies of one question drift, and the drift is invisible until a spec adds a field
+-- shaped like a roster entry.  With the roster ANCHORING the domain view (Phase 5), the
+-- walk stops being a diagnostic detail and becomes the thing that decides which abilities
+-- exist at all — so it gets one owner.
+--
+-- Returns an array of `{ spellID, info }` SORTED BY spellID, because `pairs` order decides
+-- which of two roster entries claims a contested CDM row, and a domain view that depends on
+-- table order is the exact class of bug the decision log's fixed render orders exist to
+-- prevent.
+function St.RosterEntries(specTable)
+  local out = {}
+  if type(specTable) ~= "table" then return out end
+  for spellID, info in pairs(specTable) do
+    if type(spellID) == "number" and type(info) == "table" then
+      out[#out + 1] = { spellID = spellID, info = info }
+    end
+  end
+  table.sort(out, function(a, b) return a.spellID < b.spellID end)
+  return out
+end
+
+--------------------------------------------------------------------------------
 -- St.CoverageRows — the CDM database as PLAIN RECORDS, for the coverage probe
 --------------------------------------------------------------------------------
 -- One record per enumerated cooldownID, carrying every id field a roster entry could
@@ -1215,6 +1246,31 @@ local function installAlertHooks()
 end
 
 --------------------------------------------------------------------------------
+-- St.PumpFrames — the 10 Hz half of the split cadence (Phase 5 §C8)
+--------------------------------------------------------------------------------
+-- ⚠ THIS EXISTS SO `St.Build` CAN BE THROTTLED WITHOUT BLINDING THE HUD, and it is the one
+-- place in this phase where the sizing win and correctness pull in opposite directions.
+--
+-- Out of combat the driver ticks at 10 Hz and every tick used to run the whole of `St.Build`
+-- over every enumerated row — roughly 7,000 guarded client calls a second to answer
+-- questions whose answers do not move between two consecutive frames of standing still.
+-- Throttling the build to ~2 Hz out of combat removes most of that.
+--
+-- But `installAlertHooks` ran INSIDE Build, and it is what wires the CDM's alert choke point
+-- on every re-pooled or newly-created item frame — the addon's deliberate substitute for a
+-- layout event.  Throttle Build wholesale and a frame created between two refreshes stays
+-- unhooked for up to half a second.  For Retribution that is not a decoration loss: FOUR of
+-- its Essential buttons keep their cooldown on a charge category, so the alert edges are
+-- their ONLY in-combat readiness channel.
+--
+-- So the cadence splits: the driver calls THIS every tick and `St.Build` on its own rhythm.
+-- Idempotent and cheap (a per-instance flag skips an already-hooked frame), exactly as it
+-- was when Build owned it.
+function St.PumpFrames()
+  installAlertHooks()
+end
+
+--------------------------------------------------------------------------------
 -- Cast history — a bounded, timestamped window of recent casts (sequence memory)
 --------------------------------------------------------------------------------
 -- A single State pulse is a snapshot; to know we're PARTWAY THROUGH A SEQUENCE the
@@ -1451,60 +1507,59 @@ eframe:SetScript("OnEvent", function(_, event, a1, a2, a3)
 end)
 
 --------------------------------------------------------------------------------
--- The DOMAIN VIEW fold (W4 re-layer, filtered by field-fix A) — PURE
+-- THE DOMAIN VIEW, ANCHORED ON THE ROSTER (roster-state-plan Phase 5) — PURE
 --------------------------------------------------------------------------------
--- `abilities[base]` is "the PRESSABLE representative row" of an ability, and PRESSABLE is
--- ENFORCED here, not merely intended.  State anchors on the CDM DATABASE with
--- `allowUnlearned = true` (see the header), so without this filter the fold promotes rows
--- for spells the character has not talented and rows the Layout can never draw.  Both
--- read `ready` FOREVER — a hard cooldown that never runs — so they win the priority list
--- and sit above every real press.
+-- THE INVERSION.  Until Phase 5 this file enumerated the whole Cooldown Manager database
+-- with `allowUnlearned = true` and then filtered back down to what looked pressable; the
+-- spec table entered only at the end, as the source for virtual rows.  Now the SPEC'S
+-- DECLARED ROSTER is the anchor and the CDM is ONE EVIDENCE SOURCE joined against it.
 --
--- TWO SIGNALS, and the order matters:
---   * `displayable` (PRIMARY) — an item frame exists for this cooldownID in the live
---     viewers.  NO INFERENCE: a frame is there or it is not, and if it is not, the Binder
---     has nothing to anchor to, so the cue would be dropped anyway.  This is the only
---     signal that catches INCINERATE — known, talented, pressed constantly, and simply
---     absent from the live tracked set.
---   * `isKnown` (SECONDARY) — the CDM's own "the character has this spell" flag, captured
---     since Phase 1 with zero consumers until now.  Catches the untalented rows
---     (Soul Fire / Havoc / Channel Demonfire) that DO have no frame either, but this is
---     the direct statement of the fact rather than a consequence of it.
+-- ⚠ WHY, and it is empirical rather than aesthetic.  Three of the five defects the first
+-- Retribution flight found were ONE SHAPE: an ability's facts derived through a CDM ROW'S
+-- IDENTITY instead of asked about the ability itself.  The sharpest is Judgment, cued while
+-- on cooldown on 191 of 226 disagreeing lines — the COOLDOWN resolved on the display
+-- identity while CHARGES used `overrideSpellID or spellID`, and Judgment's row FLIPS
+-- identity mid-session (it alternates with Hammer of Wrath), so the two ladders named
+-- DIFFERENT SPELLS and we compared one ability's cooldown against another's charges.  The
+-- shipped fixes were guards against a contradiction the data model still permitted; this
+-- removes the permission.  (`docs/multi-class-rollout.md` → THE ARCHITECTURAL FINDING.)
 --
--- ⚠ FAILURE DIRECTION, deliberately chosen.  The whole point is REMOVING rows, so a wrong
--- signal removes a real button — the same class of harm as the nil-guard outage.  Three
--- fences:
---   1. `isKnown` is trusted only when it says FALSE.  nil (no info struct, a combat-secret
---      read) is "we don't know", never "unlearned" — absence of a read is not evidence.
---   2. The displayable filter is SKIPPED WHOLESALE when the frame map is empty (viewers not
---      created yet, CDM unavailable).  An empty map must never mean "nothing is drawable".
---   3. Every drop is REPORTED (`dropped[base] = why`), so the decision log shows it and a
---      wrong filter is visible on the next capture rather than silent.
+-- THE THREE PIECES, all pure and all here:
+--   * `St.RosterClaims`  — which enumerated row (if any) IS each declared ability.  One row
+--                          may be claimed by at most one roster id, so an ability's facts
+--                          can never be read off a row that is really another ability.
+--   * `foldSignals`      — the two BASE-keyed folds that are properties of the ROWS, not of
+--                          the roster (the aura-lifecycle latch and the per-frame aura
+--                          verdict).  Unchanged by the inversion: an ability's aura signal
+--                          can live on a row that is not pressable.
+--   * `St.RosterView`    — the roster walk itself: one `abilities` entry per declared
+--                          button, tracked (a claimed row) or virtual (none), each carrying
+--                          three-valued `known`.
 --
--- `dropped` only ever names an ability that WOULD have had a pressable row — a tracked-only
--- entry (Demonic Core, a buff bar) has no pressable member by construction, which is the
--- pre-existing exclusion and not a drop.
+-- ⚠ MARK, DON'T FILTER — §6.1, and the load-bearing decision of the phase.  Two knownness
+-- sources used to carry OPPOSITE defaults, each conservative for its own base set: the CDM
+-- `isKnown` only ever REMOVED on an explicit `false`, while the virtual walk only ever ADDED
+-- on an explicit `true`.  One base set collapses them into one question with no safe
+-- default — `nil -> drop` silently deletes a real ability, `nil -> keep` reintroduces the
+-- untalented-Soul-Fire failure.  So neither: `known` rides the row as `true | false | nil`
+-- and the COACH decides (`Coach.Classify`).  Every row stays present and visible in the
+-- pulse, the decision log and Coverage rather than absent without a trace — which is what
+-- made the Soul Fire bug findable in the first place, and what replaces `pulse.dropped`.
 --
--- PURE: rows in, {abilities, dropped, dotEdges} out.  No client reads, no file locals —
--- which is what lets state_domainview_spec arbitrate it off-game.
+-- ⚠ AND THE WHOLESALE GUARD, the twin of `next(items) ~= nil` below.  If the answer is
+-- `unknown` for the ENTIRE roster that is a broken read (a load-order slip, a refused
+-- spellbook), not an untalented character — so `knownReadable = false` rides the pulse and
+-- the Coach ignores knownness altogether.  Without it one slip bars every ability from
+-- winning at once, which is the v0.32.25 total-outage shape with no CDM breadth left to
+-- fall back on.
+--
+-- PURE: rows in, tables out.  No client reads, no file locals — which is what lets
+-- state_domainview_spec arbitrate all three off-game.  Every live read this needs
+-- (knownness, the per-ability cooldown/charge pair) is taken by `St.Build` and INJECTED.
 local function baseOfRow(entry, fold)
   return (type(entry.spellID) == "number" and entry.spellID)
       or (fold and fold[entry.cooldownID])
       or nil
-end
-
-local function dropReason(entry, filterDisplayable)
-  if entry.isKnown == false then return "unlearned" end
-  if filterDisplayable and entry.displayable == false then return "no-icon" end
-  return nil
-end
-
--- The pressable representative of a row set: Essential outranks Utility; anything else
--- (TrackedBuff / TrackedBar) is an input, never a press.
-local function pressableRep(rows)
-  for _, e in ipairs(rows) do if e.category == "Essential" then return e end end
-  for _, e in ipairs(rows) do if e.category == "Utility" then return e end end
-  return nil
 end
 
 -- How much of an opinion a per-frame aura verdict carries, so the fold can pick the best of
@@ -1519,91 +1574,240 @@ local function auraFrameRank(f)
   return 1
 end
 
-local function domainView(cooldowns, fold, filterDisplayable, edges)
-  local abilities, dropped, dotEdges, auraFrames = {}, {}, {}, {}
-  -- Display-identity claims, resolved in a SECOND pass.  `pairs(rowsByBase)` order is
-  -- unstable, so deciding a contested identity inline would make the domain view depend on
-  -- table order — the exact class of bug the log's fixed render orders exist to prevent.
-  local claimed = {}
-
-  -- Group the raw rows by base spellID (base-spellID -> cooldownID is N:1 — a summon is one
-  -- Essential row plus one TrackedBar row; Immolate is one Essential CAST row plus one
-  -- BuffBar AURA row, and those two carry DIFFERENT base spellIDs, which is why the Coach
-  -- resolves its DoT across a candidate list rather than assuming one id).
-  local rowsByBase = {}
+-- The two BASE-keyed folds.  Carried as maps of their own (as well as on the ability row)
+-- because an ability's signal can live on a row that is not pressable — Immolate's DoT aura
+-- sits on the Buff-bar viewer and never enters `abilities`, yet it raises PandemicTime just
+-- like the Essential cast row, and both Immolate rows fire it (§2.8), so either must resolve
+-- to ONE answer per base.  Newest wins for the edge; STRENGTH OF OPINION for the poll.
+local function foldSignals(cooldowns, fold, edges)
+  local dotEdges, auraFrames = {}, {}
   for _, entry in pairs(cooldowns) do
     local base = baseOfRow(entry, fold)
     if base then
-      local rows = rowsByBase[base]
-      if not rows then rows = {}; rowsByBase[base] = rows end
-      rows[#rows + 1] = entry
-      -- The aura-lifecycle latch, re-keyed cid -> base so the Coach never sees a cooldownID.
-      -- Newest wins when several of an ability's rows latched (both Immolate rows fire
-      -- PandemicTime — §2.8 — and either must resolve to the one answer).
       local e = edges and edges[entry.cooldownID]
       if e then
         local prev = dotEdges[base]
-        if not prev or (type(e.at) == "number" and type(prev.at) == "number" and e.at >= prev.at) then
+        if not prev or (type(e.at) == "number" and type(prev.at) == "number"
+                        and e.at >= prev.at) then
           dotEdges[base] = e
         end
       end
-      -- The per-frame aura verdict (§3.10), folded the same way and for the same reason:
-      -- Immolate's aura row sits on the Buff-bar viewer and never enters `abilities`, yet
-      -- it carries `auraDataUnit` just like the Essential cast row.  Newest-wins makes no
-      -- sense for a poll, so this folds on STRENGTH OF OPINION instead.
       local af = entry.auraFrame
       if af and auraFrameRank(af) > auraFrameRank(auraFrames[base]) then
         auraFrames[base] = af
       end
     end
   end
-
-  for base, rows in pairs(rowsByBase) do
-    local kept, why = {}, nil
-    for _, e in ipairs(rows) do
-      local r = dropReason(e, filterDisplayable)
-      if r then why = why or r else kept[#kept + 1] = e end
-    end
-    local rep = pressableRep(kept)
-    if rep then
-      rep.display = { cooldownID = rep.cooldownID, category = rep.category }
-      rep.dot = dotEdges[base]        -- the row-level surface the brain reads
-      -- Key by what the row DISPLAYS, not by its own spellID — see ns.DisplayIdentity.
-      -- ⚠ Only for a row that SURVIVED the filter, which is load-bearing: on Hellcaller
-      -- cid 66181 is unlearned, and re-keying that DROP onto Incinerate would make
-      -- `virtualCandidates`' "not dropped-unlearned" fence refuse to synthesise our own
-      -- Incinerate icon — killing the one path that already works.  A drop keeps its raw
-      -- base (`dropped[base]` below is untouched); only a displayed row claims an identity.
-      local ident = ns.DisplayIdentity(base, rep.overrideSpellID, rep.overrideTooltipSpellID)
-      rep.identity = ident
-      claimed[#claimed + 1] = { ident = ident, base = base, rep = rep }
-    elseif why and pressableRep(rows) then
-      -- It WOULD have been a press; the filter is the only reason it is not.  Say so.
-      dropped[base] = why
-    end
-  end
-
-  -- Pass 2 — assign keys.  A row keeps its own base unless it claims a DIFFERENT displayed
-  -- identity that nothing else owns.  Sorted by base so a contested identity always
-  -- resolves the same way regardless of `pairs` order.
-  local owned = {}
-  for _, c in ipairs(claimed) do owned[c.base] = true end
-  table.sort(claimed, function(a, b) return a.base < b.base end)
-  for _, c in ipairs(claimed) do
-    -- Never displace a row that legitimately owns that key as its OWN base, and never let
-    -- two rows claim one identity (first by sorted base wins, deterministically).
-    if c.ident ~= c.base and not owned[c.ident] and abilities[c.ident] == nil then
-      abilities[c.ident] = c.rep
-    else
-      c.rep.identity = c.base
-      abilities[c.base] = c.rep
-    end
-  end
-
-  return abilities, dropped, dotEdges, auraFrames
+  return dotEdges, auraFrames
 end
 
-St.DomainView = domainView               -- test seam (the field-fix A/C proof)
+St.FoldSignals = foldSignals             -- test seam (the field-fix C proof)
+
+--------------------------------------------------------------------------------
+-- St.RosterClaims — which enumerated row IS each declared ability
+--------------------------------------------------------------------------------
+-- A roster id can arrive on a row through any of four fields, because they are four
+-- different facts about the row: it can BE the row (`spellID`), or the row can be
+-- displaying it statically (`overrideSpellID` / `overrideTooltipSpellID` — Diabolist's cid
+-- 66181 is Shadow Bolt 686 displaying Incinerate 29722), or the client can have moved it
+-- there live (`liveSpellID`, the observed COOLDOWN_VIEWER_SPELL_OVERRIDE_UPDATED transform).
+--
+-- ⚠ `linkedSpellIDs` IS DELIBERATELY NOT A JOIN FIELD, and Coverage.lua's is.  That is not
+-- a drift: they answer different questions.  Coverage asks "does the CDM know this id AT
+-- ALL", for which the static candidate pool counts; this asks "which ability IS this row",
+-- and the pool is a bag of alternatives (rungs 1-3 all draw from it) — joining on it would
+-- let one roster id claim a row that visibly draws another ability.
+--
+-- ⚠ ONE ROW, ONE ABILITY.  Two roster ids can both match one row (cid 66181 carries
+-- Incinerate on rung 3 AND Chaos Bolt on rung 4), and letting both claim it is how one
+-- ability's cooldown ends up filed under another's key — the defect this phase exists to
+-- make impossible.  So claims are ranked GLOBALLY and assigned greedily: an identity match
+-- outranks a base match outranks a bare mention, Essential outranks Utility outranks tab 2,
+-- and ties break on the roster id then the cooldownID so the answer never depends on
+-- `pairs` order.
+local JOIN_FIELDS = { "spellID", "overrideSpellID", "overrideTooltipSpellID", "liveSpellID" }
+local CATEGORY_RANK = { Essential = 3, Utility = 2 }
+
+local function joinIndex(cooldowns)
+  local index = {}
+  for _, entry in pairs(cooldowns) do
+    local seen = {}
+    for _, field in ipairs(JOIN_FIELDS) do
+      local id = entry[field]
+      if readable(id) and not seen[id] then
+        seen[id] = true
+        local list = index[id]
+        if not list then list = {}; index[id] = list end
+        list[#list + 1] = entry
+      end
+    end
+  end
+  return index
+end
+
+-- `identity` is the row's DISPLAY identity (ns.DisplayIdentity), resolved once in St.Build
+-- and carried on the raw row.  A row whose identity IS the roster id is that ability
+-- beyond argument; a row whose BASE is it is it unless something better claims it.
+local function claimRank(entry, rid)
+  local tier = 1
+  if entry.identity == rid then tier = 3
+  elseif entry.spellID == rid then tier = 2 end
+  return tier * 10 + (CATEGORY_RANK[entry.category] or 1)
+end
+
+function St.RosterClaims(cooldowns, roster)
+  local index = joinIndex(cooldowns)
+  local candidates = {}
+  for _, e in ipairs(St.RosterEntries(roster)) do
+    -- Aura entries are not presses and claim no row: `buffs` is built from the raw rows
+    -- plus the flat active-aura scan, and `Coach.Classify` returns nil for `kind == "aura"`
+    -- anyway.  (That the aura half of the roster is write-only for State is a real gap —
+    -- roster-state-plan Phase 5, "Roster gaps the anchor exposes" #2 — recorded, not fixed
+    -- here.)
+    if e.info.kind ~= "aura" then
+      for _, entry in ipairs(index[e.spellID] or {}) do
+        candidates[#candidates + 1] =
+          { rid = e.spellID, entry = entry, rank = claimRank(entry, e.spellID) }
+      end
+    end
+  end
+  table.sort(candidates, function(a, b)
+    if a.rank ~= b.rank then return a.rank > b.rank end
+    if a.rid ~= b.rid then return a.rid < b.rid end
+    return a.entry.cooldownID < b.entry.cooldownID
+  end)
+  local repOf, ridOf = {}, {}
+  for _, c in ipairs(candidates) do
+    if repOf[c.rid] == nil and ridOf[c.entry.cooldownID] == nil then
+      repOf[c.rid] = c.entry
+      ridOf[c.entry.cooldownID] = c.rid
+    end
+  end
+  return repOf, ridOf
+end
+
+--------------------------------------------------------------------------------
+-- St.RosterView — the roster walk that PRODUCES `abilities`
+--------------------------------------------------------------------------------
+-- `cooldowns`  the raw CDM rows, already read (and already carrying the per-ability
+--              cd/charge for any row a roster id claimed — see St.Build)
+-- `fold`       cooldownID -> base spellID, the OOC-cached fallback fold key
+-- `roster`     the active spec's table (`ns.Spec`)
+-- `edges`      St.dotEdge, the raw cid-keyed alert latch
+-- `drawable`   the WHOLESALE-GUARDED "do we have a live frame map at all" flag.  It is not
+--              a filter any more — it only decides whether "Blizzard is already drawing
+--              this" is answerable, i.e. whether we synthesise an icon of our own.
+-- `known`      spellID -> true|false|nil, injected (the spellbook read, cached in St.Build)
+--
+-- Returns `abilities, dotEdges, auraFrames, virtual, knownReadable`, where `virtual` is the
+-- sorted list of declared buttons with NO row of their own — the ids St.Build synthesises a
+-- row for.
+local function rosterView(cooldowns, fold, roster, edges, drawable, known)
+  known = known or function() return nil end
+  local dotEdges, auraFrames = foldSignals(cooldowns, fold, edges)
+  local repOf = St.RosterClaims(cooldowns, roster)
+  local abilities = {}
+  local sawReadable, asked = false, 0
+
+  for _, e in ipairs(St.RosterEntries(roster)) do
+    local rid, info = e.spellID, e.info
+    if info.kind ~= "aura" then
+      asked = asked + 1
+      -- ⚠ THE SPELLBOOK IS THE AUTHORITY, and the CDM flag is the FALLBACK — which is the
+      -- inversion applied to knownness itself.  `C_SpellBook.IsSpellKnown(rid)` asks about
+      -- THE ABILITY; a row's `isKnown` describes the row's BASE, which for a display
+      -- override is a different spell entirely.  On Hellcaller cid 66181's base (Shadow
+      -- Bolt 686) is unlearned while the ability it draws (Incinerate) is pressed every
+      -- GCD — letting the row's flag win there would bar the spec's floor press.
+      local k = known(rid)
+      local rep = repOf[rid]
+      if k == nil and rep ~= nil then k = rep.isKnown end
+      if k ~= nil then sawReadable = true end
+      -- ⚠ THE THIRD VALUE IS THE STRING "unknown", NOT `nil`.  `nil` has to keep meaning
+      -- "nobody asked" — that is what a hand-built fixture pulse carries, and what every
+      -- consumer written before this field existed sees — so "we asked and came away with
+      -- nothing" needs a positive value of its own.  It is also the one that has to survive
+      -- a round trip through the decision log, where an absent key renders as nothing at all.
+      if k == nil then k = "unknown" end
+
+      if rep then
+        abilities[rid] = {
+          -- structural, taken from the row this ability actually IS
+          cooldownID  = rep.cooldownID,
+          category    = rep.category,
+          identity    = rid,
+          spellID     = rep.spellID,
+          liveSpellID = rep.liveSpellID,
+          overrideSpellID        = rep.overrideSpellID,
+          overrideTooltipSpellID = rep.overrideTooltipSpellID,
+          linkedSpellIDs = rep.linkedSpellIDs,
+          selfAura = rep.selfAura, hasAura = rep.hasAura, charges = rep.charges,
+          isKnown  = rep.isKnown,
+          flags    = rep.flags,
+          -- `displayable` survives as a DIAGNOSTIC and as the input to "would we draw our
+          -- own icon"; it is no longer a decision-layer filter (§C6).
+          displayable = rep.displayable,
+          -- three-valued knownness — the channel that replaced `pulse.dropped`
+          known    = k,
+          -- live facts.  ⚠ cd + charge were read ABOUT `rid` (St.Build), never through the
+          -- row's identity ladder — §C2, the root fix.
+          cd = rep.cd, charge = rep.charge, aura = rep.aura, glow = rep.glow,
+          buff = rep.buff, auraFrame = rep.auraFrame,
+          keybind = rep.keybind,
+          dot = dotEdges[rid] or (readable(rep.spellID) and dotEdges[rep.spellID]) or nil,
+          display = { cooldownID = rep.cooldownID, category = rep.category },
+        }
+      end
+    end
+  end
+
+  -- THE UNTRACKED HALF, asked once the tracked half is complete so "is Blizzard already
+  -- drawing this?" is answered against the real board — and asked through the SHARED fence
+  -- list, never a copy of it (`St.VirtualCandidates`; Coverage.lua asks the same one).
+  --
+  -- ⚠ A CLAIMED ROW CAN BE NOMINATED TOO, and that is the Hellcaller case, improved.  A
+  -- roster id whose CDM row exists but has no live frame is not on screen, so we draw our
+  -- own icon for it — but the row's real cooldown, charges and alert edges are worth far
+  -- more than a synthetic `ready`, so St.Build re-points that row's DISPLAY handle instead
+  -- of replacing the row.  (Before Phase 5 the same shape was a `no-icon` DROP followed by
+  -- a from-scratch static row, which threw all of that away.)
+  --
+  -- ⚠ AND NOT AT ALL ON A REFUSED READ — three wholesale guards, because "we would draw our
+  -- own icon" is a NEGATIVE ("Blizzard is not showing this"), and a negative over an
+  -- incomplete scan is a guess.  The harm is concrete and has shipped before: a wrong
+  -- positive here is the v0.32.32 DUPLICATE ICON, our row drawn beside Blizzard's.
+  --   1. NO FRAME MAP — the viewers are not up (login, CDM disabled, a relayout mid-pulse),
+  --      so we cannot see what Blizzard is drawing at all.
+  --   2. AN EMPTY DATABASE — `IsCooldownViewerAvailable` refused, or the category sets came
+  --      back short.  Coverage.lua calls this same state `cdm-empty` and reports nothing
+  --      untracked for exactly this reason.
+  --   3. A ROW WITH NO RESOLVABLE BASE — an absent/secret struct with no OOC-cached fold key.
+  --      Such a row could be carrying ANY spellID, so it makes every "untracked" answer
+  --      unprovable, which is the rule Coverage's `unreadableRows` already encodes.
+  -- All three self-correct on the next pulse.  ⚠ Note guard 3 is deliberately NOT "the
+  -- spellID read secret": in combat ids DO read secret, and `foldBase` resolves them from
+  -- the OOC-readable pass — so a warm pulse keeps drawing our icons through a whole pull,
+  -- which is precisely when the floor press matters most.
+  --
+  -- (`St.VirtualCandidates`, not the file local — the fence list is declared FURTHER DOWN
+  --  the file, so a direct call here would resolve to a nil global at load time.  Coverage.lua
+  --  calls the same list with `drawable = false` on purpose: it asks the HYPOTHETICAL, "if
+  --  nothing were on screen, which of these would we synthesise?", which is a different
+  --  question from this one and must not inherit these guards.)
+  local provable = drawable and next(cooldowns) ~= nil
+  if provable then
+    for _, entry in pairs(cooldowns) do
+      if baseOfRow(entry, fold) == nil then provable = false; break end
+    end
+  end
+  local virtual = provable and St.VirtualCandidates(roster, abilities, drawable) or {}
+
+  -- An empty roster (the passive contract) is not a refused read — there was nothing to
+  -- ask.  Only a roster we asked about and learned NOTHING from trips the guard.
+  return abilities, dotEdges, auraFrames, virtual, (asked == 0) or sawReadable
+end
+
+St.RosterView = rosterView               -- test seam (the roster-anchor proof)
 
 --------------------------------------------------------------------------------
 -- VIRTUAL ROWS — the rotation buttons the Cooldown Manager tracks NOWHERE
@@ -1627,25 +1831,31 @@ St.DomainView = domainView               -- test seam (the field-fix A/C proof)
 -- merely restate what that table says, and would have to be maintained per spec forever.  So
 -- the walk asks the table directly, and Phase 3's "generalise to Shadow Bolt" is zero edits.
 --
--- ⚠ THE RELATIONSHIP TO FIELD-FIX A, which removed rows for two reasons that are NOT the
--- same kind of claim:
---   * `unlearned` (isKnown == false) — the character does not have this spell.  A CORRECTNESS
---     fence; it is what killed the 216-dropped-Soul-Fire-cues bug, and it survives here as
---     the `known` fence below (read from the spellbook, since an untracked ability has no CDM
---     struct to carry `isKnown`).
---   * `no-icon` (no item frame) — the character HAS it and presses it constantly; we simply
---     could not draw it.  That is a DISPLAY limit that was being enforced at the DECISION
---     layer, correct only while the product was strictly a CDM overlay.  It is the fence this
---     walk deliberately reverses: unmappable now means "draw our own icon", not "forget it".
+-- ⚠ PHASE 5 MADE THESE ROWS FIRST-CLASS, and that is THREE FENCES GONE.  Under the roster
+-- anchor the question "is this a press this spec cares about" is already answered — by the
+-- roster — so the three fences that were re-deriving it retire:
+--   * `baseCooldown(spellID) == 0` — DROPPED.  It was the honesty fence for a row with no
+--     observation behind it, and it is replaced rather than removed: `virtualCd` below
+--     states `ready` only for a spell whose base cooldown genuinely reads 0 (a statement
+--     about the spell's NATURE), and otherwise takes the real `readCd` ladder — the OOC
+--     live read and the anticipation napkin both key on the SPELL, so they work with no CDM
+--     row at all.  What this rescues is HAMMER OF WRATH: `CoachRetribution`'s L9 was dead
+--     code because 24275 is untracked AND (open question) may not read 0, so it could get
+--     neither a Blizzard icon nor one of ours.  Now it gets a row BY CONSTRUCTION,
+--     independently of what its base cooldown turns out to be.
+--   * `dropped[spellID] ~= "unlearned"` — DROPPED with `pulse.dropped` itself (§C6).
+--   * `known(spellID) == true` — DROPPED from CANDIDACY.  Knownness stopped being a filter
+--     and became a MARK on the row (§6.1), so an unlearned declared button still gets a row
+--     (and a decision-log line); `Coach.Classify` refuses it as a candidate.  ⚠ It survives
+--     for the DRAW list — see `pulse.virtual` in St.Build — because pooling a frame and
+--     lighting an icon for an ability the character does not have is noise on screen, not
+--     visibility in the trace.
 --
 -- WHY ADMITTING ROWS HERE CANNOT RE-CREATE PHANTOM ABILITIES.  Coach.Classify computes
 -- `probablyUp = ready or (onCd and source == "napkin" and remaining <= 0)`, and every
 -- cooldown-bearing line in RankWinner gates on `usable()`, which needs `probablyUp` or a
 -- banked charge.  An ability admitted with no observation reads `unknown` — neither ready nor
--- on-cooldown — so `probablyUp` is FALSE and it can never win a line.  That is why the
--- zero-cooldown fence below is not a prohibition but a DESCRIPTION: a 0-cooldown spell is the
--- only case where we can honestly rank without an observation, because `ready` is then a
--- statement about the spell's NATURE rather than a faked reading of its state.
+-- on-cooldown — so `probablyUp` is FALSE and it can never win a line.
 --
 -- THE HANDLE IS NEGATIVE (`-spellID`).  Real cooldownIDs are positive, so collision with a
 -- Blizzard row is impossible by construction rather than by luck, and the handle is
@@ -1673,21 +1883,37 @@ end
 -- `liveSpellID`-only check would let our duplicate icon flicker back in MID-COMBAT, exactly
 -- when the ability is most active.  `overrideSpellID` / `overrideTooltipSpellID` carry the
 -- displayed id (29722) throughout.
-local function displayedIdentities(abilities)
+--
+-- ⚠ `drawable` IS THE WHOLESALE GUARD, and it is the twin of `domainView`'s old
+-- `next(items) ~= nil`.  A row with no live item frame is NOT on screen — that is the
+-- Hellcaller shape (cid 66181's base is unlearned, so Blizzard hides the frame and the row
+-- draws nothing), and it is exactly when our own icon has to appear.  But an EMPTY frame
+-- map means the viewers are not up (login, CDM disabled, a relayout mid-pulse), not that
+-- nothing is drawable — so when there is no map at all the drawability question is not
+-- asked and every claimed row counts as shown.
+local function displayedIdentities(abilities, drawable)
   local on = {}
   for base, row in pairs(abilities) do
-    on[base] = true
-    if readable(row.liveSpellID) then on[row.liveSpellID] = true end
-    if readable(row.overrideSpellID) then on[row.overrideSpellID] = true end
-    if readable(row.overrideTooltipSpellID) then on[row.overrideTooltipSpellID] = true end
+    if not (drawable and row.displayable == false) then
+      on[base] = true
+      if readable(row.liveSpellID) then on[row.liveSpellID] = true end
+      if readable(row.overrideSpellID) then on[row.overrideSpellID] = true end
+      if readable(row.overrideTooltipSpellID) then on[row.overrideTooltipSpellID] = true end
+    end
   end
   return on
 end
 
--- PURE: (spec table, abilities, dropped, known(), baseCooldown()) -> sorted base spellIDs.
--- Sorted so frame assignment is stable across ticks and the tests are order-independent.
+-- PURE: (spec table, abilities, drawable) -> sorted base spellIDs.  Sorted so frame
+-- assignment is stable across ticks and the tests are order-independent.
 --
--- Every fence is required, and each earns its place:
+-- ⚠ THIS IS NOW A SECOND DOOR ONTO `St.RosterView`'s OWN WALK, kept because `Coverage.lua`
+-- asks the fence list a hypothetical — "if nothing were on screen, which of these would we
+-- synthesise?" — with an empty `abilities` map.  Coverage must never hand-copy the fences
+-- (its header says why), and the roster view must not import a diagnostic's question, so
+-- the FENCES live here and both callers ask them.
+--
+-- Four fences survive Phase 5; the three that retired are listed in the section header.
 --   kind == "button"      an aura row is an INPUT to a decision, never a press.
 --   cadence ~= "utility"  defensives / CC / mobility are never cued; drawing our own icon
 --                         for a Healthstone is exactly the scope creep that would turn this
@@ -1695,7 +1921,10 @@ end
 --   expect ~= false       the spec table's EXISTING statement of "never bound to a CDM icon
 --                         of its own" — the transforms (Ruination / Infernal Bolt) and the
 --                         cast-id aliases.  An override or an alias must never become a
---                         second icon beside the ability it is an alias OF.
+--                         second icon beside the ability it is an alias OF.  ⚠ STILL
+--                         LOAD-BEARING, and more so than before: Retribution declares SEVEN
+--                         `expect = false` aliases, and dropping this fence resurrects the
+--                         v0.32.32 duplicate-icon bug on every one of them.
 --   not already DISPLAYED Blizzard draws it -> we do not.  Asked of the DISPLAY identities
 --                         (`displayedIdentities`), not of `abilities`' keys: cid 66181 is
 --                         Shadow Bolt 686 with its display overridden to Incinerate 29722,
@@ -1703,67 +1932,84 @@ end
 --                         drawing the ability — and we synthesised a SECOND icon (the
 --                         v0.32.32 Diabolist duplicate).  If the CDM ever starts tracking
 --                         the ability, the virtual row silently stops being synthesised.
---   not dropped-unlearned the CDM said this row is unlearned.  Even if the spellbook
---                         disagrees, a conflict resolves to NOT DRAWING (under-show).
---   base cooldown == 0    see the header.  `ns.BaseCooldown` returns nil when the read
---                         refuses, and nil ~= 0, so an unreadable cooldown yields no row.
---   known                 the surviving half of field-fix A.
-local function virtualCandidates(specTable, abilities, dropped, known, baseCooldown)
+local function virtualCandidates(specTable, abilities, drawable)
   local out = {}
-  if type(specTable) ~= "table" then return out end
-  local onScreen = displayedIdentities(abilities)
-  for spellID, info in pairs(specTable) do
-    if type(spellID) == "number" and type(info) == "table"
-        and info.kind == "button"
+  local onScreen = displayedIdentities(abilities or {}, drawable)
+  for _, e in ipairs(St.RosterEntries(specTable)) do
+    local info = e.info
+    if info.kind == "button"
         and info.cadence ~= "utility"
         and info.expect ~= false
-        and not onScreen[spellID]
-        and (not dropped or dropped[spellID] ~= "unlearned")
-        and baseCooldown(spellID) == 0
-        and known(spellID) == true then
-      out[#out + 1] = spellID
+        and not onScreen[e.spellID] then
+      out[#out + 1] = e.spellID
     end
   end
   table.sort(out)
   return out
 end
 
+-- THE CD OF A ROW WITH NO CDM ENTRY, and the replacement for the retired zero-cooldown
+-- fence (see the section header).  Two genuinely different situations, and collapsing them
+-- is what the old fence was preventing:
+--
+--   * `ns.BaseCooldown(spellID) == 0` — the spell HAS no cooldown (Incinerate, Shadow Bolt,
+--     Templar's Verdict).  `ready` is then a statement about the spell's NATURE, not a
+--     faked reading, and `source = "static"` is a FOURTH member of the trust annotation
+--     (live|napkin|none) so it is never laundered as `"live"`.
+--   * anything else, INCLUDING an unreadable base cooldown — the spell has a real cooldown
+--     and no CDM row to observe it through.  Take the ordinary `readCd` ladder: with no
+--     cooldownID there is no OOC baseline and no alert edge, but the OOC live read and the
+--     anticipation napkin both key on the SPELL and work unchanged.  Out of combat that is
+--     the exact truth; in combat it degrades to the napkin, and to an honest `unknown` when
+--     even that has nothing — which `Coach.Classify` turns into "never a candidate".
+--     ⚠ THIS IS HAMMER OF WRATH.  24275 is untracked, and whether its base cooldown reads 0
+--     is `specs/retribution/observability-map.md` open question 1.  Under this branch the
+--     answer no longer decides whether the ability exists at all.
+local function virtualCd(spellID, gcd)
+  if ns.BaseCooldown(spellID) == 0 then
+    return { state = "ready", remaining = 0, readable = true, source = "static" }
+  end
+  return readCd(spellID, spellID, spellID, nil, gcd)
+end
+
 -- The synthetic domain-view row.  Keyed by base spellID like every other `abilities` row,
 -- and carrying every field Classify reads, so nothing downstream needs to know it is ours.
 --
--- `cd.source = "static"` is a FOURTH member of the trust annotation (live|napkin|none), and
--- it exists precisely so this is not laundered as `"live"`: we are stating the spell's
--- nature, not reporting an observation.  Nothing branches on `source` except Classify
--- (which tests `== "napkin"`) and the decision log (which renders `state` only), so the
--- addition is inert by design.
+-- `known` is passed IN (three-valued) rather than asserted `true` here: Phase 5 admits a
+-- row for every declared button the CDM tracks nowhere, learned or not, and it is
+-- `Coach.Classify` — not this walk — that refuses an unlearned one as a candidate.
 --
 -- `liveSpellID` still resolves through the override map, so IF the client fires
 -- COOLDOWN_VIEWER_SPELL_OVERRIDE_UPDATED for an untracked base the Diabolist transform
 -- (Incinerate -> Infernal Bolt) rides this frame exactly as it would a real one.  Whether it
 -- fires for a spell with no CDM entry is the one thing only a live pass can settle
 -- (@verify-ingame); absent the event this degrades to a plain Incinerate, which is correct.
-local function virtualRow(spellID)
+local function virtualRow(spellID, known, gcd)
   local live = St.override[spellID]
   if not readable(live) then live = spellID end
   return {
     cooldownID  = -spellID,
     category    = "Virtual",
+    identity    = spellID,
     spellID     = spellID,
     liveSpellID = live,
     linkedSpellIDs = {},
     selfAura    = false,
     hasAura     = false,
     charges     = false,
-    isKnown     = true,
+    isKnown     = nil,
+    known       = known,
     displayable = true,
     virtual     = true,
-    cd     = { state = "ready", remaining = 0, readable = true, source = "static" },
-    -- ⚠ DELIBERATELY readCharge's shape ②, the MEASUREMENT shape, not ④'s inference — and
-    -- that is correct here even though nothing was measured.  A virtual row exists only for
-    -- a spell we have DECLARED has no cooldown and no charge pool; `max = 0` is a statement
-    -- about the spell's nature, not a guess at a reading we could not take.  `source` says
-    -- "static" for the same reason `cd.source` does: stating a nature is a fourth kind of
-    -- provenance, and it must not be laundered as "live".
+    cd     = virtualCd(spellID, gcd),
+    -- ⚠ CHARGES STAY STATIC, even though the CD above stopped being (Phase 5).  The two are
+    -- not symmetrical: `ns.ReadCooldown` and the napkin both key on the SPELL, so a cd is
+    -- readable with no CDM row — but the CHARGE napkin is keyed by cooldownID, and a
+    -- virtual row has none, so a live `ns.ReadCharges` here would answer out of combat and
+    -- vanish in it, which is worse than stating the nature.  No spec declares an untracked
+    -- CHARGED button today; the day one does, this row needs a cooldownID-free napkin, not
+    -- a bare read.  ⚠ It is readCharge's shape ②, the MEASUREMENT shape, not ④'s inference:
+    -- `max = 0` is a statement about the spell's nature, and `source = "static"` says so.
     charge = { readable = true, cur = nil, max = 0, source = "static" },
     aura   = { readable = true, active = false },
     glow   = readGlow(live),
@@ -1845,31 +2091,9 @@ function St.Build(drain)
     -- The static candidate pool, already guarded end to end by readPool.
     local linked = (info and info.linkedSpellIDs) or {}
 
-    -- Charges, and the napkin's base -> cooldownID edge.  The alert and the OOC seed arrive
-    -- keyed by cooldownID; a cast arrives keyed by spellID.  Bound off the MEASURED `charged`
-    -- (a live max > 1), so a wrong struct flag cannot silently disable the napkin.
-    -- ⚠ NOT `ident` — charges read off `overrideSpellID or spellID`, rungs 4 and 5 only,
-    -- because that is Blizzard's own charge ladder and it excludes rung 3 deliberately
-    -- (§3.2; see readCharge's header for the quoted reason).
-    local charge = readCharge(ovID or base, hasCharges, cooldownID)
-    if charge.charged and base then chargeCid[base] = cooldownID end
-
-    -- THE COOLDOWN RUNG IS TAB 1's, and only tab 1's (§3.8).  Tab 2's value cascade is
-    -- totem -> aura -> edit mode -> zeros: there is no spell-cooldown source in it at all
-    -- (cooldown-manager.md §3.2), so asking the client for one on a TrackedBuff/TrackedBar
-    -- row spends the full guarded-call budget — up to five pcalls with the charge
-    -- short-circuit — ten times a second, to produce a field nothing can consume.  Roughly
-    -- a third of the ~64 enumerated rows on Demonology are tab 2.
-    --
-    -- The row still carries a `cd`, in the honest shape: we did not learn anything, because
-    -- there was nothing here to learn.  Keeping the shape uniform matters more than saving
-    -- the table — a nil `cd` would have to be guarded at every consumer and at `stampCd`.
-    local cd
-    if categoryName == "Essential" or categoryName == "Utility" then
-      cd = readCd(ident, live, base, cooldownID, gcd)
-    else
-      cd = { state = "unknown", readable = false, source = "none" }
-    end
+    -- (⚠ THE COOLDOWN AND CHARGE READS USED TO HAPPEN HERE, one per CDM row, each down its
+    --  own identity ladder.  Phase 5 moved them BELOW the roster join so they are asked once
+    --  per declared ABILITY, about that ability's own spellID — see `readAbilityFacts`.)
 
     -- The entry's associated aura ids (no nils/holes — ipairs-safe), for the scan match.
     local auraIds = {}
@@ -1888,6 +2112,11 @@ function St.Build(drain)
       -- two chances to disagree with the identity the row was actually read under.
       overrideSpellID = ns.Stash(ovID),
       overrideTooltipSpellID = ns.Stash(ovtID),
+      -- THE DISPLAY IDENTITY, carried on the raw row since Phase 5.  It used to be a local
+      -- that the fold re-derived; the roster join RANKS on it (a row whose identity IS the
+      -- declared id is that ability beyond argument), so re-deriving it in two places would
+      -- be the §3.9 double-index mistake applied to identity.
+      identity   = ns.Stash(ident),
       linkedSpellIDs = linked,
       selfAura   = selfAura,
       hasAura    = hasAura,
@@ -1898,9 +2127,8 @@ function St.Build(drain)
       -- Structural and inference-free: the frame is there or it is not.
       displayable = items[cooldownID] ~= nil,
       flags      = info and ns.Stash(info.flags) or nil,
-      -- live facts (secrecy first-class)
-      cd     = stampCd(cooldownID, cd, now),
-      charge = charge,
+      -- live facts (secrecy first-class).  ⚠ `cd` and `charge` are filled in BELOW, after
+      -- the roster join, because Phase 5 asks them about the ABILITY rather than the row.
       aura   = readAura(hasAura, selfAura, activeByID, auraIds, auraSecret),
       glow   = readGlow(live),   -- the combat-readable proc-highlight signal
       -- buff-item frame state (isActive/shown) — the per-buff combat signal the DB struct
@@ -1925,6 +2153,72 @@ function St.Build(drain)
     }
   end
 
+  -- ── THE ROSTER JOIN, and the reads it owns (Phase 5 §C2/§C3) ──────────────────────────
+  -- Which enumerated row IS each declared ability.  Resolved BEFORE the cooldown/charge
+  -- reads because those reads are now asked ABOUT THE ABILITY: one id, one ladder, one
+  -- answer — which is what makes the "Judgment's cooldown vs Hammer of Wrath's charges"
+  -- family of defects structurally impossible rather than guarded against.
+  -- (Only the cid -> roster-id half is needed here; `rosterView` below asks the same PURE
+  --  question again for the other half rather than having the answer threaded through it,
+  --  which is what keeps that fold a pure function of its arguments.)
+  local ridOf = select(2, St.RosterClaims(cooldowns, ns.Spec))
+
+  -- The per-ABILITY facts.  ⚠ EVERY ARGUMENT IS `rid`.  `readCd`'s first three parameters
+  -- are (display identity, live id, base) and its keying fence exists to stop one spell's
+  -- cooldown being filed under another's key; asking about the roster id satisfies that
+  -- fence by construction.  `readCharge`'s first argument used to be `overrideSpellID or
+  -- spellID` — Blizzard's own narrower ladder — and the whole point of §C2 is that the two
+  -- ladders can no longer name different spells, so it gets `rid` too.
+  --
+  -- ⚠ THE COOLDOWN ID STILL COMES FROM THE ROW, and it has to: `cdBaseline`, `readyEdge`
+  -- and the CHARGE NAPKIN (`chargeEst`, and the gain floor `ns.ReadCharges`' third return
+  -- seeds) are all keyed by cooldownID.  Passing the claimed row's cid is what preserves
+  -- that seed cadence unchanged — the read moved, the bookkeeping did not.
+  local function readAbilityFacts(rid, rep)
+    local cid = rep and rep.cooldownID or nil
+    local charge = readCharge(rid, rep and rep.charges, cid)
+    -- The napkin's spend edge arrives keyed by whatever `St.BaseOfCast` resolves a cast to,
+    -- which is the row's BASE — not necessarily the roster id (on Diabolist the Incinerate
+    -- row's base is Shadow Bolt 686).  Bind BOTH, at the same cid, so a press debits the
+    -- estimate whichever id the SUCCEEDED event carried.
+    if charge.charged then
+      chargeCid[rid] = cid
+      local b = rep and rep.spellID
+      if readable(b) then chargeCid[b] = cid end
+    end
+    -- THE COOLDOWN RUNG IS TAB 1's, and only tab 1's (§3.8).  Tab 2's value cascade is
+    -- totem -> aura -> edit mode -> zeros: there is no spell-cooldown source in it at all
+    -- (cooldown-manager.md §3.2), so asking the client for one on a TrackedBuff/TrackedBar
+    -- row spends the full guarded-call budget to produce a field nothing can consume.  The
+    -- row still carries a `cd` in the honest shape: we learned nothing, because there was
+    -- nothing here to learn.
+    local cat = rep and rep.category
+    local cd
+    if cat == "Essential" or cat == "Utility" then
+      cd = readCd(rid, rep.liveSpellID or rid, rid, cid, gcd)
+    else
+      cd = { state = "unknown", readable = false, source = "none" }
+    end
+    return cd, charge
+  end
+
+  for cooldownID, entry in pairs(cooldowns) do
+    local rid = ridOf[cooldownID]
+    local cd, charge
+    if rid then
+      cd, charge = readAbilityFacts(rid, entry)
+    else
+      -- A row NO declared ability claimed.  It stays in the raw diagnostic view — that view
+      -- is the CDM's answer, not the spec's — but it costs nothing to read: the roster
+      -- already said this spec does not care about it, and reading it was ~a third of the
+      -- OOC guarded-call budget (§6.2).  The honest shape, not a fabricated one.
+      cd = { state = "unknown", readable = false, source = "none" }
+      charge = { readable = false }
+    end
+    entry.cd = stampCd(cooldownID, cd, now)
+    entry.charge = charge
+  end
+
   local events = {}
   if drain then
     for i = 1, #pending do events[i] = pending[i] end
@@ -1943,43 +2237,61 @@ function St.Build(drain)
   -- moved it to `ns.Coach.InflightPower`, derived from `history` in the decision layer.
   local power = readPower()
 
-  -- ── THE DOMAIN VIEW (W4 re-layer) — the pipeline's actual input, keyed by BASE
-  -- spellID, folding the N CDM rows of one ability into one.  `cooldowns` above is the
-  -- RAW CDM diagnostic view (retained for probe/cdmp.py, additive); this is what the
-  -- Coach decides on.  Assembled from the just-built locals — NO new spec coupling: the
-  -- fold key is `category` (spec-agnostic) + base spellID (from the readable row or the
-  -- OOC-cached foldBase fallback).
-  --   abilities[base] = the PRESSABLE representative row (Essential > Utility) of the
-  --                     ability, carrying every field Classify reads, plus `display`
-  --                     (the cooldownID/category the Binder anchors to).  Tracked-only
-  --                     rows (Demonic Core, Wild Imp — no pressable twin) do NOT enter.
-  --   buffs[spellID]  = procs/auras PRESENT (a summon's TrackedBar isActive lands here as
-  --                     the window-active signal), unioned with the flat active-aura scan.
-  --   dropped[base]   = an ability the FILTER removed and why (field-fix A) — never silent.
+  -- ── THE DOMAIN VIEW — ANCHORED ON THE ROSTER (Phase 5) — the pipeline's actual input.
+  -- `cooldowns` above is the RAW CDM diagnostic view (retained: the driver stitches keybinds
+  -- off it and the whole `cdm-cases` corpus asserts against it); THIS is what the Coach
+  -- decides on, and it is now one entry per DECLARED ability rather than one per CDM row.
+  --   abilities[spellID] = the declared ability, keyed by the id the SPEC named, carrying
+  --                        every field Classify reads plus `display` (the cooldownID the
+  --                        Binder anchors to) and three-valued `known`.  An ability with no
+  --                        CDM row of its own is here too, virtual.
+  --   buffs[spellID]     = procs/auras PRESENT (a summon's TrackedBar isActive lands here as
+  --                        the window-active signal), unioned with the flat active-aura scan.
   -- (The named power bars ride `power` — keyed by Enum.PowerType name — which every
   --  consumer reads directly; the old `resources.shards` alias was retired in Phase 4.)
-  -- Tracked-only rows (Demonic Core, Wild Imp — no pressable twin) still do NOT enter
-  -- `abilities`; the fold gives that exclusion for free.
   local function baseOf(entry)
     return baseOfRow(entry, foldBase)
   end
 
-  -- ⚠ The displayable filter is applied only when we HAVE a frame map.  An empty map means
-  -- the viewers are not up (login, CDM disabled, a relayout mid-pulse), not that nothing on
-  -- the board can be drawn — filtering on it would empty `abilities` outright, which is the
-  -- exact shape of the v0.32.25 total outage.
-  local abilities, dropped, dotEdges, auraFrames =
-    domainView(cooldowns, foldBase, next(items) ~= nil, St.dotEdge)
+  -- ⚠ `next(items) ~= nil` IS THE WHOLESALE GUARD, and it now guards a DISPLAY question
+  -- rather than a decision one: an empty frame map means the viewers are not up (login, CDM
+  -- disabled, a relayout mid-pulse), not that nothing on the board can be drawn, so
+  -- drawability is simply not asked.  Its twin — the KNOWNNESS wholesale guard — rides back
+  -- on `knownReadable`.
+  local abilities, dotEdges, auraFrames, virtual, knownReadable =
+    rosterView(cooldowns, foldBase, ns.Spec, St.dotEdge, next(items) ~= nil, spellKnown)
 
-  -- VIRTUAL ROWS — the spec's own rotation buttons the CDM tracks nowhere (see the walk's
-  -- header).  Synthesised AFTER the fold, so `abilities` is the real absence test, and
-  -- folded into the SAME table so every stage above is unchanged: to the Coach a virtual row
-  -- is just another pressable ability, and to the Binder its negative handle is just another
-  -- Layout key.  `pulse.virtual` is the sorted id list HudVirtual pools its frames from.
-  local virtual = virtualCandidates(ns.Spec, abilities, dropped, spellKnown, ns.BaseCooldown)
+  -- VIRTUAL ROWS — the spec's own rotation buttons the CDM is not DRAWING (see the walk's
+  -- header).  Folded into the SAME table so every stage above is unchanged: to the Coach a
+  -- virtual row is just another pressable ability, and to the Binder its negative handle is
+  -- just another Layout key.
+  --
+  -- ⚠ TWO CASES, and only the second synthesises.  A candidate whose row EXISTS but is not
+  -- drawn (the Hellcaller shape) keeps its row and its real readings — cooldown, charges,
+  -- alert edges — and merely gets OUR display handle; only a candidate with no row at all
+  -- is built from scratch.  Before Phase 5 the first case was a `no-icon` drop followed by a
+  -- from-scratch static row, which threw every one of those readings away.
+  local drawn = {}
   for _, id in ipairs(virtual) do
-    abilities[id] = virtualRow(id)
+    local row = abilities[id]
+    if row then
+      row.virtual = true
+      row.display = { cooldownID = -id, category = "Virtual" }
+    else
+      local k = spellKnown(id)
+      if k == nil then k = "unknown" end
+      row = virtualRow(id, k, gcd)
+      abilities[id] = row
+    end
+    -- ⚠ THE DRAW LIST IS STILL KNOWNNESS-FENCED, and that is the one place §6.1's "mark,
+    -- don't filter" does NOT apply.  Marking buys VISIBILITY — a row in the pulse, the
+    -- decision log and Coverage — and that is free; pooling a frame and lighting an icon for
+    -- an ability the character does not have is noise on screen, which is not.  The
+    -- wholesale guard applies here too: if knownness refused across the whole roster, draw
+    -- them all rather than none (the v0.32.25 direction).
+    if row.known == true or knownReadable == false then drawn[#drawn + 1] = id end
   end
+  virtual = drawn
 
   -- buffs — presence, secrecy-guarded (an entry's aura/buff reads TRUE only when it was
   -- readable, so absence never becomes a false positive).  Keyed by the entry's base for
@@ -2013,17 +2325,23 @@ function St.Build(drain)
     heroSubTreeID = select(2, readHero()),
     -- RAW CDM view (retained, additive) — probe / DecisionLog short-codes / cdmp.py.
     cooldowns = cooldowns,
-    -- DOMAIN view (the re-layer) — the pipeline's input; the Coach decides on THIS.
+    -- DOMAIN view (the ROSTER ANCHOR) — the pipeline's input; the Coach decides on THIS.
+    -- One entry per DECLARED ability, keyed by the id the spec named, each carrying
+    -- three-valued `known`.
     abilities = abilities,
     buffs     = buffs,
-    -- The base spellIDs whose `abilities` row is SYNTHETIC (sorted).  HudVirtual pools one
+    -- The base spellIDs the HUD DRAWS ITS OWN ICON for (sorted).  HudVirtual pools one
     -- button frame per id and returns Layout/registry fragments the driver merges; each row
     -- also carries `virtual = true`, so a consumer that never sees this list can still tell.
     virtual   = virtual,
-    -- What the domain-view filter REMOVED, and why (field-fix A).  base spellID -> reason
-    -- ("unlearned" | "no-icon").  Rendered by the decision log so a filter that drops a
-    -- real button shows up in the trace instead of being silently absent.
-    dropped   = dropped,
+    -- ⚠ THE KNOWNNESS WHOLESALE GUARD (Phase 5 §6.1), the twin of the frame map's.  `false`
+    -- means NOT ONE declared ability produced a readable knownness answer — a broken read
+    -- (a login race, a refused spellbook), never an untalented character — and the Coach
+    -- must then ignore knownness entirely.  Without it one slip bars every ability from
+    -- winning at once, which is the v0.32.25 total-outage shape with no CDM breadth left to
+    -- fall back on.  (`pulse.dropped` retired here: knownness rides each ROW now, and what
+    -- the filter used to delete is simply present and marked.)
+    knownReadable = knownReadable,
     -- The aura-lifecycle latch, re-keyed cooldownID -> BASE spellID (field-fix C).  Carried
     -- as its own map as well as on each pressable row, because an ability's latch can live
     -- on a row that is NOT pressable — Immolate's DoT aura sits on the Buff-bar viewer and

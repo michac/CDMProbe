@@ -32,7 +32,13 @@
 --                Essential buttons (Judgment, Crusader Strike, Blade of Justice, Wake of
 --                Ashes) have SpellCooldowns.RecoveryTime = 0 and keep their real cooldown on
 --                a CHARGE CATEGORY, so GetSpellBaseCooldown returns 0 and HudNapkin has
---                nothing to count down from.  Nothing reads this field today.
+--                nothing to count down from.
+--                ⚠ "Documentation ONLY / nothing reads this field today" WAS TRUE AND IS
+--                NOT ANY MORE (corrected 2026-08-03): HudNapkin.lua:113-119 falls back to
+--                `ns.SpecInfo(spellID).chargeCD` when the live base cooldown reads 0, and
+--                files the result as `source = "declared"` — a third provenance value beside
+--                "cast" and "read", so a spec-authored number can never be mistaken for an
+--                observation.  Edit these numbers as live data, not as prose.
 --                ⚠ THE NUMBER WAS "SIX" HERE AND IT WAS WRONG (corrected 2026-08-03).
 --                Avenging Wrath carries CategoryRecoveryTime = 120000 on the SPELL row, so
 --                its base cooldown reads fine; Templar's Verdict and Divine Storm read 0
@@ -181,9 +187,16 @@ local S = spec.SpecIDs
 --     live.  `none` keeps the entire data rail (ctx.powers -> resourceBars[] -> PW:) and
 --     turns off exactly one thing: pixels.  Renderer.lua skips it on `display`.
 --
--- ⚠ `incoming = false`.  SpecPowerDelta below projects SPENDERS ONLY (see its header), and a
--- projection flag on a bar nobody draws would only be visible in the log.  The brain still
--- ranks on `projected`; it is simply equal to the live value until a spender is in flight.
+-- ⚠ `incoming = true`, AND THIS COMMENT SAID `false` UNTIL 2026-08-03 — it contradicted the
+-- line three rows below it, and the code was the correct half.  `incoming` is the
+-- spec-declared "this bar receives the in-flight projection" flag: Coach:ResourceBars reads
+-- `p.incoming and sums[p.name]`, so declaring it FALSE would zero the incoming term and make
+-- `projected` permanently equal to the live value.  That is not a cosmetic choice on a bar
+-- nobody draws — SpecPowerDelta below projects SPENDERS, and the brain ranks on `projected`
+-- precisely so a spender in flight stops being re-cued mid-cast.  With `false` that
+-- cancellation never happens.  The bar draws nothing either way (`display = "none"`); what
+-- `true` buys is the decision log's `PW:` column showing the minus, which on a spec nobody
+-- can watch live is the whole instrument.
 spec.powers = {
   { name = "HolyPower", display = "none", incoming = true, token = "HOLY_POWER",
     exactMax = 5, barMax = 5 },

@@ -361,6 +361,40 @@ function C.Classify(cd, state)
   local info = ns.SpecInfo(live)
   if not info or info.kind == "aura" then return nil end
 
+  ------------------------------------------------------------------------------
+  -- KNOWNNESS — roster-state-plan Phase 5 §6.1, and the ONLY Coach edit the phase needs
+  ------------------------------------------------------------------------------
+  -- State stopped FILTERING on knownness and started MARKING with it: every declared
+  -- ability is in `abilities` now, carrying `known = true | false | nil`, so the decision
+  -- about what an unlearned or unreadable ability may do is made HERE, once, for all three
+  -- brains.  Two rules, and they are not the same rule:
+  --
+  --   * `false` — the client says the character does not have this spell.  NEVER a
+  --     candidate: return nil, exactly as an aura row does two lines up.  This is what
+  --     killed the 216-dropped-Soul-Fire-cues bug and it has to keep killing it.
+  --   * `"unknown"` — we could not find out (a refused `IsSpellKnown`, a load-order race,
+  --     the cache window).  ⚠ IT IS THE STRING, NOT `nil`, and that is deliberate: `nil`
+  --     has to keep meaning "nobody asked" so a hand-built fixture pulse (and any consumer
+  --     written before this field existed) is unaffected, while "we asked and came away
+  --     with nothing" is a positive, greppable value.  The row STAYS: it is in `ctx.facts`,
+  --     in the decision log and in
+  --     Coverage.  It simply may not WIN or be the runner-up, which — read against
+  --     `guidance-contract.json`, where AVAILABLE is "off cooldown but not a call, no cue"
+  --     — is the same pixels as "cap at available".  Zeroing the three readiness flags is
+  --     the whole implementation: `usable()` in both brains needs `probablyUp` or a banked
+  --     charge, `Emit`'s fallback needs a castable rec, and SOON needs `anticipated`.
+  --
+  -- ⚠ AND THE WHOLESALE GUARD OVERRIDES BOTH.  `state.knownReadable == false` means NOT ONE
+  -- declared ability answered — a broken read, not a bare character — so knownness is
+  -- ignored entirely rather than barring the whole roster at once (§6.1).
+  --
+  -- ⚠ NOT AN EMPHASIS TOKEN.  "Cap at available and say why" is tempting to render, but the
+  -- channel that would carry it (`judgeable`/`secretGate` -> the JUDGE token) was retired in
+  -- W4 Phase 8 and reviving it is its own contract change, filed in status.md.  The "why"
+  -- lands in the DECISION LOG's `DR:` field, which is where `pulse.dropped` used to say it.
+  local ignoreKnown = (state.knownReadable == false)
+  if not ignoreKnown and cd.known == false then return nil end
+
   local c = cd.cd or {}
   local g = cd.glow or {}
   local now = state.at or 0
@@ -404,6 +438,14 @@ function C.Classify(cd, state)
   local lead = (ns.ActiveSpec and ns.ActiveSpec.LATE_LEAD) or 4.0
   rec.overdue = rec.probablyUp and rec.cdChangedAt
     and (now - rec.cdChangedAt) >= lead or false
+
+  -- THE CAP (see the knownness block above).  Applied LAST, over the finished record, so
+  -- there is exactly one place an unreadable knownness can leak from — and so the record
+  -- still carries its honest `remaining` / `cdSource` / `glowActive` for the trace.
+  if not ignoreKnown and cd.known == "unknown" then
+    rec.knownUnknown = true
+    rec.ready, rec.probablyUp, rec.anticipated, rec.overdue = false, false, false, false
+  end
 
   return rec
 end

@@ -227,6 +227,16 @@ function spec:Context(state, env)
   -- Requiring both is the honest resolution: it needs no guess about which ladder was right,
   -- and it fails toward NOT promising a press.  Blade of Justice (no identity flip) reads
   -- consistently either way, so this costs nothing where the row is well-behaved.
+  --
+  -- ⚠ ITS CAUSE IS GONE AND IT STAYS ANYWAY — deliberately (roster-state-plan Phase 5 §C2).
+  -- The inversion made State ask BOTH ladders about the same roster spellID
+  -- (`readAbilityFacts(rid, rep)` passes `rid` to `readCd` and `readCharge` alike), so the
+  -- two-ladder disagreement this guard was built to survive can no longer be constructed
+  -- from a well-formed pulse.  But "can no longer be constructed" is a claim about every
+  -- path into State, and this is the net under the one flight that has not happened yet:
+  -- deleting a guard in the same diff that removes its cause means a regression in the
+  -- cause lands with nothing beneath it.  Retire it only after a max-level Retribution
+  -- pass shows a clean `Judg=` / `Judg~` column, and retire it on its own.
   local function usable(base)
     local rec = base and factsByBase[base]
     if not rec then return false end

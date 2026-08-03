@@ -149,7 +149,6 @@ function C.Build(rows, specTable, deps)
   deps = deps or {}
   local readAlerts   = deps.readAlerts   or ns.ReadValidAlertTypes
   local known        = deps.known        or ns.State.SpellKnown
-  local baseCooldown = deps.baseCooldown or ns.BaseCooldown
   local alertName    = deps.alertName    or ns.AlertEventName
 
   -- No roster ⇒ nothing to ask about.  Checked FIRST because it is the more specific
@@ -167,14 +166,28 @@ function C.Build(rows, specTable, deps)
   local index, unreadableRows = buildIndex(rows)
   -- The REAL fences, asked with an empty `abilities` map: "if nothing were on screen,
   -- which of these would we synthesise?"
+  --
+  -- ⚠ PHASE 5 WIDENED THIS ANSWER, and it narrows `blind` as a consequence — deliberately,
+  -- not by accident.  The fence list used to require a ZERO BASE COOLDOWN and a `true`
+  -- knownness read, so most untracked buttons fell through to `blind`.  Under the roster
+  -- anchor every declared, non-utility, non-alias button gets a row of our own whatever its
+  -- cooldown, so the HUD is no longer blind to a BUTTON at all.  What `blind` still means —
+  -- and it is the only version worth shouting — is an `kind = "aura"` entry the CDM tracks
+  -- nowhere: State has no synthesis path for auras, so those really are invisible
+  -- (roster-state-plan Phase 5, "Roster gaps the anchor exposes" #2).
   local virtual = {}
-  for _, id in ipairs(ns.State.VirtualCandidates(specTable, {}, nil, known, baseCooldown)) do
+  for _, id in ipairs(ns.State.VirtualCandidates(specTable, {}, false)) do
     virtual[id] = true
   end
 
   local entries, counts = {}, zeroCounts()
-  for spellID, info in pairs(specTable) do
-    if type(spellID) == "number" and type(info) == "table" then
+  -- ⚠ ONE ROSTER WALK, and it is `ns.State.RosterEntries` (Phase 5 §C1) — the same call the
+  -- domain view anchors on.  This loop used to open the predicate inline, which meant two
+  -- copies of "what counts as a roster entry" and no way to tell them apart when they
+  -- drifted.  Same doctrine as the virtual fences above: reuse, never re-derivation.
+  for _, e in ipairs(ns.State.RosterEntries(specTable)) do
+    local spellID, info = e.spellID, e.info
+    do
       local entry = {
         spellID = spellID,
         kind    = info.kind,
