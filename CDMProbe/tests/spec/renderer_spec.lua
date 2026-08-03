@@ -183,9 +183,6 @@ describe("Renderer", function()
     assert.equals("CENTER", dot._points[1].point)
   end)
 
-  -- ⚠ A DROPPED HANDLE HIDES WHEN ITS POP-OUT ENDS, not in the draw that dropped it
-  -- (2026-08-02).  The claim this test makes is unchanged — hidden, never destroyed — but
-  -- the departure is animated now, so the animation has to end for the pixels to go.
   it("hides a handle that dropped out of the next DrawList (diff-by-key)", function()
     local r = rigged(2)
     r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" },
@@ -194,7 +191,6 @@ describe("Renderer", function()
     local dropped = r.cueFrames["fake2"]
     r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" } } })
     assert.is_true(r.cueFrames["fake1"]._shown)
-    r.cueLayers["fake2"].pop:Fire("OnFinished")
     assert.is_false(dropped._shown)                -- hidden...
     assert.equals(dropped, r.cueFrames["fake2"])   -- ...and pooled, not destroyed
   end)
@@ -278,7 +274,6 @@ describe("Renderer", function()
              keybinds = { { anchorTo = "fake1", keybind = "Q" } } })
     assert.is_true(r.cueFrames["fake1"]._shown)
     r:Draw({ cues = {}, keybinds = { { anchorTo = "fake1", keybind = "Q" } } })
-    r.cueLayers["fake1"].pop:Fire("OnFinished")    -- the dot pops out first (2026-08-02)
     assert.is_false(r.cueFrames["fake1"]._shown)   -- dot hidden...
     assert.is_true(r.cueKeys["fake1"]._shown)      -- ...key hint stays
     assert.is_true(r.cueHolders["fake1"]._shown)   -- ...and so does the holder it rides
@@ -295,12 +290,10 @@ describe("Renderer", function()
     assert.is_true(r.cueHolders["fake1"]._shown)
   end)
 
-  -- ⚠ THE UNION HAS A THIRD TERM, `leaving`, and this test has to respect it: a removed
-  -- handle leaves both active sets in the very draw that starts its pop-out, so the holder
-  -- survives until that animation ends — otherwise the pop plays under a hidden frame.
-  -- (The term went away with v1's ghost and came back with the v2 pop-out; the coupling
-  -- belongs to having ANY departure animation.)  The third term itself is pinned by "keeps
-  -- the HOLDER alive through a departure pop" below; this one stays about the two channels.
+  -- ⚠ TWO TERMS, and only because the flare is ARRIVAL-ONLY.  A third has lived here twice
+  -- (v1's ghost, v2's pop-out): a departing handle leaves both active sets in the draw that
+  -- starts its out-animation, so a two-term union hides the holder and the animation plays
+  -- invisibly.  Restore the term WITH any future departure animation.
   it("hides the holder only when BOTH channels drop the handle", function()
     local r = rigged(1)
     r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" } },
@@ -310,8 +303,6 @@ describe("Renderer", function()
     assert.is_true(r.cueHolders["fake1"]._shown, "the key hint still needs its holder")
     r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" } } })
     assert.is_true(r.cueHolders["fake1"]._shown, "the cue still needs its holder")
-    r:Draw({})
-    r.cueLayers["fake1"].pop:Fire("OnFinished")   -- the pop-out is what releases the holder
     r:Draw({})
     assert.is_false(r.cueHolders["fake1"]._shown)
   end)
@@ -545,12 +536,10 @@ describe("Renderer", function()
     r:Draw({ cues = { cue("fake1") } })              -- the arrival: one "new"
     r:Draw({ cues = { cue("fake2") } })              -- fake1 out + fake2 in, ONE tick
     assert.same({ "new", "new" }, seen)              -- ...and NOT { new, new, gone }
-    -- Both halves of the swap still happened visually — they are just not two events, and
-    -- since 2026-08-02 they are two POPS on two different icons: one in, one out.
+    -- Both halves of the swap still happened visually — they are just not two events.  The
+    -- ARRIVING one flares; the departing one clears at once (the flare is arrival-only).
     assert.is_true(r.cueRingIn["fake2"]._shown, "the arriving cue never drew")
-    assert.equals(1, r.cueLayers["fake2"].pop._plays, "the arriving cue did not pop in")
-    assert.equals(2, r.cueLayers["fake1"].pop._plays, "the departing cue did not pop out")
-    r.cueLayers["fake1"].pop:Fire("OnFinished")
+    assert.equals(1, r.cueLayers["fake2"].burst.groups[1]._plays, "the arrival did not flare")
     assert.is_false(r.cueRingIn["fake1"]._shown, "the departing cue never cleared")
   end)
 
@@ -591,191 +580,126 @@ describe("Renderer", function()
   end)
 
   ------------------------------------------------------------------------------
-  -- THE POP (2026-08-02) — one short scale on the cue LAYER, played at both edges.
-  -- ⚠ These are the successors to the two deleted GHOST tests, and they pin the same
-  -- hard-won rules: the departing art must survive the cull that drops it, the HOLDER must
-  -- survive with it, and `Stop()` fires OnFinished so the `leaving` flag has to be settled
-  -- around the stop rather than before it.
+  -- THE ARRIVAL BURST (2026-08-02) — a one-shot flare BESIDE the cue, replacing a `Scale`
+  -- pop that shipped twice and both times made the steady rings read as spinning far too
+  -- fast.  ⚠ The first test is not a feature test, it is THE STRUCTURAL INVARIANT that took
+  -- eight builds to name: nothing that is an ANCESTOR of a rotating texture may be
+  -- animated.  Read Renderer.lua's header at R.BURST before touching any of this.
   ------------------------------------------------------------------------------
-  it("pops an ARRIVING cue exactly once — a steady redraw does not re-play it", function()
+  local function burstOf(r, key) return r.cueLayers[key] and r.cueLayers[key].burst end
+
+  it("NEVER animates an ancestor of a rotating texture — THE invariant", function()
+    -- The whole artefact reduces to a parentage question.  A Scale on the cue LAYER (which
+    -- the rings hang under) made them read far too fast while measuring perfectly nominal;
+    -- a Scale on a SIBLING did not.  So the rings hang off the layer, the flare hangs off
+    -- its own frame beside them, and every flare animation belongs to a flare TEXTURE.
+    local r = rigged(1)
+    r:Draw({ cues = { cue("fake1") } })
+    local layer, b = r.cueLayers["fake1"], burstOf(r, "fake1")
+    assert.is_not_nil(b, "no burst was built for an arriving cue")
+    assert.equals(layer, r.cueRingIn["fake1"]._parent)
+    assert.equals(layer, r.cueRingOut["fake1"]._parent)
+    assert.equals(layer, b.frame._parent, "the flare frame is not a sibling of the rings")
+    local flareTex = {}
+    for _, t in ipairs(b.rings) do
+      assert.equals(b.frame, t._parent, "a flare texture escaped the flare frame")
+      flareTex[t] = true
+    end
+    assert.is_true(#b.groups > 0, "the flare has no scale group at all")
+    for _, g in ipairs(b.groups) do
+      assert.is_true(flareTex[g._parent] or false,
+        "a flare animation is parented to a FRAME — if a ring hangs under it, that IS the bug")
+    end
+  end)
+
+  it("flares an ARRIVING cue exactly once — a steady redraw does not re-fire it", function()
     local r = rigged(1)
     local c = { anchorTo = "fake1", emphasis = "ROTATION" }
     r:Draw({ cues = { c } })
-    local pop = r.cueLayers["fake1"].pop
-    assert.is_not_nil(pop, "no pop group on the cue layer — the arrival has no transient")
-    assert.equals(1, pop._plays)
+    local b = burstOf(r, "fake1")
+    assert.equals(1, b.groups[1]._plays)
     for _ = 1, 10 do r:Draw({ cues = { c } }) end
-    assert.equals(1, pop._plays, "a steady redraw re-popped — the cue will pulse at 10 Hz")
+    assert.equals(1, b.groups[1]._plays, "a steady redraw re-flared — it would strobe at 10 Hz")
   end)
 
-  it("keeps a DEPARTING cue's art on screen until the pop finishes", function()
-    local r = rigged(1)
-    r:Draw({ cues = { cue("fake1") } })
-    local pop = r.cueLayers["fake1"].pop
-    r:Draw({ cues = {} })                          -- ...the draw that drops it
-    assert.equals(2, pop._plays, "the departure did not play the pop")
-    assert.is_true(r.leaving["fake1"], "nothing marks this handle as still leaving")
-    assert.is_true(r.cueFrames["fake1"]._shown, "the art vanished — the pop plays invisibly")
-    assert.is_true(r.cueRingIn["fake1"]._shown)
-    -- ⚠ `glowing` is the COMMANDED state and clears AT ONCE — the pixels are what wait.
-    assert.is_nil(r.glowing["fake1"])
-    pop:Fire("OnFinished")                         -- ...and the animation ends
-    assert.is_nil(r.leaving["fake1"])
-    assert.is_false(r.cueFrames["fake1"]._shown)
-    assert.is_false(r.cueRingIn["fake1"]._shown)
-    assert.is_false(r.cueDiscs["fake1"]._shown)
-  end)
-
-  it("keeps the HOLDER alive through a departure pop — the third cull term", function()
-    -- A departing handle leaves BOTH active sets in the very draw that starts its pop, so
-    -- a two-term union would hide the holder in that same draw and the pop would play
-    -- under a hidden frame.  This is the coupling that came back with the animation.
-    local r = rigged(1)
-    r:Draw({ cues = { cue("fake1") } })
-    r:Draw({})
-    assert.is_true(r.cueHolders["fake1"]._shown, "the holder hid while its pop was playing")
-    r.cueLayers["fake1"].pop:Fire("OnFinished")
-    r:Draw({})                                     -- the next draw culls it for real
-    assert.is_false(r.cueHolders["fake1"]._shown)
-  end)
-
-  it("does NOT hide the art of a cue that leaves and returns mid-pop", function()
-    -- THE ORDERING RULE.  `Stop()` fires OnFinished, so an arrival that stops the running
-    -- pop-out BEFORE clearing `leaving` would hide the art of the cue it is reviving.
-    local r = rigged(1)
-    r:Draw({ cues = { cue("fake1") } })
-    r:Draw({ cues = {} })                          -- leaving...
-    assert.is_true(r.leaving["fake1"])
-    r:Draw({ cues = { cue("fake1") } })            -- ...back before the pop finished
-    assert.is_nil(r.leaving["fake1"])
-    assert.is_true(r.cueFrames["fake1"]._shown, "the returning cue hid its own art")
-    assert.is_true(r.cueRingIn["fake1"]._shown)
-    assert.is_true(r.cueHolders["fake1"]._shown)
-  end)
-
-  -- ⚠ THE REGRESSION GUARD THAT MATTERS.  `Play()` on a running group RESTARTS it, so a
-  -- pop that touched either Rotation would pin the rings near phase zero and they would
-  -- look STUCK — the exact artefact the whole cue investigation was chasing.  The pop
-  -- scales the LAYER; it must never reach the rings' own animation groups.
-  it("never restarts either ring's rotation when a cue pops", function()
+  it("never restarts a ring's rotation beyond its own re-show", function()
+    -- ⚠ THE REGRESSION GUARD.  `Play()` on a running group restarts it, and rings pinned
+    -- near phase zero look stuck.  A departing cue parks its rings and a returning one
+    -- replays them — that is one restart, and the flare must add none of its own.
     local r = rigged(1)
     local c = { anchorTo = "fake1", emphasis = "ROTATION" }
     r:Draw({ cues = { c } })
     local inner, outer = r.cueRingIn["fake1"], r.cueRingOut["fake1"]
-    local a, b = inner.spin._plays, outer.spin._plays
-    r:Draw({ cues = {} })                          -- pop OUT (the rings keep turning)
-    assert.equals(a, inner.spin._plays, "the departure pop restarted the inner ring")
-    assert.equals(b, outer.spin._plays, "the departure pop restarted the outer ring")
-    assert.is_true(inner._spinOn, "the departing ring stopped turning mid-pop")
-    r:Draw({ cues = { c } })                       -- pop IN, on art that never parked
-    assert.equals(a, inner.spin._plays, "the arrival pop restarted the inner ring")
-    assert.equals(b, outer.spin._plays, "the arrival pop restarted the outer ring")
-    assert.equals(3, r.cueLayers["fake1"].pop._plays)       -- in, out, in — the pops did play
-  end)
-
-  -- ⚠ THE SETTER NAME IS GENUINELY AMBIGUOUS, and a silent miss is the ONE unacceptable
-  -- failure: modern retail documents SetScaleFrom/SetScaleTo, a great deal of addon code
-  -- still calls SetFromScale/SetToScale, and the XML attributes are a third spelling again.
-  -- v1 branched on whichever existed and did NOTHING if neither did — on screen that is
-  -- indistinguishable from "the pop does not help".  These pin both halves of the answer.
-  -- The harness offers all four spellings, so each case installs the one it is about.
-  local function repopWith(r, key, install)
-    local layer = r.cueLayers[key]
-    layer._popBuilt, layer.pop = nil, nil            -- ...and rebuild it against this
-    layer.CreateAnimationGroup = function()
-      local g = H.newStub()
-      g.CreateAnimation = function()
-        local a = H.newStub()
-        a.SetScaleFrom, a.SetScaleTo, a.SetFromScale, a.SetToScale = nil, nil, nil, nil
-        install(a)
-        return a
-      end
-      return g
-    end
-    return layer
-  end
-
-  it("takes the LEGACY SetFromScale/SetToScale spelling when the modern one is absent", function()
-    local r = rigged(1)
-    r:Draw({ cues = { cue("fake1") } })
-    local seen = {}
-    local layer = repopWith(r, "fake1", function(a)
-      a.SetFromScale = function(_, x) seen[#seen + 1] = x end
-      a.SetToScale   = function(_, x) seen[#seen + 1] = x end
-    end)
-    r:Draw({ cues = {} })                            -- the departure rebuilds the pop
-    assert.is_not_nil(layer.pop, "no pop built from the legacy spelling")
-    assert.is_true(layer.pop._playing)
-    -- Two symmetric halves: 1 -> peak, then peak -> 1.
-    assert.same({ seen[1], seen[4] }, { 1, 1 })
-    assert.equals(seen[2], seen[3])
-    assert.is_true(seen[2] > 1, "the pop never grows")
-  end)
-
-  it("SAYS SO when NEITHER spelling exists — and still clears the cue", function()
-    local r = rigged(1)
-    r:Draw({ cues = { cue("fake1") } })
-    local layer = repopWith(r, "fake1", function() end)   -- no scale setter at all
+    local a0, b0 = inner.spin._plays, outer.spin._plays
     r:Draw({ cues = {} })
-    assert.is_nil(layer.pop, "a pop was built from an animation with no usable setter")
+    r:Draw({ cues = { c } })
+    assert.equals(2, burstOf(r, "fake1").groups[1]._plays, "the re-arrival did not flare")
+    assert.equals(a0 + 1, inner.spin._plays, "the inner ring restarted more than once")
+    assert.equals(b0 + 1, outer.spin._plays, "the outer ring restarted more than once")
+  end)
+
+  it("sizes the flare off the OUTER RING the cue actually drew, not off a literal", function()
+    -- LATE draws bigger rings, so LATE gets a proportionally bigger flare for free — which
+    -- is what "the same press, escalated" has to mean for a transient too.
+    local r = rigged(2)
+    r:Draw({ cues = { { anchorTo = "fake1", size = 12, emphasis = "ROTATION" },
+                      { anchorTo = "fake2", size = 12, emphasis = "LATE" } } })
+    local base = burstOf(r, "fake1").frame._size[1]
+    local late = burstOf(r, "fake2").frame._size[1]
+    assert.is_true(math.abs(base - r.cueRingOut["fake1"]:GetWidth() * Rr.BURST.size) < 1e-6,
+      "the flare is not sized off the outer ring")
+    assert.is_true(late > base, "LATE's bigger rings did not get a bigger flare")
+  end)
+
+  it("stacks the flare because ADD blend has a ceiling", function()
+    local r = rigged(1)
+    r:Draw({ cues = { cue("fake1") } })
+    local b = burstOf(r, "fake1")
+    assert.equals(Rr.BURST.stack, #b.rings)
+    assert.equals(Rr.BURST.stack, #b.groups, "a stacked copy got no animation of its own")
+    for _, t in ipairs(b.rings) do assert.is_true(t._shown) end
+  end)
+
+  it("clears a DEPARTING cue in the same draw — the flare is arrival-only", function()
+    -- ⚠ A DECISION, NOT AN OMISSION.  A flare says "look here"; on a swap, flaring the
+    -- departing icon drags the eye back to the one you should stop looking at.  It is also
+    -- what keeps R:Draw's holder cull honestly two terms.
+    local r = rigged(1)
+    r:Draw({ cues = { cue("fake1") }, keybinds = { { anchorTo = "fake1", keybind = "Q" } } })
+    r:Draw({ keybinds = { { anchorTo = "fake1", keybind = "Q" } } })
+    assert.is_false(r.cueFrames["fake1"]._shown, "the departing cue lingered")
+    assert.is_false(r.cueRingIn["fake1"]._shown)
+    assert.is_nil(r.glowing["fake1"])
+    assert.is_true(r.cueHolders["fake1"]._shown, "the key hint still needs its holder")
+    r:Draw({})
+    assert.is_false(r.cueHolders["fake1"]._shown, "the holder outlived both channels")
+  end)
+
+  it("SAYS SO when neither Scale spelling exists — and still draws the cue", function()
+    -- The one unacceptable failure is a SILENT one: on screen "the setter was missing" and
+    -- "the flare does not help" look identical, and v1 shipped exactly that.
+    local r = rigged(1)
+    r:Draw({ cues = { cue("fake1") } })
+    for _, t in ipairs(burstOf(r, "fake1").rings) do
+      t.CreateAnimationGroup = function(tex)        -- a Scale animation with NO setter
+        local g = H.newStub()
+        g._parent = tex
+        g.CreateAnimation = function()
+          local a = H.newStub()
+          a.SetScaleFrom, a.SetScaleTo, a.SetFromScale, a.SetToScale = nil, nil, nil, nil
+          return a
+        end
+        return g
+      end
+    end
+    Rr.BURST.spin = Rr.BURST.spin + 1               -- move the spec so the flare rebuilds
+    r:Draw({ cues = {} })
+    r:Draw({ cues = { cue("fake1") } })
     local said = table.concat(H.printed, "\n")
     assert.is_truthy(said:find("SetScaleFrom", 1, true),
-      "the missing setter was never reported — it would read as 'the pop does not help'")
-    -- HONEST DEGRADATION: with no animation to wait for, nothing may be left waiting for
-    -- one.  The cue clears in the same draw, exactly as it did before the pop existed.
-    assert.is_nil(r.leaving["fake1"])
-    assert.is_false(r.cueFrames["fake1"]._shown)
-    assert.is_false(r.cueHolders["fake1"]._shown)
-  end)
-
-  ------------------------------------------------------------------------------
-  -- WHAT `/cdmp rt pop` (the POP LAB) STANDS ON.  The lab's whole value is that its
-  -- CONTROL panel is a ring nothing has touched, and that its other panels differ from it
-  -- by exactly one shipped call.  Both of those are properties of the Renderer, so they
-  -- get pinned here rather than trusted — a control that was quietly popped once before
-  -- you looked at it is worse than no lab at all.
-  ------------------------------------------------------------------------------
-  it("seeding cuedLast suppresses the opening pop — the lab's CONTROL panel", function()
-    local r = rigged(1)
-    r.cuedLast = { fake1 = true }              -- "this was already on the board"
-    r:Draw({ cues = { cue("fake1") } })
-    local layer = r.cueLayers["fake1"]
-    assert.is_nil(layer.pop, "the control panel popped on load — it is not a control")
-    assert.is_true(r.cueRingIn["fake1"]._spinOn, "the control's rings are not turning")
-    assert.is_true(r.cueFrames["fake1"]._shown)
-  end)
-
-  it("an OUT-OF-BAND popCue pops without disturbing the cue it pops", function()
-    -- Panels 2 and 3 of the lab call R:popCue directly on a cue that is already drawn,
-    -- rather than removing and re-adding it — a remove/re-add would also exercise the
-    -- DEPARTURE bookkeeping, which is the other surviving suspect, and then a difference
-    -- against the control would not say which one caused it.
-    local r = rigged(1)
-    r.cuedLast = { fake1 = true }
-    r:Draw({ cues = { cue("fake1") } })
-    local inner, outer = r.cueRingIn["fake1"], r.cueRingOut["fake1"]
-    local a, b = inner.spin._plays, outer.spin._plays
-    r:popCue("fake1", false)
-    assert.equals(1, r.cueLayers["fake1"].pop._plays, "the out-of-band pop never played")
-    assert.equals(a, inner.spin._plays, "it restarted the inner ring")
-    assert.equals(b, outer.spin._plays, "it restarted the outer ring")
-    assert.is_nil(r.leaving["fake1"], "an arrival pop marked the cue as leaving")
-    assert.is_true(r.cueFrames["fake1"]._shown, "the popped cue lost its art")
-    r:Draw({ cues = { cue("fake1") } })        -- ...and a later redraw is still steady
-    assert.equals(1, r.cueLayers["fake1"].pop._plays)
-  end)
-
-  it("scales the CUE LAYER, not the regions the draw path re-asserts", function()
-    -- The pop's target is the one thing no draw path calls SetSize on.  A Scale on the
-    -- dot / rings / disc would be fought by their own geometry restate.
-    local r = rigged(1)
-    r:Draw({ cues = { cue("fake1") } })
-    local layer = r.cueLayers["fake1"]
-    assert.equals(layer, layer.pop._parent, "the pop is not parented to the cue layer")
-    for name, region in pairs({ dot = r.cueFrames["fake1"], inner = r.cueRingIn["fake1"],
-                                outer = r.cueRingOut["fake1"], disc = r.cueDiscs["fake1"] }) do
-      assert.is_nil(region.pop, name .. " carries its own pop — the draw path will fight it")
-    end
+      "the missing setter was never reported: " .. said)
+    assert.is_true(r.cueFrames["fake1"]._shown, "the cue stopped drawing when the flare could not")
+    assert.is_true(r.cueRingIn["fake1"]._spinOn, "the rings stopped turning when the flare could not")
   end)
 
   it("stays silent with no callback injected (the Renderer calls no game function)", function()

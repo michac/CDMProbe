@@ -15,9 +15,10 @@
 --     by its `emphasis` token and all riding a per-icon CUE LAYER frame (see ensureLayer).
 --     ⚠ The ring pair's numbers came from a BLIND EXPERIMENT, not from dialling — see the
 --     header at RING_SCALE.  No breathe: that one retired with v1 and has not come back.
---   * ...plus the POP: one short scale on the cue layer, played on BOTH edges (see
---     POP_PEAK).  ⚠ It is WRITTEN FRESH, not recovered from v1 — read the header there
---     before assuming it is the old one wearing new numbers.
+--   * ...plus the ARRIVAL BURST: a one-shot flare that expands, rotates and fades BESIDE
+--     the cue (see R.BURST).  ⚠ It replaced a `Scale` pop that shipped twice and was wrong
+--     both times; the header at R.BURST is the record of why, and of the one rule that
+--     falls out of it — nothing that is an ancestor of a rotating texture may be animated.
 --   * keybind = a corner key hint, drawn from the DrawList's OWN `keybinds[]` channel
 --     (Phase 3) — identity chrome, independent of whether the icon is cued.  It rides
 --     the HOLDER, deliberately NOT the cue layer.
@@ -149,6 +150,10 @@ local DOT_MASK = "Interface\\CharacterFrame\\TempPortraitAlphaMask"
 R.DISC_MASK = DOT_MASK   -- public for the lab's burst, whose dark backing is the same
                          -- "punch a hole for the additive light" trick the cue disc uses
 
+local GLOW_ART = "Interface\\AddOns\\CDMProbe\\Media\\fx\\glow\\star_07.tga"
+R.RING_ART = GLOW_ART   -- public for `/cdmp rt pop`'s BURST candidate, which flares the
+                        -- same sprite so the transient belongs to the same visual family
+
 --------------------------------------------------------------------------------
 -- Factory
 --------------------------------------------------------------------------------
@@ -169,10 +174,6 @@ function R.New(cfg)
   self.cueDiscs   = {}          -- anchorTo -> the black backing disc under both
   self.cuedLast   = {}          -- the PREVIOUS draw's cue-active set: the EDGE input.
                                 -- added = active - last, removed = last - active.
-  self.leaving    = {}          -- anchorTo -> true while its POP-OUT is still playing.
-                                -- The only state the pop adds, and it is what keeps a
-                                -- departing cue's art (and its holder) on screen for the
-                                -- ~0.18s after it left both active sets.  See R:popCue.
   -- Injected, defaults to nil so the Renderer still never calls a game function.  Fired
   -- ONCE per draw that changed the cue set — see drawCueEdges for why a SWAP is one event.
   self.onCueSetChanged = cfg.onCueSetChanged
@@ -180,11 +181,9 @@ function R.New(cfg)
                                 -- here, read only by renderer_spec: the one observable
                                 -- proof the glow path ran.  Keep it — it is an
                                 -- assertion surface, not dead state.
-                                -- ⚠ IT TRACKS THE COMMANDED STATE, NOT PIXELS.  It clears
-                                -- the instant a cue leaves the DrawList, even though
-                                -- `leaving` is still holding that cue's art on screen for
-                                -- its pop-out.  Do not conflate the two: one answers "is
-                                -- this icon being cued", the other "is it still drawn".
+                                -- ⚠ IT TRACKS THE COMMANDED STATE, NOT PIXELS — "is this
+                                -- icon being cued", never "is anything of it still on
+                                -- screen".  The arrival flare outlives it by design.
   self.pipRows    = {}          -- barIndex -> { 1..N pip textures } (per-bar pool)
   self.panelWidget = nil        -- { frame, title, rows = {} }, built on first panel
   -- UIPARENT is a sanctioned root token (architecture.md :341); pre-register it so
@@ -289,67 +288,72 @@ function R:ensureLayer(key, holder, c, sz)
 end
 
 --------------------------------------------------------------------------------
--- THE POP — one short scale on the cue layer, played at BOTH edges.
+-- THE ARRIVAL BURST — a one-shot flare when a cue appears.
 --------------------------------------------------------------------------------
--- WHY.  A cue arriving is an INSTRUCTION CHANGE, and steady-state art gives the eye
--- nothing to catch it by: the set turns over at cast cadence (120 changes / 504s of real
--- play, 60 % of them SWAPS), so without a transient a swap reads as "the ring was always
--- there".  The pop is that transient, on both halves of the swap.
+-- WHY.  A cue arriving is an INSTRUCTION CHANGE, and steady art gives the eye nothing to
+-- catch it by: the set turns over at cast cadence (120 changes / 504s of real play, 60 % of
+-- them SWAPS), so without a transient a swap reads as "the ring was always there".
 --
--- ⚠ WRITTEN FRESH, DELIBERATELY NOT RECOVERED.  v1 had a pop too
--- (archive/cue-treatment-v1.lua) and `popPlaying` was the ONE field that differed between
--- the code path which reproduced the old "the spin rubber-bands forever" artefact and the
--- path that did not.  That makes v1's pop a suspect, so none of it was copied: different
--- peak, different structure, and the ordering rules below were re-derived rather than
--- inherited.  Do not "restore" it from the archive.
+-- ⚠⚠ THIS REPLACES A `Scale` POP THAT SHIPPED AND WAS WRONG.  Two independent pops — v1's
+-- (archive/cue-treatment-v1.lua) and a from-scratch v2 — both made the steady rings read as
+-- SPINNING FAR TOO FAST from the instant of the pop, permanently.  Measured off
+-- `Rotation:GetProgress()` the angular rate was NOMINAL on every panel (0.166 rev/s, 1.00x
+-- against an unpopped control), so it was never a timing bug; what the eye reads is spoke
+-- rate and beat, and something about the composition changed it.  Nothing in our code
+-- touched the rings — renderer_spec pinned then and pins now that a transient never calls
+-- Play() on either Rotation, and that assertion passed throughout.
 --
---------------------------------------------------------------------------------
--- ⚠⚠ KNOWN DEFECT, SHIPPED ON PURPOSE (2026-08-02).  THE POP BRINGS THE SPIN
--- ARTEFACT BACK, AND WE ARE KEEPING THE POP ANYWAY UNTIL IT IS UNDERSTOOD.
---------------------------------------------------------------------------------
--- The rings rubber-band while the pop is in.  It is a KNOWN, ACCEPTED trade — the pop is
--- worth more in play than the steady spin is — not something nobody has noticed.  ⚠ Do not
--- "fix" it by deleting the pop; that answer is already known and was rejected.
+-- `/cdmp rt pop` isolated it, one property per panel:
+--     Scale on the cue layer (an ANCESTOR of the rings) ....... reproduces
+--     the same Scale with POP_PEAK = 1.0 (visually inert) ..... reproduces
+--     ALPHA on that same ancestor ............................. clean
+--     Scale on an unrelated frame ............................. clean
+--     Scale on a frame owning ONLY the dot .................... clean
+-- ⇒ THE TRIGGER IS A `Scale` ANIMATION RUNNING ON AN ANCESTOR OF A ROTATING TEXTURE.
 --
--- TWO FLIGHTS, TWO RESULTS, AND BOTH COST A BUILD — DO NOT RE-DERIVE THEM:
+-- ⚠ AND THE STRUCTURAL FIX ALONE WAS NOT ENOUGH, WHICH IS WHY THIS IS A BURST AND NOT A
+-- SMALLER POP.  Taking the rings out of the scaled subtree cures the artefact and DELETES
+-- THE EFFECT: the pop read because the RINGS grew.  Scale only the 12px dot and you move
+-- four pixels for 90ms, which is invisible.  The effect and the bug were the same event, so
+-- the transient had to become something else entirely — a flare that is ADDED beside the
+-- cue instead of a size change applied to it.
 --
---   1. v0.32.76 (POP_PEAK 1.35) — the artefact came back.  v2's pop shares almost nothing
---      with v1's (peak, duration, one animation instead of a pop plus a ghost, ordering,
---      bookkeeping — all different), so this is no longer a suspect off a SavedVariables
---      capture.  It is a REPRODUCTION, in two independent implementations, and what it
---      indicts is the only thing they share: an ANIMATION RUNNING ON AN ANCESTOR FRAME OF
---      THE ROTATING TEXTURES.
---   2. v0.32.77 (POP_PEAK 1.0) — STILL PRESENT.  So it is NOT the visible size change.
---      ⚠ READ THAT PRECISELY: at 1.0 the Scale animation still EXISTS and still PLAYS, it
---      merely interpolates 1 -> 1.  What is eliminated is the MAGNITUDE, not the running
---      animation.  "The ancestor scale did it" is still live and is still the best theory.
+-- ⚠⚠ THE ONE RULE THIS FILE NOW HAS: NOTHING THAT IS AN ANCESTOR OF A ROTATING TEXTURE MAY
+-- BE ANIMATED.  The burst's own textures scale and rotate THEMSELVES; their frame is a
+-- plain anchor.  Do not "simplify" this by scaling the burst frame, or the layer, to save
+-- an animation — that is the artefact, exactly, and it cost eight builds to name.
+-- renderer_spec pins the parentage so the tidy-up cannot land silently.
 --
--- SO THE TWO SURVIVING SUSPECTS, and the experiment that separates them:
---   A. an AnimationGroup PLAYING on an ancestor frame, whatever it animates
---        -> test: keep the departure delay, drive it with C_Timer, create NO group at all
---   B. the departure bookkeeping — `leaving` keeps a SPINNING ring alive past the draw
---      that dropped it, where the pre-pop cull parked it in that same draw
---        -> test: keep the pop, park the rings immediately on departure
--- If A lands, the fix is structural and keeps the pop: scale the DOT on its own child
--- frame, so the rings are simply not in the animated subtree.
+-- ARRIVAL ONLY, DELIBERATELY.  A flare says "look here, press this".  On a swap — 60 % of
+-- real changes — a departure flare would drag the eye back to the icon you should stop
+-- looking at, and two big flares would fire at once.  So a departing cue just clears, as it
+-- did before any of this, and the holder cull stays honestly two terms.  ⚠ A cue whose
+-- whole life is shorter than `secs` has its flare truncated by the cull; the median gap
+-- between real set changes is 1.5-2.2s against a 0.40s flare, so this is theory, not a case.
 --
--- ⚠ AND NOTE WHAT DID *NOT* CATCH ANY OF THIS.  renderer_spec pins that a pop never calls
--- Play() on either ring's Rotation, and that assertion is TRUE and passes — the mechanism
--- is not a restart.  An off-game harness records what a widget was TOLD; this is about
--- what the renderer DOES with a transform, so no source gate in this repo can see it.
--- Adding a test here does not close the question; only a flight does.
---
--- POP_PEAK is the one-number dial: 1.0 disables the visual half while leaving every bit of
--- the bookkeeping intact (that is exactly how flight 2 above was run).  v1 doubled the cue
--- at 2.0x; 1.35x is deliberately gentler.
-local POP_PEAK = 1.35
-local POP_SECS = 0.18
-
--- PUBLIC, and only for one reason: `/cdmp rt pop` has to know when a pop is over so it can
--- tear a panel down after one.  The alternative is the rig hardcoding 0.18 and drifting
--- silently the first time this moves — which is exactly the class of bug the archived
--- `rt fx` rig shipped for six builds.  Read it; never write it.
-R.POP_SECS = POP_SECS
+-- THE NUMBERS CAME OFF `/cdmp rt pop`, DIALLED IN PLAY, and every one of them is a
+-- judgement rather than a derivation:
+--   `stack` exists because ADD BLEND HAS A CEILING — one texture at alpha 1.0 is as bright
+--     as one texture gets, and drawing the sprite twice is the only way past it short of
+--     new art.  Stacked copies COUNTER-ROTATE: identical copies are indistinguishable from
+--     one brighter texture.
+--   the fade HOLDS at full for its first quarter before falling.  A straight linear fade
+--     from frame one halves the average brightness and was most of why the first cut read
+--     as "much too subtle".
+--   `back` (a dark expanding disc, the trick the cue's own backing disc uses) is 0: it
+--     read as too heavy behind a flare this bright.  Kept as a knob, not deleted.
+--   `size` is RELATIVE TO THE OUTER RING, not an absolute — so LATE's bigger rings get a
+--     proportionally bigger flare for free, which is what "the same press, escalated" means.
+R.BURST = {
+  size  = 0.93,   -- start diameter, RELATIVE to the outer ring's diameter
+  peak  = 2.8,    -- ...grown to this multiple over `secs`
+  alpha = 1.00,   -- peak alpha of each additive copy
+  back  = 0,      -- dark backing disc alpha (0 = off)
+  secs  = 0.40,
+  stack = 2,      -- additive copies; see the ADD-blend ceiling above
+  spin  = 30,     -- degrees over the flare; stacked copies counter-rotate
+}
+local BURST = R.BURST
 
 -- ⚠ THE SETTER NAME IS GENUINELY AMBIGUOUS, AND A SILENT MISS IS THE ONE UNACCEPTABLE
 -- FAILURE.  Blizzard's generated API doc for the Scale animation carries
@@ -357,115 +361,158 @@ R.POP_SECS = POP_SECS
 -- SimpleAnimScaleAPIDocumentation.lua, build 12.0.7.68887); a great deal of addon code
 -- still calls the older `SetFromScale` / `SetToScale`, and the XML attributes are a third
 -- spelling again (`fromScaleX`/`toScaleX`) — which is all the KB records, so this is not
--- paranoia.  v1 branched on whichever existed and did NOTHING if neither did, and on
--- screen "the setter was missing" is indistinguishable from "the pop does not help" — the
--- one wrong answer this must not give.  So: take the spelling that exists, and SAY SO if
+-- paranoia.  v1 branched on whichever existed and did NOTHING if neither did, and on screen
+-- "the setter was missing" is indistinguishable from "the effect does not help" — the one
+-- wrong answer this must not give.  So: take the spelling that exists, and SAY SO if
 -- neither does.
-local popWarned = false
+local flareWarned = false
 local function scaleSetters(anim)
   if anim.SetScaleFrom and anim.SetScaleTo then return anim.SetScaleFrom, anim.SetScaleTo end
   if anim.SetFromScale and anim.SetToScale then return anim.SetFromScale, anim.SetToScale end
-  if not popWarned then
-    popWarned = true
-    ns.Print("|cffff4040cue pop disabled|r — this client's Scale animation has neither "
+  if not flareWarned then
+    flareWarned = true
+    ns.Print("|cffff4040cue flare disabled|r — this client's Scale animation has neither "
       .. "SetScaleFrom/SetScaleTo nor SetFromScale/SetToScale.  Cues still draw and still "
-      .. "clear; they just do not punch on arrival.")
+      .. "clear; they just do not flare on arrival.")
   end
   return nil
 end
 
--- ONE GROUP, TWO SYMMETRIC HALVES: SetOrder(1) grows, SetOrder(2) returns.  ONE TARGET —
--- the layer — so disc, dot and BOTH rings scale together and the draw path never touches
--- what is animating.  Returns nil (once, warned) if this client has no usable setter.
---
--- ⚠ PUBLIC as `R.BuildPop` (below) for ONE consumer: `/cdmp rt pop`'s FIX-PREVIEW panel,
--- which plays the pop on a DIFFERENT frame to test whether taking the rings out of the
--- scaled subtree cures the artefact.  The rig must use THIS constructor rather than roll
--- its own, or the preview is not the shipped pop and proves nothing about it — the exact
--- way the archived `rt fx` rig managed to be wrong for six builds.
--- ⚠ `peak`/`secs` are PARAMETERS only for the lab.  The shipped call passes neither and
--- gets POP_PEAK/POP_SECS.  They exist because the fix-preview panel has to try a peak the
--- shipped cue does not use: a dot-only pop at 1.35x moves a 12px dot by four pixels for
--- 90ms, which is invisible — and an invisible preview cannot be judged, only misread as
--- "the fix works" when in truth nothing happened.
--- `oneWay` drops the return half: the thing grows and stays grown, for a transient that
--- DIES rather than settling back (the lab's burst, which expands and fades out).  Cutting a
--- symmetric group short with a fade instead leaves a visible snap when the second half
--- starts, which is not a look anyone would choose on purpose.
-local function buildPop(frame, peak, secs, oneWay)
-  peak, secs = peak or POP_PEAK, secs or POP_SECS
-  local g = frame:CreateAnimationGroup()
+-- A ONE-WAY grow, on the region itself.  The flare expands and DIES, so there is no return
+-- half — cutting a symmetric group short with a fade instead leaves a visible snap where
+-- the second half starts.
+local function buildFlare(region, peak, secs)
+  local g = region:CreateAnimationGroup()
   local up = g:CreateAnimation("Scale")
   local setFrom, setTo = scaleSetters(up)
   if not setFrom then return nil end
   setFrom(up, 1, 1)
   setTo(up, peak, peak)
   up:SetOrder(1)
-  up:SetDuration(oneWay and secs or (secs / 2))
+  up:SetDuration(secs)
   up:SetOrigin("CENTER", 0, 0)
-  if oneWay then return g end
-  local down = g:CreateAnimation("Scale")
-  setFrom(down, peak, peak)
-  setTo(down, 1, 1)
-  down:SetOrder(2)
-  down:SetDuration(secs / 2)
-  down:SetOrigin("CENTER", 0, 0)
+  return g
+end
+R.BuildFlare = buildFlare   -- `/cdmp rt pop` builds its control panels from the SHIPPED one
+
+-- Hold at full, then fall.  See the header: a linear fade from frame one is half as bright.
+local function buildFade(region, peakAlpha, secs)
+  local g = region:CreateAnimationGroup()
+  local hold = g:CreateAnimation("Alpha")
+  hold:SetFromAlpha(peakAlpha); hold:SetToAlpha(peakAlpha)
+  hold:SetOrder(1); hold:SetDuration(secs * 0.25)
+  local out = g:CreateAnimation("Alpha")
+  out:SetFromAlpha(peakAlpha); out:SetToAlpha(0)
+  out:SetOrder(2); out:SetDuration(secs * 0.75)
+  g:SetScript("OnFinished", function() region:SetAlpha(0) end)
   return g
 end
 
-R.BuildPop = buildPop   -- see the note above: the rig's fix preview needs the SHIPPED one
+local function burstSig()
+  return ("%.3f|%.2f|%.2f|%.2f|%.3f|%d|%.1f"):format(BURST.size, BURST.peak, BURST.alpha,
+    BURST.back, BURST.secs, BURST.stack, BURST.spin)
+end
 
--- Built once per layer, on the layer (the layer object is stable per handle — ensureLayer
--- re-parents it rather than rebuilding it).  `_popBuilt` is what stops a client with no
--- usable setter from creating a fresh throwaway group on every draw.
-function R:ensurePop(key)
+-- Built once per cue layer, and rebuilt only if the BURST spec itself changed — which in a
+-- shipped client it never does; `/cdmp rt pop burst` mutates R.BURST to dial this live, and
+-- that is the ONE reason the signature check exists.  ⚠ It dials the SHIPPED table, not a
+-- copy: the archived `rt fx` rig A/B'd against its own divergent copy and was wrong for six
+-- builds because of it.
+function R:ensureBurst(key, layer)
+  local b = layer.burst
+  local sig = burstSig()
+  if b and b.sig == sig then return b end
+  if b then for _, g in ipairs(b.groups) do g:Stop() end; b.frame:Hide() end
+
+  local f = b and b.frame
+  if not f then
+    -- ⚠ A PLAIN ANCHOR.  It is never animated and it is a SIBLING of the rings, not a
+    -- parent — both halves of that are load-bearing, see the header.
+    f = CreateFrame("Frame", nil, layer)
+    f:SetPoint("CENTER", layer, "CENTER", 0, 0)
+  end
+  f:SetFrameLevel(layer:GetFrameLevel() + 2)   -- the flare reads OVER the steady cue
+
+  local disc = b and b.disc
+  if BURST.back > 0 and not disc then
+    disc = f:CreateTexture(nil, "BACKGROUND")
+    local mask = f:CreateMaskTexture()
+    mask:SetTexture(DOT_MASK, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+    disc:AddMaskTexture(mask)
+    disc.mask = mask
+  end
+
+  local rings, groups, fades = (b and b.rings) or {}, {}, {}
+  for i = 1, BURST.stack do
+    local t = rings[i]
+    if not t then
+      t = f:CreateTexture(nil, "ARTWORK", nil, i)
+      t:SetTexture(GLOW_ART)
+      t:SetBlendMode("ADD")
+      rings[i] = t
+    end
+    -- SCALE AND ROTATION BOTH ON THE TEXTURE, in one group, same order so they run
+    -- together.  ⚠ This is the whole safety property: the flare rotates INSIDE nothing.
+    local g = buildFlare(t, BURST.peak, BURST.secs)
+    if g and BURST.spin ~= 0 then
+      local rot = g:CreateAnimation("Rotation")
+      rot:SetDegrees(i % 2 == 1 and BURST.spin or -BURST.spin)
+      rot:SetDuration(BURST.secs)
+      rot:SetOrder(1)
+      rot:SetOrigin("CENTER", 0, 0)
+    end
+    if g then groups[#groups + 1] = g end
+    fades[#fades + 1] = buildFade(t, BURST.alpha, BURST.secs)
+  end
+  for i = BURST.stack + 1, #rings do rings[i]:Hide() end
+  if disc and BURST.back > 0 then fades[#fades + 1] = buildFade(disc, BURST.back, BURST.secs) end
+
+  if fades[1] then
+    fades[1]:SetScript("OnFinished", function()
+      for _, t in ipairs(rings) do t:SetAlpha(0) end
+      if disc then disc:SetAlpha(0) end
+      f:Hide()
+      for _, g in ipairs(groups) do g:Stop() end
+    end)
+  end
+  b = { frame = f, disc = disc, rings = rings, groups = groups, fades = fades, sig = sig }
+  layer.burst = b
+  f:Hide()
+  return b
+end
+
+-- Fire the flare for one arriving cue.  `out` is the OUTER ring's diameter, so the flare is
+-- sized off what the cue actually drew rather than off a literal.
+function R:fireBurst(key, out, col)
   local layer = self.cueLayers[key]
-  if not layer then return nil end
-  if not layer._popBuilt then
-    layer._popBuilt = true
-    local g = buildPop(layer)
-    if g then g:SetScript("OnFinished", function() self:onPopFinished(key) end) end
-    layer.pop = g
+  if not layer or BURST.peak <= 1 or BURST.stack < 1 then return end
+  local b = self:ensureBurst(key, layer)
+  if #b.groups == 0 then return end          -- no usable Scale setter; already warned
+  local size = out * BURST.size
+  b.frame:SetSize(size, size)
+  if b.disc then
+    b.disc:SetColorTexture(0, 0, 0, 1)
+    b.disc:SetSize(size, size)
+    b.disc.mask:ClearAllPoints()
+    b.disc.mask:SetSize(size, size)
+    b.disc.mask:SetPoint("CENTER", b.disc, "CENTER", 0, 0)
+    b.disc:ClearAllPoints()
+    b.disc:SetPoint("CENTER", b.frame, "CENTER", 0, 0)
+    b.disc:SetAlpha(BURST.back)
+    b.disc:SetShown(BURST.back > 0)
   end
-  return layer.pop
-end
-
--- The pop ENDS.  On an arrival that means nothing; on a DEPARTURE it is the moment the
--- cue's art finally leaves the screen.  ⚠ `Stop()` fires this too — see R:popCue.
-function R:onPopFinished(key)
-  if not self.leaving[key] then return end
-  self.leaving[key] = nil
-  self:hideCueArt(key)
-end
-
--- ONE ANIMATION, BOTH EDGES — only the ordering around it differs.  On ARRIVAL the cue is
--- already drawn and shown by drawCues, so the pop simply plays.  On DEPARTURE the pop
--- plays FIRST and its OnFinished is what hides the art.
---
--- ⚠ THE ORDER IS LOAD-BEARING.  `Stop()` FIRES OnFinished (the client does, with
--- requested = true, and tests/mock_ns.lua models it), so the flag OnFinished reads has to
--- be settled around the stop and never before it:
---     arrival:   clear `leaving` -> Stop -> Play
---     departure: Stop -> set `leaving` -> Play
--- Set the flag before the stop on departure and a cue that leaves twice in quick
--- succession hides its own art mid-animation.
-function R:popCue(key, leaving)
-  local g = self:ensurePop(key)
-  if not g then
-    -- No layer (an unknown emphasis draws nothing), or no usable Scale setter: there is no
-    -- animation to wait for, so nothing may be marked as waiting for one — otherwise the
-    -- art and its holder would be stranded on screen with no OnFinished ever coming.
-    self.leaving[key] = nil
-    return
+  for i = 1, BURST.stack do
+    local t = b.rings[i]
+    t:SetSize(size, size)
+    t:ClearAllPoints()
+    t:SetPoint("CENTER", b.frame, "CENTER", 0, 0)
+    t:SetVertexColor(col[1], col[2], col[3], 1)
+    t:SetAlpha(BURST.alpha)
+    t:Show()
   end
-  if leaving then
-    g:Stop()
-    self.leaving[key] = true
-  else
-    self.leaving[key] = nil
-    g:Stop()
-  end
-  g:Play()
+  b.frame:Show()
+  for _, g in ipairs(b.groups) do g:Stop(); g:Play() end
+  for _, g in ipairs(b.fades)  do g:Stop(); g:Play() end
 end
 
 --------------------------------------------------------------------------------
@@ -571,12 +618,13 @@ function R:drawCues(cues)
         -- GLOW_SPEC entry) rides a layer BELOW it, so the crisp dot + keybind stay on top.
         dot:SetAlpha(1)
         dot:Show()
-        self:setCueRings(key, layer, dot, gs and col or nil, sz, gs)
-        -- ARRIVAL: the cue is drawn and shown, so the pop just plays.  Only for a handle
-        -- that was NOT on the board last draw — a steady redraw at 10 Hz must not punch,
-        -- and `cuedLast` is still the PREVIOUS draw's set here (drawCueEdges rolls it over
-        -- after both channel passes).
-        if not self.cuedLast[key] then self:popCue(key, false) end
+        local out = self:setCueRings(key, layer, dot, gs and col or nil, sz, gs)
+        -- ARRIVAL: the cue is drawn and shown, so the flare just plays over it.  Only for a
+        -- handle that was NOT on the board last draw — a steady redraw at 10 Hz must not
+        -- flare, and `cuedLast` is still the PREVIOUS draw's set here (drawCueEdges rolls it
+        -- over after both channel passes).  `out` is the diameter the rings ACTUALLY drew,
+        -- so the flare is sized off the cue instead of off a literal.
+        if out and not self.cuedLast[key] then self:fireBurst(key, out, col) end
       else
         -- DEFENSIVE: an emphasis token the theme has no entry for draws NOTHING — we never
         -- guess a colour.  Hide any dot/glow this handle had.  (Before Phase 3 this branch
@@ -587,19 +635,19 @@ function R:drawCues(cues)
       end
     end
   end
-  -- DEPARTURE: a handle that was cued LAST draw and is not cued now.  The pop-out starts
-  -- here and its art has to survive the cull below to be seen at all.
-  for key in pairs(self.cuedLast) do
-    if not active[key] then self:popCue(key, true) end
-  end
+  -- ⚠ NO DEPARTURE ANIMATION, AND THAT IS A DECISION, NOT AN OMISSION.  The flare is
+  -- ARRIVAL-ONLY: it says "look here, press this", and on a swap — 60 % of real set changes
+  -- — flaring the departing icon would drag the eye back to the one you should stop looking
+  -- at, with two big flares firing at once.  So a departing cue clears in the same draw,
+  -- exactly as it did before any transient existed, and the holder cull stays two terms.
   -- Dots + both rings + discs cull on the CUE-active set; holders do not (see R:Draw).
   -- One loop over `cueFrames` covers all four pools: they are keyed together by
   -- construction — the dot is created first, and the rings + disc only ever in the same
   -- branch, so a handle with a ring but no dot cannot exist.
   for key in pairs(self.cueFrames) do
     if not active[key] then
-      self.glowing[key] = nil                                    -- the COMMANDED state...
-      if not self.leaving[key] then self:hideCueArt(key) end     -- ...the pixels can wait
+      self.glowing[key] = nil
+      self:hideCueArt(key)
     end
   end
   return active
@@ -689,9 +737,9 @@ end
 -- point — and star_07 measures 8-fold (dominant k=8, harmonics at k=4/k=16).  Swap the
 -- sprite and RING_SCALE and both periods are invalidated together; a spokier sprite needs
 -- longer periods in proportion.
-local GLOW_ART = "Interface\\AddOns\\CDMProbe\\Media\\fx\\glow\\star_07.tga"
-R.RING_ART = GLOW_ART   -- public for `/cdmp rt pop`'s BURST candidate, which flares the
-                        -- same sprite so the transient belongs to the same visual family
+-- (⚠ GLOW_ART is declared UP with the other media constants, not here.  `ensureBurst`
+-- uses it and is defined above this point, where a `local` declared here would silently
+-- resolve to a GLOBAL instead — nil texture, no flare, no error.)
 
 -- ⚠ THE RING HAS A HOLE, AND IT CANNOT BE FILLED.  Its transparent centre is baked into
 -- the art, and no tint or blend mode paints it in (SetVertexColor MULTIPLIES — it cannot
@@ -750,7 +798,7 @@ function R:setCueRings(key, layer, dot, col, size, gs)
     local d = self.cueDiscs[key]
     if d then d:Hide() end
     self.glowing[key] = nil
-    return
+    return nil
   end
   if not inner then
     inner = ensureRing(layer, 0, INNER_DEGREES, INNER_SECS)
@@ -813,6 +861,7 @@ function R:setCueRings(key, layer, dot, col, size, gs)
   disc:Show()
 
   self.glowing[key] = true
+  return out          -- the OUTER ring's diameter — what the arrival flare sizes itself off
 end
 
 --------------------------------------------------------------------------------
@@ -823,8 +872,8 @@ end
 -- 60 % of those are a SWAP (one handle out, another in, same tick); 23 are a pure add,
 -- 25 a pure remove; the board never once went empty.  Two DIFFERENT edges fall out:
 --
---   * THE POP is PER HANDLE and purely visual.  Simultaneous ones are fine — they are on
---     different icons, and a swap is exactly that: one popping out while another pops in.
+--   * THE BURST is PER HANDLE and purely visual, and ARRIVAL-ONLY.  Simultaneous ones are
+--     fine — they are on different icons.
 --   * `onCueSetChanged` is PER SET CHANGE.  A swap is ONE event, not a remove plus an
 --     add: firing per handle would double every swap (overlapping sounds), and it would
 --     be wrong besides — a cue that MOVED was not removed.  So: one call, `"new"` if
@@ -833,9 +882,8 @@ end
 -- ⚠ `"gone"` IS RARE BY CONSTRUCTION and that is correct.  The board never emptied in
 -- 504s of pulls, so a pure-remove edge is mostly an end-of-pull event.  Do not "fix" it
 -- by firing it on swaps.
--- ⚠ v1's GHOST — a scale-and-fade of the departing ring, on its own texture — is archived
--- and did NOT come back.  The v2 departure is the same pop played on the way out, so there
--- is one animation and one set of ordering rules rather than two of each.
+-- ⚠ NEITHER v1's GHOST NOR v2's POP-OUT SURVIVES.  There is no departure animation at all
+-- now; see the note in drawCues for why that is a decision about where the eye should go.
 --
 -- The SET-level callback below is unchanged by any of that: it was never visual.
 
@@ -974,18 +1022,19 @@ end
 -- Dots/rings still cull on cue-active and key fontstrings on keybind-active — those pools
 -- are single-channel.  renderer_spec pins both directions of the independence.
 --
--- ⚠ IT HAS A THIRD TERM, `leaving`, AND THAT TERM IS NOT OPTIONAL.  A departing handle
--- leaves BOTH active sets in the very draw that starts its pop-out, so a two-term union
--- would hide the holder in that same draw and the pop would play invisibly under it.  The
--- term went away with v1's ghost and came straight back with the v2 pop-out — the coupling
--- is a property of having any departure animation at all, not of a particular one.
+-- ⚠ IT IS TWO TERMS, AND ONLY BECAUSE THE FLARE IS ARRIVAL-ONLY.  A third term has lived
+-- here twice (v1's ghost, v2's pop-out), both times for the same reason: a departing handle
+-- leaves BOTH active sets in the very draw that starts its out-animation, so a two-term
+-- union hides the holder and the animation plays invisibly underneath.  ⚠ Add a departure
+-- animation and THE THIRD TERM COMES BACK WITH IT — that coupling belongs to having one at
+-- all, not to any particular effect.
 function R:Draw(drawList)
   drawList = drawList or {}
   local cued = self:drawCues(drawList.cues)
   local keyed = self:drawKeybinds(drawList.keybinds)
   self:drawCueEdges(cued)
   for key, h in pairs(self.cueHolders) do
-    if not (cued[key] or keyed[key] or self.leaving[key]) then h:Hide() end
+    if not (cued[key] or keyed[key]) then h:Hide() end
   end
   self:drawPanel(drawList.panel)
   self:drawResources(drawList.resourceBars)

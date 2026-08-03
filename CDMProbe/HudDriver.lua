@@ -230,11 +230,12 @@ function ns.SetHud(on)
   else
     if D.ticker then D.ticker:Cancel(); D.ticker = nil end
     if D.renderer then
-      -- ⚠ FORGET THE LAST CUE SET FIRST.  Without this the clearing Draw below reads as a
-      -- board full of DEPARTING cues and every one of them pops out over the next ~0.18s —
-      -- so `/cdmp hud off` would not be instantly pixel-clean, which is a promise this
-      -- command makes.  (`D.on` is already false, so the sound is separately gated; this
-      -- is the visual half.  `/cdmp rt off` uses the same one-liner for the same reason.)
+      -- ⚠ FORGET THE LAST CUE SET FIRST.  With an arrival-only flare this currently costs
+      -- and buys nothing — the clearing Draw hides everything in the same frame either way.
+      -- It stays because it is the line you need the MOMENT a departure animation exists
+      -- again: without it, `/cdmp hud off` would announce its own teardown as a board full
+      -- of departing cues and stop being instantly pixel-clean, which is a promise this
+      -- command makes.  `/cdmp rt off` carries the same one-liner for the same reason.
       D.renderer.cuedLast = {}
       pcall(D.renderer.Draw, D.renderer, {})                       -- clear every dot/panel/pip
     end
