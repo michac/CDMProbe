@@ -965,21 +965,50 @@ end
 -- fixture's centring dx (G.resourceBar) can't drift (W4 Phase 4).
 local PIP_SIZE, PIP_GAP = ns.HudGeometry.BAR.pip, ns.HudGeometry.BAR.gap
 
+-- ⚠ THE PIP CEILING — the executable half of a rule that was four prose warnings.
+-- `drawResourceRow` pools ONE TEXTURE PER UNIT OF `max` and it used to do so unbounded.
+-- Three files warned about that in comments ("a max of 50 would try to draw fifty pips")
+-- and not one of them could stop it: a spec that declared `display = "discrete"` on a
+-- fragment/Fury-scale rail would have silently pooled 50 or 120 textures ~2156px wide, at
+-- load, with no error anywhere.  A prose warning is not a check.
+--
+-- 12 is above every DISCRETE class resource the game has (Holy Power 5, Soul Shards 5,
+-- Runes 6, Chi 6, Essence 6, Arcane Charges 4, Soul Fragments 6, Combo Points 5-7) with
+-- headroom, and far below any raw-unit rail.  A bar that needs more than this is by
+-- construction not a pip bar — it wants `continuous`, or the partial-fill member the
+-- contract is holding open (docs/status.md backlog).  Clamping TRUNCATES rather than
+-- erroring because the Renderer is pure and must never take the pipeline down over a
+-- display concern; renderer_spec mutation-checks that the clamp is really there.
+local MAX_PIPS = 12
+
 -- One bar's pip row (barIndex-keyed pool, so bar 2's pips don't stomp bar 1's): `max`
 -- pips, the first `value` filled with the powerType colour, the rest a faint empty ring.
--- ONLY the discrete path is implemented; a `continuous` bar draws nothing (no live
--- consumer) — continuous fill: Phase-when-needed.
+--
+-- ⚠ THE PREDICATE IS "ONLY `discrete` DRAWS PIPS", NOT "not `continuous`", and the
+-- inversion is a fix (2026-08-02).  This tested `display == "continuous"` alone, so the
+-- contract's documented synonym `"percentage"` fell straight through into the pip loop and
+-- drew a partial-fill bar as segments — an enum member the contract declares valid,
+-- rendered wrong.  Inverting closes `"percentage"`, the new `"none"` and any future member
+-- with ONE predicate, which is the property that keeps this honest as the enum grows: an
+-- unrecognised display draws nothing rather than guessing pips.
+--   * `none`        — deliberately unrendered.  The power is still tracked, still on
+--                     ctx.powers, still in the decision log's `PW:` column; it just has no
+--                     bar.  That is the whole mechanism (D1): the five Paladin/DH specs
+--                     want their resource DECIDED ON and not DRAWN.
+--   * `continuous`/`percentage` — no pixel path yet (Phase-when-needed).
+-- ABSENT `display` still means `discrete`: that is the contract's own default and
+-- Coach:ResourceBars applies it, so a hand-authored fixture behaves as before.
 function R:drawResourceRow(barIndex, bar)
   local row = self.pipRows[barIndex]
   if not row then row = {}; self.pipRows[barIndex] = row end
-  if bar.display == "continuous" then
-    -- continuous fill: Phase-when-needed — the contract carries the enum, no pixel path yet.
+  if (bar.display or "discrete") ~= "discrete" then
     for _, pip in ipairs(row) do pip:Hide() end
     return
   end
   local col = self.powerColor[bar.powerType] or self.powerColor.SOUL_SHARDS
   local anchor = self.registry[bar.anchorTo] or self.registry.UIPARENT
   local max, value = bar.max or 0, bar.value or 0
+  if max > MAX_PIPS then max = MAX_PIPS end
   for i = 1, max do
     local pip = row[i]
     if not pip then

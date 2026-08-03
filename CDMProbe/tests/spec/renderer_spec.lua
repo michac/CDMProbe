@@ -888,6 +888,74 @@ describe("Renderer", function()
     for i = 1, 5 do assert.is_false(r.pipRows[1][i]._shown) end
   end)
 
+  -- ── The inverted predicate: ONLY `discrete` draws pips ──────────────────────
+  -- `percentage` is a documented member of resourceDisplay (the legacy synonym of
+  -- `continuous`) and the branch used to test `== "continuous"` alone — so it fell straight
+  -- through into the pip loop and drew a continuous fill as segments.  This is the case
+  -- that would have caught it; it is red on the old predicate and green on the new one.
+  it("draws nothing for a `percentage` bar (the synonym the old predicate missed)", function()
+    local r = rigged(1)
+    r:Draw({ resourceBars = { { value = 50, max = 100, powerType = "MANA", display = "percentage" } } })
+    assert.same({}, r.pipRows[1])
+  end)
+
+  -- `none` (D1) — the whole point of the member: the bar is a FULL guidance entry that the
+  -- Renderer skips.  Nothing is drawn and nothing is created; the data still rode through.
+  it("draws nothing for a `none` bar — tracked, deliberately unrendered", function()
+    local r = rigged(1)
+    r:Draw({ resourceBars = { { value = 3, max = 5, powerType = "HOLY_POWER", display = "none" } } })
+    assert.same({}, r.pipRows[1])
+  end)
+
+  it("hides a former discrete row when its bar goes `none`", function()
+    local r = rigged(1)
+    r:Draw({ resourceBars = { { value = 3, max = 5, powerType = "SOUL_SHARDS", display = "discrete" } } })
+    assert.is_true(r.pipRows[1][1]._shown)
+    r:Draw({ resourceBars = { { value = 3, max = 5, powerType = "SOUL_SHARDS", display = "none" } } })
+    for i = 1, 5 do assert.is_false(r.pipRows[1][i]._shown) end
+  end)
+
+  -- An UNRECOGNISED member must draw nothing rather than guess pips — the property that
+  -- keeps the predicate honest as the enum grows (a future segments-with-partial-fill
+  -- member must not render as plain segments until its pixel path exists).
+  it("draws nothing for an unrecognised display member", function()
+    local r = rigged(1)
+    r:Draw({ resourceBars = { { value = 3, max = 5, powerType = "SOUL_SHARDS",
+                                display = "segments-partial" } } })
+    assert.same({}, r.pipRows[1])
+  end)
+
+  -- An ABSENT display is still `discrete` — the contract's own default, which
+  -- Coach:ResourceBars applies.  Pinned so the inversion above cannot quietly turn every
+  -- hand-authored fixture (and RenderTest) into a blank bar.
+  it("treats an absent display as discrete", function()
+    local r = rigged(1)
+    r:Draw({ resourceBars = { { value = 2, max = 3, powerType = "SOUL_SHARDS" } } })
+    assert.equals(3, #r.pipRows[1])
+    for i = 1, 3 do assert.is_true(r.pipRows[1][i]._shown) end
+  end)
+
+  -- ── The pip ceiling ────────────────────────────────────────────────────────
+  -- MUTATION CHECK: this is the executable form of four prose warnings.  Delete the clamp
+  -- in Renderer.lua and this goes red with 50 pooled textures instead of 12 — which is
+  -- exactly the failure the comments described and could not prevent.
+  it("clamps the pip pool so a raw-unit `max` cannot pool 50 textures", function()
+    local r = rigged(1)
+    r:Draw({ resourceBars = { { value = 18, max = 50, powerType = "SOUL_SHARDS",
+                                display = "discrete" } } })
+    assert.equals(12, #r.pipRows[1])
+    for i = 1, 12 do assert.is_true(r.pipRows[1][i]._shown) end
+  end)
+
+  -- The clamp must not disturb a bar that already fits: no truncation at or below the
+  -- ceiling, so every real class resource (Holy Power 5, Runes 6, Essence 6) is untouched.
+  it("does not clamp a bar that already fits under the ceiling", function()
+    local r = rigged(1)
+    r:Draw({ resourceBars = { { value = 4, max = 6, powerType = "SOUL_SHARDS",
+                                display = "discrete" } } })
+    assert.equals(6, #r.pipRows[1])
+  end)
+
   ------------------------------------------------------------------------------
   -- The whole DrawList together (ROTATION + LATE + SOON + bar)
   ------------------------------------------------------------------------------

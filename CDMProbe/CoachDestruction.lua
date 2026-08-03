@@ -125,14 +125,11 @@ end
 -- Honest pulse-number reader: a non-number reads nil, never a guess.
 local function num(v) return type(v) == "number" and v or nil end
 
--- Truncate TOWARD ZERO — used only to render an exact-unit projection back into the DISPLAY
--- units the pip bar speaks.  Never used in a gate (Phase 6.2: gates compare exact integers),
--- so this is the only place a division reaches, and toward-zero is the honest direction for
--- both signs: a partial shard gained is not yet a shard, spent is not yet spent.
-local function truncToward(x)
-  if x >= 0 then return math.floor(x) end
-  return -math.floor(-x)
-end
+-- ⚠ `truncToward` WAS HERE AND IS GONE (2026-08-02).  It existed only to scale the exact
+-- in-flight projection back into the DISPLAY units the pip bar speaks, which is now
+-- ns.Coach.PowerContext's job — the one place that arithmetic may live.  `num` survives
+-- because this brain still reads raw pulse numbers of its own (the charge count, the edge
+-- timestamps, the target health probe); the power fields no longer go through it.
 
 --------------------------------------------------------------------------------
 -- HERO TREE — read by State, inferred here only as a fallback
@@ -221,20 +218,19 @@ function spec:Context(state, env)
   -- surviving `shards >= 2` would compile and be silently wrong by 10x — the one failure
   -- mode this migration can produce.  A stale reader now gets nil and fails loudly.
   --
-  -- The fallback when the exact read REFUSES is the display value scaled by the modifier:
-  -- coarse (a true 1.9 still arrives as 10) but never wrong in units.
-  local ss = (state.power or {}).SoulShards or {}
-  local mod = num(ss.modifier) or self.FRAGS_PER_SHARD
-  local frags = num(ss.unmodified)
-  if frags == nil then
-    local v = num(ss.value)
-    frags = v and (v * mod) or nil
-  end
-  local fragsIncoming = sums.SoulShards or 0
-  local fragsMax = num(ss.unmodifiedMax)
-    or (num(ss.max) and num(ss.max) * mod)
-    or self.FRAG_CAP
-  local fragsProjected = frags and (frags + fragsIncoming) or nil
+  -- ⚠ THE ARITHMETIC IS SHARED NOW (ns.Coach.PowerContext, 2026-08-02) — the read ladder,
+  -- the display-value fallback when the exact read refuses, the cap fallbacks and the
+  -- `ctx.powers` fold were byte-identical to CoachDemonology's and were about to be copied
+  -- into five more brains.  Only the NAMING is Destruction's: `frags` / `fragsMax` /
+  -- `fragsProjected` are this spec's words for the generic rail, and every gate below is
+  -- untouched.
+  local bars, rails = ns.Coach.PowerContext(state, self, sums)
+  local ss = rails.SoulShards or {}
+  local mod = ss.modifier or self.FRAGS_PER_SHARD
+  local frags = ss.value
+  local fragsIncoming = ss.incoming or 0
+  local fragsMax = ss.max or self.FRAG_CAP
+  local fragsProjected = ss.projected
 
   local ctx = {
     facts = factsByBase,
@@ -242,44 +238,15 @@ function spec:Context(state, env)
     frags = frags, fragsIncoming = fragsIncoming, fragsMax = fragsMax,
     fragsProjected = fragsProjected,
     fragModifier = mod,
-    atCap = fragsProjected and fragsProjected >= fragsMax or false,
-    powerReadable = ss.readable ~= false and frags ~= nil,
+    atCap = ss.atCap or false,
+    powerReadable = ss.readable or false,
   }
 
-  -- ctx.powers — the generic power array the shell's ResourceBars emits from, driven off
-  -- self.powers x state.power[name].  Destruction declares exactly SoulShards, so this is
-  -- the same single discrete meter Demonology renders.
-  --
-  -- ⚠ THE ONE PLACE THAT STAYS IN DISPLAY UNITS: Renderer.lua pools one pip per unit of
-  -- `max`, so a `max` of 50 would try to draw fifty pips.  The exact integers ride alongside.
-  ctx.powers = {}
-  for _, p in ipairs(self.powers or {}) do
-    local pw = (state.power or {})[p.name] or {}
-    -- The divisor between the units `sums` speaks (the spec's own, via SpecPowerDelta) and
-    -- the DISPLAY units this bar renders in.  Live client read first; `p.modifier` is the
-    -- spec's declared fallback for when it refuses (a power with no divisor omits it => 1).
-    local pmod = num(pw.modifier) or num(p.modifier) or 1
-    local exact = (p.incoming and sums[p.name]) or 0
-    ctx.powers[#ctx.powers + 1] = {
-      value     = num(pw.value),
-      max       = num(pw.max) or self.BAR_MAX,
-      -- `p.incoming` is the spec-declared "this bar shows a projection" flag.  Its READER
-      -- moved here from State's deleted projectIncoming (Phase 6); the field on
-      -- spec.powers is unchanged.  ⚠ `sums` is in EXACT units now, so the display half is
-      -- scaled DOWN, truncated toward zero — a partial shard is not a shard.
-      incoming  = truncToward(exact / pmod),
-      display   = p.display or "discrete",
-      powerType = p.token,
-      -- The exact rail (Phase 6.2): integers in the game's internal units, absent when the
-      -- client refused the read.  Dividing is the consumer's job — see Coach:ResourceBars.
-      -- `valueExact`/`maxExact` are MEASUREMENTS — absent, never zero, when the client
-      -- refused the exact read.  `incomingExact` is OUR arithmetic and is always known.
-      valueExact    = num(pw.unmodified),
-      maxExact      = num(pw.unmodifiedMax),
-      incomingExact = exact,
-      modifier      = pmod,
-    }
-  end
+  -- ctx.powers — the generic power array the shell's ResourceBars emits from, built by the
+  -- shared fold above.  Destruction declares exactly SoulShards, so this is the same single
+  -- discrete meter Demonology renders.  ⚠ In DISPLAY units (Renderer.lua pools one pip per
+  -- unit of `max`), with the exact integers riding alongside.
+  ctx.powers = bars
 
   -- Live shard costs, resolved once per pulse.  The shell owns the INJECTED reader
   -- (env.shardCostFn = cfg.shardCost); this brain owns WHICH spells cost and the fallbacks.

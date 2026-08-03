@@ -172,9 +172,14 @@ spec.FRAGS_PER_SHARD = 10   -- the modifier, as a fallback for a pulse-less call
 -- first.  Filed as a backlog item in docs/status.md; the additive `valueExact`/`maxExact`
 -- fields on each resourceBar are exactly what such a renderer would consume, so the data is
 -- already waiting for it.
+--
+-- ⚠ `exactMax` / `barMax` are the RAIL's per-power fallbacks (the ns.Coach.PowerContext
+-- hoist, 2026-08-02) — the same numbers `spec.FRAG_CAP` / `spec.BAR_MAX` carry above, moved
+-- onto the entry that owns them so a two-power spec can have one of each.  The spec-object
+-- constants stay for the brain's own reads (Escalate's full-bar rule).
 spec.powers = {
   { name = "SoulShards", display = "discrete", incoming = true, token = "SOUL_SHARDS",
-    modifier = 10 },
+    modifier = 10, exactMax = 50, barMax = 5 },
 }
 
 -- The DECISION-LOG vocabulary (adding-a-spec.md Step 6).  DecisionLog.lua holds no spec

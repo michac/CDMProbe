@@ -31,8 +31,9 @@ Retired directions, code **deleted** (recover from git history if revived):
   color block" experiments (`/cdmp skin`, `/cdmp resource`; `Skin.lua` + `Resource.lua`) —
   **deleted in W4a (2026-07-24)**.
 
-Registered specs: **Demonology** (266, play-settled) and **Destruction** (267, shipped
-2026-07-29, not yet flown). Every other spec resolves passive by design.
+Registered specs: **Demonology** (266, play-settled), **Destruction** (267, shipped
+2026-07-29, flown 2026-07-30) and **Retribution Paladin** (70, shipped 2026-08-02, not yet
+flown). Every other spec resolves passive by design.
 
 Design context + status live in the parent workspace at
 `projects/cooldown-hud/docs/` (`spec.md` vision · `notes.md` technical findings ·
@@ -250,6 +251,45 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   `Invalidate` seam (the first spec to use it). ⚠ ns.ShardCost
                                   returns WHOLE SHARDS (the client pre-applies the divisor),
                                   so the cost is multiplied UP here — one unit boundary.
+    SpecRetribution.lua           per-spec DATA for Retribution Paladin (70) — the 3rd
+                                  registered spec and the FIRST OUTSIDE WARLOCK, so the one
+                                  that proves the seam is class-agnostic rather than merely
+                                  spec-agnostic. ⚠ Its resource is declared
+                                  `display = "none"`: Holy Power rides the whole rail
+                                  (ctx.powers -> resourceBars[] -> the decision log's `PW:`
+                                  column) and the Renderer draws NOTHING for it. That is not
+                                  the same as declaring no powers — an empty spec.powers
+                                  emits no bar at all and PW: renders `?/?`, losing the one
+                                  instrument that can explain a decision nobody watched.
+                                  ⚠ FOUR of its rotation abilities have NO ICON OF THEIR OWN:
+                                  Hammer of Light, Final Verdict, Templar Strike and Templar
+                                  Slash all arrive as spell OVERRIDES riding a tracked frame
+                                  — the same channel Demonology's Ruination uses, and the
+                                  reason Templar is the v1 profile (it is readable in
+                                  restricted combat). Hammer of Light 427453 was
+                                  DISCRIMINATED, not picked: SpellName carries eight
+                                  "Hammer of Light" rows and exactly one costs Holy Power.
+                                  ⚠ SIX of the nine Essential buttons have
+                                  SpellCooldowns.RecoveryTime = 0 and keep their cooldown on
+                                  a SpellCategory, so ns.BaseCooldown reads 0 and the napkin
+                                  is BLIND on most of the spec. `chargeCD` documents the real
+                                  numbers; nothing reads it yet (status.md backlog).
+    CoachRetribution.lua          the Retribution BRAIN: Context / RankWinner / Escalate on
+                                  spec 70's object, implementing specs/retribution/
+                                  rotation.md L1-L12. Structurally Destruction, not Demo: no
+                                  burst SETUP block (nothing is held for Avenging Wrath) and
+                                  no window suppression in Escalate. Its own shape: the
+                                  SPENDER sits on three lines (L1 as Hammer of Light, L4 the
+                                  anti-overcap dump, L8 the main dump) all keyed on one base
+                                  spellID, so one exclusion drops every occurrence; L4
+                                  deliberately YIELDS to a ready Wake of Ashes, because WoA
+                                  ARMS Hammer of Light and that is worth more than the
+                                  overcap. ⚠ NO fragment arithmetic — Holy Power's modifier
+                                  is 1, so display units ARE exact units and copying
+                                  Destruction's `cost * FRAGS_PER_SHARD` would be a silent
+                                  10x error. `RET_HOL_FROM_BUFF` is the one unsettled read,
+                                  defaulted OFF (the ART_FROM_RITUAL precedent).
+                                  Greened against coach_retribution_apl_spec (68 cases).
     -- The W4 pipeline (State -> Coach -> Binder -> Renderer), driven each tick by
     -- HudDriver.  See docs/architecture.md.
     State.lua                     ingestion + State.Build: folds the CDM rows into
@@ -542,6 +582,30 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   spec-specific channels: banked charges, the three-way DoT
                                   presence read, the untracked-Incinerate degradation, and
                                   the ART_FROM_RITUAL switch on both settings
+      spec/coach_retribution_apl_spec.lua  the same gate for RETRIBUTION (70), authored from
+                                  specs/retribution/rotation.md L1-L12 — plus the
+                                  spec-specific channels: the Hammer-of-Light override on
+                                  either spender frame, the `display = "none"` rail proved
+                                  all the way to the decision log's PW: column (the whole
+                                  argument for `none` over an empty spec.powers), L4's
+                                  deliberate yield to a ready Wake of Ashes, the LIVE spender
+                                  cost, charge-aware readiness in BOTH directions (a zero
+                                  count vetoes a ready cooldown; an ABSENT count does not),
+                                  and the RET_HOL_FROM_BUFF switch on both settings.
+                                  ⚠ It wires `ns.Coach.New({ shardCost = ns.ShardCost })` as
+                                  the live driver does — coach_destruction_apl_spec does not,
+                                  which is why the "cost is resolved live" rule is currently
+                                  unasserted for Destruction (status.md backlog)
+      spec/derived_resource_spec.lua  THE CLASS-RESOURCE CHANNEL: ns.ReadCastCount /
+                                  ReadAuraApplications / ReadMaxAuraApplications against the
+                                  REAL Util.lua, plus State's declarative `derived` block.
+                                  The property it exists to pin is ABSENT IS NEVER ZERO — 0
+                                  is a real answer ("you have no fragments") and a refusal
+                                  must never impersonate one.  ⚠ It also pins that
+                                  ReadCastCount has NO combat gate, deliberately: ReadCharges
+                                  carries one because GetSpellCharges was MEASURED secret,
+                                  and pre-emptively copying it here would make the
+                                  measurement impossible
       spec/coach_classify_spec.lua Classify in isolation (probably-up, transforms)
       spec/binder_spec.lua        spellID cue -> display cooldownID/icon resolution, and
                                   the SECOND channel: cues carry decisions only, keybinds[]

@@ -142,10 +142,16 @@ spec.FRAGS_PER_SHARD = 10   -- the modifier, as a fallback for a pulse-less call
 --            LIVE `state.power[name].modifier` wins where the client gave one; this is what
 --            keeps the display honest when the exact read refuses.  Omit it (=> 1) for a
 --            power with no divisor.
+--   exactMax FALLBACK cap in EXACT units, and `barMax` the same in DISPLAY units.  These
+--            were `spec.FRAG_CAP` / `spec.BAR_MAX` file-wide constants until the
+--            ns.Coach.PowerContext hoist (2026-08-02); they moved ONTO the power entry
+--            because they are per-power facts, and a spec with two powers cannot have one
+--            of each.  The spec-object constants survive above — the brain still reads
+--            FRAG_CAP in its own Escalate — but the RAIL's fallbacks come from here.
 -- Read off ns.ActiveSpec.powers (an object read, like SHARD_CAP), NOT a rebound SpecField.
 spec.powers = {
   { name = "SoulShards", display = "discrete", incoming = true, token = "SOUL_SHARDS",
-    modifier = 10 },
+    modifier = 10, exactMax = 50, barMax = 5 },
 }
 
 -- The DECISION-LOG vocabulary (multi-spec Phase 4, the decision-log seam).  DecisionLog.lua

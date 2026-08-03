@@ -44,19 +44,13 @@ local function ids()
   return ns.SpecIDs or {}
 end
 
--- Local pulse-number reader (the shell keeps its own private `num`; this brain reads a
--- few power fields the same honest way — a non-number reads nil, never a guess).
-local function num(v) return type(v) == "number" and v or nil end
-
--- Truncate TOWARD ZERO — used only to render an exact-unit projection back into the
--- DISPLAY units the pip bar speaks.  Never used in a gate (Phase 6.2: gates compare exact
--- integers), so this is the only place a division reaches, and toward-zero is the honest
--- direction for both signs: a partial shard gained is not yet a shard, and a partial shard
--- spent is not yet spent.
-local function truncToward(x)
-  if x >= 0 then return math.floor(x) end
-  return -math.floor(-x)
-end
+-- ⚠ THIS FILE'S `num` AND `truncToward` ARE GONE (2026-08-02), and their absence is the
+-- proof the hoist actually landed.  Both existed ONLY to serve the power-rail block that
+-- ns.Coach.PowerContext now owns — `num` guarded the pulse's power fields, `truncToward`
+-- scaled the exact projection back into pip units.  Every remaining read in this brain goes
+-- through the shared rail, so a local copy of either would be a second implementation of an
+-- arithmetic that must not have two.  If a future line here needs to read a raw pulse
+-- number, re-add `num` at that line's expense — do not restore it pre-emptively.
 
 --------------------------------------------------------------------------------
 -- Context — the whole-board facts the cascade reads (contract: Coach.lua's header).
@@ -93,21 +87,20 @@ function spec:Context(state, env)
   -- compile fine and be silently wrong by 10x, which is the one failure this migration can
   -- produce.  A stale reader now gets nil and fails loudly instead.
   --
-  -- The exact rail comes from State's `unmodified` read; when the client REFUSES it we fall
-  -- back to the display value scaled by the modifier — coarse (a true 1.9 still arrives as
-  -- 10 fragments) but never wrong in units, which is the property that matters.
-  local ss = (state.power or {}).SoulShards or {}
-  local mod = num(ss.modifier) or self.FRAGS_PER_SHARD
-  local frags = num(ss.unmodified)
-  if frags == nil then
-    local v = num(ss.value)
-    frags = v and (v * mod) or nil
-  end
-  local fragsIncoming = sums.SoulShards or 0
-  local fragsMax = num(ss.unmodifiedMax)
-    or (num(ss.max) and num(ss.max) * mod)
-    or self.FRAG_CAP
-  local fragsProjected = frags and (frags + fragsIncoming) or nil
+  -- ⚠ THE ARITHMETIC MOVED, THE NAMES DID NOT (2026-08-02).  The read ladder — exact rail
+  -- first, display-value-x-modifier when the client refuses, the cap fallbacks, the
+  -- `ctx.powers` fold — is now ns.Coach.PowerContext, shared with every other brain, because
+  -- it was byte-identical in two files and about to be copied into five more.  What stays
+  -- HERE is the Soul-Shard VOCABULARY: `frags`, `fragsMax`, `fragsProjected` are Demonology's
+  -- words for the generic rail, and the cascade below is unchanged.  A Fury brain publishes
+  -- its own names off the same call.
+  local bars, rails = ns.Coach.PowerContext(state, self, sums)
+  local ss = rails.SoulShards or {}
+  local mod = ss.modifier or self.FRAGS_PER_SHARD
+  local frags = ss.value
+  local fragsIncoming = ss.incoming or 0
+  local fragsMax = ss.max or self.FRAG_CAP
+  local fragsProjected = ss.projected
 
   local ctx = {
     facts = factsByBase,
@@ -117,47 +110,16 @@ function spec:Context(state, env)
     frags = frags, fragsIncoming = fragsIncoming, fragsMax = fragsMax,
     fragsProjected = fragsProjected,
     fragModifier = mod,
-    atCap = fragsProjected and fragsProjected >= fragsMax or false,
-    powerReadable = ss.readable ~= false and frags ~= nil,
+    atCap = ss.atCap or false,
+    powerReadable = ss.readable or false,
   }
 
   -- ctx.powers — the GENERIC power array the shell's ResourceBars emits from (multi-spec
-  -- Phase 3).  Driven off self.powers × state.power[name], so a dual-resource spec fills
-  -- two entries; Demo declares exactly SoulShards, so this is one bar.
-  --
-  -- ⚠ THIS LOOP IS THE ONE PLACE THAT STAYS IN DISPLAY UNITS.  `value`/`max`/`incoming`
-  -- feed the rendered pip row, and Renderer.lua pools one pip per unit of `max`.  The exact
-  -- integers ride alongside on the `*Exact` fields; the ctx scalars above are what the
-  -- cascade actually decides on.
-  ctx.powers = {}
-  for _, p in ipairs(self.powers or {}) do
-    local pw = (state.power or {})[p.name] or {}
-    -- The divisor between the units `sums` speaks (the spec's own, via SpecPowerDelta) and
-    -- the DISPLAY units this bar renders in.  Live client read first; `p.modifier` is the
-    -- spec's declared fallback for when it refuses (a power with no divisor omits it => 1).
-    local pmod = num(pw.modifier) or num(p.modifier) or 1
-    local exact = (p.incoming and sums[p.name]) or 0
-    ctx.powers[#ctx.powers + 1] = {
-      value     = num(pw.value),
-      max       = num(pw.max) or self.BAR_MAX,
-      -- `p.incoming` is the spec-declared "this bar shows a projection" flag.  Its READER
-      -- moved here from State's deleted projectIncoming (Phase 6); the field on
-      -- spec.powers is unchanged.  ⚠ `sums` is in the SPEC's exact units now, so the
-      -- display half is scaled DOWN, truncated toward zero — a partial shard is not a
-      -- shard, and the pip bar cannot draw one.
-      incoming  = truncToward(exact / pmod),
-      display   = p.display or "discrete",
-      powerType = p.token,
-      -- The exact rail (Phase 6.2): integers in the game's internal units, absent when the
-      -- client refused the read.  Dividing is the consumer's job — see Coach:ResourceBars.
-      -- `valueExact`/`maxExact` are MEASUREMENTS — absent, never zero, when the client
-      -- refused the exact read.  `incomingExact` is OUR arithmetic and is always known.
-      valueExact    = num(pw.unmodified),
-      maxExact      = num(pw.unmodifiedMax),
-      incomingExact = exact,
-      modifier      = pmod,
-    }
-  end
+  -- Phase 3), built by the shared fold above.  Demo declares exactly SoulShards, so this is
+  -- one bar; a dual-resource spec gets two, in declaration order.  ⚠ It is in DISPLAY units
+  -- (Renderer.lua pools one pip per unit of `max`) with the exact integers alongside on the
+  -- `*Exact` fields — see ns.Coach.PowerContext's header for why the two rails are separate.
+  ctx.powers = bars
 
   -- HoG's shard cost, resolved ONCE (talent-dependent at runtime).  The shell owns the
   -- INJECTED reader (env.shardCostFn = cfg.shardCost); the Demo brain owns WHICH spell it

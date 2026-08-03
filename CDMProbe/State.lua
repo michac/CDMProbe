@@ -974,6 +974,76 @@ local function readPower()
 end
 
 --------------------------------------------------------------------------------
+-- DERIVED RESOURCES — the class resources `Enum.PowerType` does not have
+--------------------------------------------------------------------------------
+-- `readPower` above is COMPLETE for anything the enum enumerates, and structurally blind to
+-- anything it does not.  Demon Hunter Soul Fragments are the case: there is no
+-- `Enum.PowerType.SoulFragments` to iterate, so no amount of care in `readPower` can ever
+-- surface them.  oUF calls these CLASS POWERS and gives them negative pseudo-IDs, commented
+-- `-- these are not real class powers` [oUF classpower.lua:70-77] — they are bespoke
+-- per-spec reads a UI synthesizes from ordinary spell APIs.
+--
+-- ⚠ STATE STILL HAS NO SPEC OPINION (invariant #3), and the distinction is worth stating
+-- because roster-state-plan Phase 6 deliberately removed this file's LAST read of
+-- `ns.ActiveSpec` and this adds one back.  What Phase 6 removed was a read of a spec
+-- FUNCTION that made a DECISION: `ns.SpecPowerDelta` projected in-flight power from inside
+-- the ingestion layer, so a rotation fact was being computed where it could not be
+-- fixture-tested.  What this reads is a DECLARATION — which spellID to ask about, through
+-- which reader — exactly as `virtualCandidates` already reads `ns.Spec`, and exactly the
+-- shape `spec.powers` has.  State asks the question the spec wrote down and reports the
+-- answer; what the answer MEANS is the brain's business.  Do not put a rotation branch here.
+--
+--   spec.derived = { { name = "SoulFragments", kind = "castCount", spellID = 228477, max = 6 } }
+--
+-- Emitted as `state.derived[name] = { value, max, readable, source }`.  ⚠ ABSENT, NEVER
+-- ZERO: a refused read leaves `value = nil` with `readable = false`, because 0 is a real
+-- answer ("you have no fragments") and a refusal must never impersonate one — the same rule
+-- the exact power rail follows.  `source` is the declared `kind`, so a consumer (and the
+-- decision log) can tell WHICH channel produced a number.
+--
+-- Which SPELL to read when a spec's resource moves between auras (Devourer's Void
+-- Metamorphosis switch) is a ROTATION fact, so a spec declares every candidate here and its
+-- brain picks.  That is why there is no `condition` field: it would be a rotation branch in
+-- the ingestion layer.
+local DERIVED_VALUE = {
+  castCount  = function(d) return ns.ReadCastCount(d.spellID) end,
+  auraStacks = function(d) return ns.ReadAuraApplications(d.spellID) end,
+}
+
+-- The MAX half, where the game has a live answer for it.  A `castCount` resource has no
+-- such API (oUF hardcodes Soul Cleave's 6 as a constant), so it falls through to the
+-- declared `max`; an aura-stack resource does, and the live read wins.
+local DERIVED_MAX = {
+  auraStacks = function(d) return ns.ReadMaxAuraApplications(d.maxSpellID or d.spellID) end,
+}
+
+-- Returns nil when the active spec declares none — which is 35 of 40 specs, so the pulse
+-- does not carry an empty table for them.  Consumers read `(state.derived or {})[name]`.
+local function readDerived()
+  local spec = ns.ActiveSpec
+  local decls = spec and spec.derived
+  if type(decls) ~= "table" or #decls == 0 then return nil end
+  local out = {}
+  for _, d in ipairs(decls) do
+    local reader = (type(d) == "table") and type(d.name) == "string" and DERIVED_VALUE[d.kind]
+    if reader then
+      local value = reader(d)
+      local maxFn = DERIVED_MAX[d.kind]
+      local max = maxFn and maxFn(d) or nil
+      if max == nil and type(d.max) == "number" then max = d.max end
+      out[d.name] = {
+        value = value,
+        max = max,
+        -- The TRUST annotation, not a presence test: we asked and came away with a number.
+        readable = value ~= nil,
+        source = d.kind,
+      }
+    end
+  end
+  return out
+end
+
+--------------------------------------------------------------------------------
 -- Events — the delta since the last pulse (observed only)
 --------------------------------------------------------------------------------
 -- One ingest frame, one secret guard (the A3 "collapse to one" target, run here
@@ -1203,9 +1273,33 @@ local heroCache = { asked = false, id = nil, name = nil }
 -- SubTreeID -> our generic hero name.  TraitSubTree @ 12.0.7.  State names no rotation,
 -- but it does carry the game's own vocabulary through, exactly as it does for `mode` and
 -- `powerType` — the ROTATIONAL meaning of "hellcaller" stays Coach-only.
+--
+-- ⚠ THIS TABLE IS VOCABULARY, NOT OPINION, which is what makes extending it a sanctioned
+-- edit to an otherwise spec-agnostic file.  Every name here is the game's own
+-- `TraitSubTree.Name_lang`, lower-cased and hyphenated; nothing about which ROTATION LINES a
+-- tree changes appears in State.  A class whose trees are absent still gets a
+-- self-describing pulse — `readHero` carries the raw `subTreeID` even when it has no name
+-- for it, so an unmapped tree degrades to "we know which one, we just have no word".
+--
+-- Tier-1: wago `TraitSubTree` @ 12.0.7, fetched 2026-08-02.  Never guess a subtree id — the
+-- numbers are not contiguous per class (the DH pair 34/35 predates 124/126 by two
+-- expansions) and a wrong one silently reports the wrong tree, which is exactly the
+-- field-fix-B failure the talent-API read exists to prevent.
 local HERO_BY_SUBTREE = {
-  [58] = "hellcaller",   -- Warlock
-  [59] = "diabolist",    -- Warlock
+  -- Warlock (TraitTreeID 720)
+  [58]  = "hellcaller",
+  [59]  = "diabolist",
+  -- Demon Hunter (TraitTreeID 854).  Four trees across three specs: Aldrachi Reaver and
+  -- Fel-Scarred are the Havoc/Vengeance pair, Annihilator and Void-Scarred the Devourer
+  -- pair — but WHICH spec may take WHICH is a rotation fact and is not encoded here.
+  [34]  = "fel-scarred",
+  [35]  = "aldrachi-reaver",
+  [124] = "annihilator",
+  [126] = "void-scarred",
+  -- Paladin (TraitTreeID 790)
+  [48]  = "templar",
+  [49]  = "lightsmith",
+  [50]  = "herald-of-the-sun",
 }
 
 local function readHero()
@@ -1912,6 +2006,10 @@ function St.Build(drain)
     -- alert latch is the fast path beneath it, not the other way round.
     auraFrames = auraFrames,
     power  = power,
+    -- DERIVED class resources — the ones Enum.PowerType cannot carry (DH Soul Fragments).
+    -- Declared by the spec, read here, MEANT by the brain.  nil when the spec declares
+    -- none; read it as `(state.derived or {})[name]`.  See readDerived's header.
+    derived = readDerived(),
     -- Every active player buff, spec-agnostically — the Coach's authoritative proc
     -- source, and the diagnostic that reveals a proc's TRUE aura id when a CDM entry's
     -- own spellID does not match it.  `auraSecret` = auras whose id read secret.

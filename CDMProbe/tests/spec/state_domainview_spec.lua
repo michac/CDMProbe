@@ -1019,6 +1019,25 @@ describe("State hero tree", function()
     assert.equals("diabolist", (St.ReadHero()))
   end)
 
+  -- The Demon Hunter + Paladin vocabulary (2026-08-02).  Tier-1: wago `TraitSubTree` @
+  -- 12.0.7.  Pinned per id rather than as a spot check because the numbers are NOT
+  -- contiguous per class — the DH pair 34/35 predates 124/126 by two expansions — so a
+  -- transposed digit would map a real tree to the wrong NAME, which is the silent version of
+  -- the field-fix-B failure (a confidently wrong hero tree gating real rotation lines).
+  for id, name in pairs({
+    [34]  = "fel-scarred",       [35]  = "aldrachi-reaver",     -- Demon Hunter
+    [124] = "annihilator",       [126] = "void-scarred",
+    [48]  = "templar",           [49]  = "lightsmith",          -- Paladin
+    [50]  = "herald-of-the-sun",
+  }) do
+    it("maps SubTreeID " .. id .. " to " .. name, function()
+      _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return id end }
+      local got, raw = St.ReadHero()
+      assert.equals(name, got)
+      assert.equals(id, raw)
+    end)
+  end
+
   it("an UNKNOWN SubTreeID yields no name but still reports the raw id", function()
     -- So a capture from a class we have not mapped is self-describing rather than blank.
     _G.C_ClassTalents = { GetActiveHeroTalentSpec = function() return 999 end }

@@ -223,6 +223,101 @@ function ns.ReadCharges(spellID)
   return cur, max, recharge
 end
 
+--------------------------------------------------------------------------------
+-- THE CLASS-RESOURCE CHANNEL (2026-08-02) — two guarded readers for the resources
+-- `Enum.PowerType` does not have.
+--------------------------------------------------------------------------------
+-- WHY THIS EXISTS.  `state.power` iterates `Enum.PowerType` and reports every power the
+-- character actually has.  That is complete for Fury (17) and Holy Power (9) — and it can
+-- NEVER carry Demon Hunter Soul Fragments, because there is no `SoulFragments` member to
+-- iterate.  `PowerBarColor["SOUL_FRAGMENTS"]` exists, but it only colours a StatusBar.
+--
+-- oUF — which is what actually draws these bars in the wild — calls them CLASS POWERS with
+-- negative pseudo-IDs, commented verbatim `-- these are not real class powers`
+-- [T1 src: ElvUI_Libraries/Game/Shared/oUF/elements/classpower.lua:70-77].  They are
+-- bespoke per-spec reads the UI SYNTHESIZES from an ordinary spell API.  So a spec that
+-- wants one has to ask for it explicitly, which is what `spec.derived` (State.lua) does and
+-- what these two readers serve.
+--
+-- ⚠ NO `InCombatLockdown()` GATE, AND THAT IS DELIBERATE — do not copy it down from
+-- `ns.ReadCharges` above.  That fence is there because `C_Spell.GetSpellCharges` was
+-- MEASURED secret in restricted combat; it is a record of a measurement, not a house style.
+-- These two APIs have not been measured, and gating them pre-emptively would make the
+-- measurement impossible: every in-combat read would return nil for a reason we chose
+-- rather than one the client imposed.  The rest of the ladder is identical, so an actually
+-- secret return degrades honestly instead of tainting.  If either turns out to be secret in
+-- combat, ADD the gate then and cite the capture — the way ReadCharges does.
+--
+-- Both return nil for "we could not ask", NEVER 0.  Zero is a real answer ("you have none")
+-- and a refusal must never impersonate one — the same absent-never-zero rule the exact power
+-- rail follows.
+
+-- ns.ReadCastCount(spellID) -> count | nil
+--
+-- `C_Spell.GetSpellCastCount` is how oUF reads VENGEANCE's Soul Fragments (Soul Cleave
+-- 228477) [classpower.lua:265-300], and it is not an obscure corner: it is Blizzard's OWN
+-- `ChargeCount` fallback inside the Cooldown Viewer
+-- [T1 src: Blizzard_CooldownViewer/CooldownViewer.lua:1009] — the very channel
+-- knowledge/addon-dev/api-events-and-discovery.md §2 filed as an unmeasured lead ("an
+-- ability icon *can* raise ChargeGained off GetSpellCastCount without having real charges").
+-- This addon has never called it.  That standing `@verify-ingame` closes the first time a
+-- Vengeance character flies a build carrying this.
+function ns.ReadCastCount(spellID)
+  if type(spellID) ~= "number" or ns.IsSecret(spellID) then return nil end
+  if not (C_Spell and C_Spell.GetSpellCastCount) then return nil end
+  local ok, count = pcall(C_Spell.GetSpellCastCount, spellID)
+  if not ok or ns.IsSecret(count) or type(count) ~= "number" then return nil end
+  return count
+end
+
+-- ns.ReadAuraApplications(spellID) -> applications | nil
+--
+-- The DEVOURER read: Soul Fragments are aura STACKS there, on Dark Heart (1225789) or —
+-- inside Void Metamorphosis — Silence the Whispers (1227702).  Blizzard's own bar does
+-- exactly this [T1 src: Blizzard_UnitFrame/DemonHunterSoulFragmentsBar.lua:150-177], which
+-- is the Tier-1 corroboration for oUF's version of it.
+--
+-- ⚠ THE KB PREDICTS THIS ONE REFUSES IN COMBAT, and the prediction is specific enough to
+-- act on: `knowledge/addon-dev/cooldown-manager.md:517` records that the ENTIRE `AuraData`
+-- record is secret when restricted — *"including `GetPlayerAuraBySpellID`. Your own auras
+-- are as sealed as the target's."*  That is a measured, general fact about the API, not a
+-- guess about these two spells, and it is the reason `state.buffs` reads PRESENCE off item
+-- frames rather than asking `C_UnitAuras` directly.
+--
+-- It is written anyway, and without the combat gate, for two reasons.  It is CORRECT AND
+-- USEFUL out of combat (the opener's starting stack count, and the `/cdmp hud coverage`
+-- style desk check), and leaving the gate off is what turns a prediction into a
+-- MEASUREMENT — the ladder already makes a secret return safe.  A brain must therefore
+-- treat this as an OPTIONAL enrichment and never gate a rotation line on it; see
+-- specs/devourer/observability-map.md for the degradation.
+function ns.ReadAuraApplications(spellID)
+  if type(spellID) ~= "number" or ns.IsSecret(spellID) then return nil end
+  if not (C_UnitAuras and C_UnitAuras.GetPlayerAuraBySpellID) then return nil end
+  local ok, info = pcall(C_UnitAuras.GetPlayerAuraBySpellID, spellID)
+  if not ok or type(info) ~= "table" then return nil end
+  if ns.IsSecretTable(info) then return nil end
+  -- Indexing is itself pcall'd: a table that passes `issecrettable` can still throw on
+  -- access under the 12.0 restrictions (the same shape rawCooldown guards against).
+  local n
+  if not pcall(function() n = info.applications end) then return nil end
+  if ns.IsSecret(n) or type(n) ~= "number" then return nil end
+  return n
+end
+
+-- ns.ReadMaxAuraApplications(spellID) -> max | nil
+--
+-- The MAX half of the read above, and a genuinely different API: `C_Spell` rather than
+-- `C_UnitAuras`, and spell DATA rather than unit state — so it has no reason to share the
+-- aura record's secrecy.  Blizzard's Devourer bar resolves its cap through exactly this
+-- [DemonHunterSoulFragmentsBar.lua:167-177].
+function ns.ReadMaxAuraApplications(spellID)
+  if type(spellID) ~= "number" or ns.IsSecret(spellID) then return nil end
+  if not (C_Spell and C_Spell.GetSpellMaxCumulativeAuraApplications) then return nil end
+  local ok, n = pcall(C_Spell.GetSpellMaxCumulativeAuraApplications, spellID)
+  if not ok or ns.IsSecret(n) or type(n) ~= "number" or n <= 0 then return nil end
+  return n
+end
+
 -- ns.ReadGCD — the global cooldown's own (duration, startTime), read ONCE.
 --
 -- It is one global fact per instant, but `ns.ReadCooldown` used to resolve it inside

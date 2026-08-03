@@ -1,6 +1,6 @@
 ## Interface: 120007
 ## Title: CDMProbe
-## Notes: Experimental probe / kitchen-sink for skinning Blizzard's Cooldown Manager (Demonology + Destruction).
+## Notes: Experimental probe / kitchen-sink for skinning Blizzard's Cooldown Manager (Demonology + Destruction + Retribution).
 ## Author: Michael Christiansen
 ## Version: 0.32.85
 ## SavedVariables: CDMProbeDB
@@ -16,6 +16,8 @@ SpecDemonology.lua
 CoachDemonology.lua
 SpecDestruction.lua
 CoachDestruction.lua
+SpecRetribution.lua
+CoachRetribution.lua
 HudBinds.lua
 HudNapkin.lua
 Coach.lua

@@ -73,10 +73,14 @@ H.specIndex = 1
 -- Index 3 (Destruction, 267) IS registered now — coach_destruction_apl_spec drives it by
 -- calling H.setSpecIndex(3) then ns.ResolveActiveSpec() after H.fresh().  Index 2
 -- (Affliction) stays the unregistered/passive fixture spec_detect_spec relies on.
+-- ⚠ DO NOT RENUMBER 1-3.  Index 2 is Affliction 265, deliberately UNREGISTERED as
+-- spec_detect_spec's passive/unsupported fixture; indices 1 and 3 are load-bearing in
+-- coach_apl_spec and coach_destruction_apl_spec.  New specs APPEND.
 H.specByIndex = {
   [1] = { 266, "Demonology" },
   [2] = { 265, "Affliction" },   -- registered? NO — the unsupported/passive fixture
   [3] = { 267, "Destruction" },
+  [4] = { 70,  "Retribution" },
 }
 function H.setSpecIndex(i) H.specIndex = i end
 
@@ -386,6 +390,24 @@ function H.installGlobals()
       return H.fx and H.fx.auraByID and H.fx.auraByID[spellID] or nil
     end) }
 
+  -- THE CLASS-RESOURCE CHANNEL (2026-08-02) — the two APIs behind `spec.derived`.  Same
+  -- default-INERT contract as everything above: an unregistered id returns nil, which the
+  -- guard ladders already treat as "we could not ask".
+  --
+  -- ⚠ `GetSpellCastCount` is faked SEPARATELY from `GetSpellCharges` even though the two
+  -- answer nearly the same question, because that is the whole point of the channel: an
+  -- ability can carry a cast count WITHOUT having real charges (api-events-and-discovery.md
+  -- §2), and a fixture that could not tell them apart could not test Vengeance's fragments.
+  _G.C_Spell.GetSpellCastCount = H.guard("C_Spell.GetSpellCastCount", function(spellID)
+    record(H.asked.castCount, spellID)
+    return H.fx and H.fx.castCount and H.fx.castCount[spellID] or nil
+  end)
+  _G.C_Spell.GetSpellMaxCumulativeAuraApplications =
+    H.guard("C_Spell.GetSpellMaxCumulativeAuraApplications", function(spellID)
+      record(H.asked.maxStacks, spellID)
+      return H.fx and H.fx.maxStacks and H.fx.maxStacks[spellID] or nil
+    end)
+
   -- The proc-glow channel — the CDM's only combat-readable proc signal (§6).  Returns a
   -- real boolean for every id, because that is what the client does: "not overlayed" is an
   -- answer, not a refusal.  A refusal is H.throws, and a secret answer is fx.glow[id] set
@@ -454,7 +476,7 @@ function H.fresh()
   H.secretTable, H.throws = {}, {}
   -- Per-case record of which ids each client fake was asked about.  See H.asked's header.
   H.asked = { cooldown = {}, charges = {}, glow = {}, auraByID = {}, known = {},
-              info = {}, categorySet = {} }
+              info = {}, categorySet = {}, castCount = {}, maxStacks = {} }
   H.specIndex = 1               -- default to Demonology so the resolver activates 266
   H.bar, H.bindings, H.macros = {}, {}, {}   -- the action-bar client fake (default: empty)
   -- ⚠ RE-INSTALL, do not assume.  A previous test may have deleted or replaced a `_G`
@@ -494,6 +516,8 @@ function H.fresh()
   H.load("CoachDemonology.lua") -- attaches the Demo brain (Context/RankWinner/Escalate) to spec 266
   H.load("SpecDestruction.lua") -- self-registers spec 267
   H.load("CoachDestruction.lua")-- attaches the Destruction brain to spec 267
+  H.load("SpecRetribution.lua") -- self-registers spec 70 (the first non-Warlock spec)
+  H.load("CoachRetribution.lua")-- attaches the Retribution brain to spec 70
 
   -- Forward-declared so the two module stubs below can close over it before it is filled.
   local fx
@@ -546,8 +570,10 @@ function H.fresh()
     --   glow[id]      = bool                              -- IsSpellOverlayed
     --   power[type]   = { value, max, unmodified, unmodifiedMax }  -- UnitPower(Max)
     --   powerCost[id] = { { type = <PowerType>, cost = n, name = "…" }, … }
+    --   castCount[id] = n          -- C_Spell.GetSpellCastCount (the DERIVED channel)
+    --   maxStacks[id] = n          -- C_Spell.GetSpellMaxCumulativeAuraApplications
     cd = {}, charges = {}, auras = {}, auraByID = {}, auraThrows = {}, glow = {},
-    power = {}, powerCost = {},
+    power = {}, powerCost = {}, castCount = {}, maxStacks = {},
   }
   H.fx = fx
 

@@ -166,6 +166,108 @@ function C.InflightPower(state, deltaFn, window)
   return sums
 end
 
+-- Truncate TOWARD ZERO.  Used only to render an EXACT-unit projection back into the DISPLAY
+-- units a pip bar speaks — never in a gate (gates compare exact integers), so this is the
+-- only place a division reaches.  Toward-zero is the honest direction for both signs: a
+-- partial shard gained is not yet a shard, and one spent is not yet spent.
+local function truncToward(x)
+  if x >= 0 then return math.floor(x) end
+  return -math.floor(-x)
+end
+
+-- ns.Coach.PowerContext — THE PER-POWER RAIL, hoisted out of the two brains.
+--
+-- WHY IT IS HERE.  Both Warlock brains opened Context with a byte-identical ~15-line block
+-- (the exact-rail read, the modifier fallback ladder, `truncToward`, and the whole
+-- `ctx.powers` fold) and docs/status.md filed it with the trigger stated: *"A third spec is
+-- when this stops being cosmetic."*  Five arrived at once.  It joins C.CommittedWithin and
+-- C.InflightPower as public shell kit: a PURE fold of the pulse a brain reads from its own
+-- Context, not something the shell does to it.
+--
+-- WHAT CHANGED IN THE HOIST — the Soul-Shard vocabulary is gone.  The brains' block was
+-- written for ONE power and named for it (`frags` / `fragsMax` / `FRAGS_PER_SHARD`), which
+-- is why it could not be shared: a Fury or Holy Power spec cannot read `fragsProjected`.
+-- Both rails are keyed BY POWER NAME now, and every fallback that was a spec-object
+-- constant moved onto the `spec.powers[]` entry that owns it (`modifier` / `exactMax` /
+-- `barMax`), which is where a per-power fact belongs.  A brain that wants scalars still
+-- publishes them under its own names — the naming stays the BRAIN's, only the arithmetic
+-- is shared.
+--
+-- RETURNS `bars, rails`:
+--   `bars`  — the ARRAY the shell's ResourceBars emits from, in DISPLAY units, one entry per
+--             declared power in declaration order.  ⚠ `valueExact`/`maxExact` here are
+--             MEASUREMENTS: the raw client read, ABSENT (never derived, never zero) when it
+--             refused.  That is deliberately NOT the same number as `rails[].value` below.
+--   `rails` — a MAP `powerName -> { value, incoming, max, projected, modifier, readable,
+--             atCap }` in the game's EXACT internal units, which is what gates compare.
+--             `value` here DOES fall back to `display x modifier` when the exact read
+--             refuses — coarse but never wrong in units — because a gate needs a number and
+--             a bar needs the truth about whether we measured one.  Absent stays nil.
+--
+-- ⚠ THE TWO UNITS ARE THE WHOLE POINT (Phase 6.2), so read `unitsNote` in
+-- guidance-contract.json before collapsing them.  `bars` is display units because
+-- Renderer.lua pools one pip per unit of `max`; `rails` is exact units because a boundary
+-- comparison decided by a float is the bug that phase existed to remove.
+--
+-- `sums` is C.InflightPower's per-power map, PASSED IN for the same reason `deltaFn` is:
+-- the caller already computed it and a hidden second call would be a silent second opinion.
+function C.PowerContext(state, spec, sums)
+  local bars, rails = {}, {}
+  sums = sums or {}
+  local power = state.power or {}
+  for _, p in ipairs((spec and spec.powers) or {}) do
+    local pw = power[p.name] or {}
+    -- The divisor between the EXACT units the spec's SpecPowerDelta speaks and the DISPLAY
+    -- units the bar renders in.  Live client read first; `p.modifier` is the spec's declared
+    -- fallback for when it refuses.  A power with no divisor omits it entirely => 1, which
+    -- is every power in the game except Soul Shards.
+    local mod = num(pw.modifier) or num(p.modifier) or 1
+
+    -- The MEASUREMENTS, kept separate from the fallbacks below.
+    local exactValue, exactMax = num(pw.unmodified), num(pw.unmodifiedMax)
+
+    -- The GATE rail.  Falls back to the display value scaled up when the exact read refused
+    -- — coarse (a true 1.9 arrives as 10) but never wrong in units.  nil stays nil: absence
+    -- of a read must never become "you have none".
+    local value = exactValue
+    if value == nil then
+      local v = num(pw.value)
+      value = v and (v * mod) or nil
+    end
+    local maxValue = exactMax
+      or (num(pw.max) and num(pw.max) * mod)
+      or num(p.exactMax)
+    local incoming = (p.incoming and num(sums[p.name])) or 0
+    local projected = value and (value + incoming) or nil
+
+    rails[p.name] = {
+      value = value, incoming = incoming, max = maxValue, projected = projected,
+      modifier = mod,
+      -- `readable` is the TRUST annotation, not the presence test: the client said the
+      -- power is readable AND we came away with a number.
+      readable = (pw.readable ~= false) and value ~= nil,
+      atCap = (projected ~= nil and maxValue ~= nil and projected >= maxValue) or false,
+    }
+
+    bars[#bars + 1] = {
+      value     = num(pw.value),
+      max       = num(pw.max) or num(p.barMax),
+      -- `p.incoming` is the spec-declared "this bar shows a projection" flag.  `sums` is in
+      -- EXACT units, so the display half is scaled DOWN and truncated toward zero.
+      incoming  = truncToward(incoming / mod),
+      display   = p.display or "discrete",
+      powerType = p.token,
+      -- ⚠ MEASUREMENTS, absent rather than derived — see the header.  A consumer must be
+      -- able to tell "the client refused" from "we scaled the display value for you".
+      valueExact    = exactValue,
+      maxExact      = exactMax,
+      incomingExact = incoming,
+      modifier      = mod,
+    }
+  end
+  return bars, rails
+end
+
 -- The MOST RECENT in-flight start for `base` with no later succeeded, if fresh.
 local function castingFresh(state, base)
   local now = state.at or 0
