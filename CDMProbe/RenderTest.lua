@@ -495,17 +495,25 @@ end
 -- ⚠ AND `stack` EXISTS BECAUSE ADD BLEND HAS A CEILING.  One texture at alpha 1.0 is as
 -- bright as one texture gets; drawing the sprite twice additively is the only way past
 -- that without changing the art.
-local BURST = { size = 56, peak = 2.8, alpha = 1.0, back = 0.85, secs = 0.40, stack = 2 }
-local BURST_ORDER = { "size", "peak", "alpha", "back", "secs", "stack" }
+local BURST = { size = 56, peak = 2.8, alpha = 1.0, back = 0, secs = 0.40, stack = 2, spin = 30 }
+local BURST_ORDER = { "size", "peak", "alpha", "back", "secs", "stack", "spin" }
 
 local function burstSignature()
-  return ("%.2f|%.2f|%.2f|%.2f|%.2f|%d"):format(
-    BURST.size, BURST.peak, BURST.alpha, BURST.back, BURST.secs, BURST.stack)
+  return ("%.2f|%.2f|%.2f|%.2f|%.2f|%d|%.1f"):format(BURST.size, BURST.peak, BURST.alpha,
+    BURST.back, BURST.secs, BURST.stack, BURST.spin)
 end
 
 -- Built against the CURRENT knobs, and rebuilt whenever they change — so dialling is a
 -- slash command rather than a release.  (The old objects are stopped and hidden rather than
 -- destroyed; widgets cannot be freed, and this is a lab.)
+--
+-- ⚠⚠ THE SCALE MOVED OFF THE FRAME AND ONTO THE TEXTURES, AND THAT IS NOT A REFACTOR.
+-- Adding rotation to the burst meant it would have had a ROTATION running inside a frame
+-- that was being SCALED — the precise structure that produces the artefact this whole
+-- session has been chasing.  It would have been self-inflicted, on the one candidate that
+-- had tested clean.  So each flare texture now scales and rotates ITSELF, in one group, and
+-- NOTHING that is an ancestor of any rotating texture is animated at all.  The frame is a
+-- plain anchor now.  ⚠ Do not move the scale back onto the frame to "save an animation".
 local function ensureBurst(r, key)
   local layer = r.cueLayers[key]
   if not layer then return nil end
@@ -513,7 +521,8 @@ local function ensureBurst(r, key)
   if layer._burstSig == sig then return layer._burst end
   local b = layer._burst
   if b then
-    b.scale:Stop(); b.fade:Stop(); b.frame:Hide()
+    for _, g in ipairs(b.groups or {}) do g:Stop() end
+    b.frame:Hide()
   end
   local f = b and b.frame
   if not f then
@@ -523,25 +532,30 @@ local function ensureBurst(r, key)
   end
   f:SetSize(BURST.size, BURST.size)
 
-  -- The dark backing: a masked disc, same trick as the cue's own.
-  local disc = (b and b.disc)
-  if not disc then
+  -- The dark backing, only when it is actually wanted.  `back = 0` is the shipped default
+  -- (it read as too heavy behind a flare this bright); the knob keeps it recoverable.
+  local disc = b and b.disc
+  if BURST.back > 0 and not disc then
     disc = f:CreateTexture(nil, "BACKGROUND")
     local mask = f:CreateMaskTexture()
     mask:SetTexture(R.DISC_MASK, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
     disc:AddMaskTexture(mask)
     disc.mask = mask
   end
-  disc:SetColorTexture(0, 0, 0, 1)
-  disc:SetSize(BURST.size, BURST.size)
-  disc.mask:ClearAllPoints()
-  disc.mask:SetSize(BURST.size, BURST.size)
-  disc.mask:SetPoint("CENTER", disc, "CENTER", 0, 0)
-  disc:ClearAllPoints()
-  disc:SetPoint("CENTER", f, "CENTER", 0, 0)
+  if disc then
+    disc:SetColorTexture(0, 0, 0, 1)
+    disc:SetSize(BURST.size, BURST.size)
+    disc.mask:ClearAllPoints()
+    disc.mask:SetSize(BURST.size, BURST.size)
+    disc.mask:SetPoint("CENTER", disc, "CENTER", 0, 0)
+    disc:ClearAllPoints()
+    disc:SetPoint("CENTER", f, "CENTER", 0, 0)
+    disc:SetShown(BURST.back > 0)
+  end
 
   local col = cueColor(r)
   local rings = (b and b.rings) or {}
+  local groups = {}
   for i = 1, BURST.stack do
     local t = rings[i]
     if not t then
@@ -555,13 +569,24 @@ local function ensureBurst(r, key)
     t:SetPoint("CENTER", f, "CENTER", 0, 0)
     t:SetVertexColor(col[1], col[2], col[3], 1)
     t:Show()
+    -- Scale + rotation in ONE group on the texture itself, same order so they run together.
+    -- ⚠ Stacked copies turn OPPOSITE ways: identical copies are indistinguishable from one
+    -- brighter texture, and counter-rotation is the cue's existing visual language anyway.
+    local g = R.BuildPop(t, BURST.peak, BURST.secs, true)
+    if g and BURST.spin ~= 0 then
+      local rot = g:CreateAnimation("Rotation")
+      rot:SetDegrees(i % 2 == 1 and BURST.spin or -BURST.spin)
+      rot:SetDuration(BURST.secs)
+      rot:SetOrder(1)
+      rot:SetOrigin("CENTER", 0, 0)
+    end
+    if g then groups[#groups + 1] = g end
   end
   for i = BURST.stack + 1, #rings do rings[i]:Hide() end
 
-  -- ONE-WAY scale on the frame; the regions fade on their own groups.  ⚠ The fade HOLDS at
-  -- full for the first quarter before falling — a straight linear fade from the first frame
-  -- halves the average brightness and is most of why the first cut read as "too subtle".
-  local scale = R.BuildPop(f, BURST.peak, BURST.secs, true)
+  -- ⚠ The fade HOLDS at full for the first quarter before falling.  A straight linear fade
+  -- from the first frame halves the average brightness and was most of why the first cut
+  -- read as too subtle.
   local function fadeGroup(region, peakAlpha)
     local g = region:CreateAnimationGroup()
     local hold = g:CreateAnimation("Alpha")
@@ -573,20 +598,17 @@ local function ensureBurst(r, key)
     g:SetScript("OnFinished", function() region:SetAlpha(0) end)
     return g
   end
-  local fade = fadeGroup(rings[1], BURST.alpha)
-  fade:SetScript("OnFinished", function()
+  local fades = {}
+  for i = 1, BURST.stack do fades[#fades + 1] = fadeGroup(rings[i], BURST.alpha) end
+  if disc and BURST.back > 0 then fades[#fades + 1] = fadeGroup(disc, BURST.back) end
+  fades[1]:SetScript("OnFinished", function()
     for _, t in ipairs(rings) do t:SetAlpha(0) end
-    disc:SetAlpha(0)
+    if disc then disc:SetAlpha(0) end
     f:Hide()
-    if scale then scale:Stop() end
+    for _, g in ipairs(groups) do g:Stop() end
   end)
-  local extra = {}
-  for i = 2, BURST.stack do extra[#extra + 1] = fadeGroup(rings[i], BURST.alpha) end
-  extra[#extra + 1] = fadeGroup(disc, BURST.back)
-  local discFade = extra[#extra]
 
-  b = { frame = f, disc = disc, rings = rings, scale = scale, fade = fade,
-        extra = extra, discFade = discFade }
+  b = { frame = f, disc = disc, rings = rings, groups = groups, fades = fades }
   layer._burst, layer._burstSig = b, sig
   f:Hide()
   return b
@@ -595,15 +617,15 @@ end
 local function candBurst(r, key)
   local b = ensureBurst(r, key)
   if not b then ns.Print("rt pop: panel 9 has no cue — did NOT fire"); return end
-  if not b.scale then ns.Print("rt pop: panel 9 got no scale group — INERT"); return end
+  if #b.groups == 0 then ns.Print("rt pop: panel 9 got no scale group — INERT"); return end
   b.frame:Show()
   for _, t in ipairs(b.rings) do t:SetAlpha(BURST.alpha) end
-  b.disc:SetAlpha(BURST.back)
-  b.scale:Stop(); b.scale:Play()
-  b.fade:Stop();  b.fade:Play()
-  for _, g in ipairs(b.extra) do g:Stop(); g:Play() end
-  firedProbe(("burst %.0fpx x%.1f  a%.2f  dark%.2f  %.2fs  stack%d"):format(
-    BURST.size, BURST.peak, BURST.alpha, BURST.back, BURST.secs, BURST.stack), b.scale)
+  if b.disc then b.disc:SetAlpha(BURST.back) end
+  for _, g in ipairs(b.groups) do g:Stop(); g:Play() end
+  for _, g in ipairs(b.fades)  do g:Stop(); g:Play() end
+  firedProbe(("burst %.0fpx x%.1f  a%.2f  dark%.2f  %.2fs  stack%d  spin%.0f"):format(
+    BURST.size, BURST.peak, BURST.alpha, BURST.back, BURST.secs, BURST.stack, BURST.spin),
+    b.groups[1])
 end
 
 -- `/cdmp rt pop burst [<knob> <value>]` — dial it live.  ⚠ This is a LAB dial, and the
@@ -621,7 +643,8 @@ local function burstKnob(rest)
   for _, k in ipairs(BURST_ORDER) do parts[#parts + 1] = ("%s %s"):format(k, tostring(BURST[k])) end
   ns.Heading("rt pop burst — " .. table.concat(parts, " · "))
   ns.Print("  |cffffffff/cdmp rt pop burst <knob> <value>|r — size (start px) · peak (grow x) · "
-    .. "alpha (flare) · back (dark disc) · secs · stack (additive copies)")
+    .. "alpha (flare) · back (dark disc, 0 = off) · secs · stack (additive copies) · "
+    .. "spin (degrees over the flare; stacked copies counter-rotate)")
 end
 
 --------------------------------------------------------------------------------
