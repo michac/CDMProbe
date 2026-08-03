@@ -306,15 +306,141 @@ end
 --
 -- ⚠ NOTHING POPS ON LOAD.  `cuedLast` is seeded before the opening draw so panels 1-3 are
 -- not arrivals.  A control that got popped once before you looked at it is not a control.
-local POP_LAB_ICONS = 4
+-- ⚠ PANELS 5 AND 6 ARE PROBES, NOT POPS, AND THE DIFFERENCE IS THE POINT.  The measured
+-- symptom is that a popped ring spins FASTER, permanently, from the moment of the pop —
+-- which our own code cannot explain, because nothing in it touches the rings (renderer_spec
+-- pins that a pop never Play()s either Rotation, and that assertion passes).  So the
+-- question stops being "what does our pop do" and becomes "what does the CLIENT do when an
+-- animation plays near a running Rotation".  These two answer it by changing exactly one
+-- property of the trigger each:
+--
+--   5 ALPHA    an ALPHA animation on the cue layer instead of a Scale.  Same ancestor,
+--              same duration, visually inert (1 -> 1).  Speeds the ring up too ⇒ the
+--              trigger is ANY animation on an ancestor.  Leaves it alone ⇒ it is
+--              specifically a TRANSFORM, which points at the scale/rotation composition.
+--   6 FAR      a Scale animation on an UNRELATED frame — same container, no relationship
+--              to this cue at all.  Speeds the ring up ⇒ ancestry is irrelevant and this
+--              is global to the animation system, which would reframe the whole hunt.
+--
+-- ⚠ BOTH PROBES ARE VISUALLY INERT ON PURPOSE.  Flight 2 (v0.32.77) established that a
+-- Scale animating 1 -> 1 still reproduces, so what is under test is the PRESENCE of a
+-- running animation, not anything you can see.  A probe that also moved something would
+-- confound the two back together.
+local POP_LAB_ICONS = 6
 local POP_LAB_INTERVAL = 2.0
-local POP_LAB_CAPTIONS = { "1 STEADY (control)", "2 AUTO-POP 2s", "3 CLICK=POP", "4 CLICK=SOLO POP" }
-local POP_LAB_KEYS = { "fake1", "fake2", "fake3" }   -- the three PERSISTENT panels
+local POP_LAB_CAPTIONS = {
+  "1 STEADY", "2 AUTO-POP 2s", "3 CLICK=POP", "4 CLICK=SOLO", "5 CLICK=ALPHA", "6 CLICK=FAR",
+}
+-- The PERSISTENT panels — the ones carrying a ring that is measurable end to end.  Panel 4
+-- is absent by design: it only exists between a click and its teardown.
+local POP_LAB_KEYS = { "fake1", "fake2", "fake3", "fake5", "fake6" }
 
--- The resting DrawList: panels 1-3 lit, panel 4 empty until it is clicked.
+-- The resting DrawList: every persistent panel lit, panel 4 empty until it is clicked.
 local function popLabSteady()
-  return { cues = { cue("fake1", "ROTATION"), cue("fake2", "ROTATION"), cue("fake3", "ROTATION") },
-           keybinds = { kb("fake4", "4") } }
+  local cues = {}
+  for _, key in ipairs(POP_LAB_KEYS) do cues[#cues + 1] = cue(key, "ROTATION") end
+  return { cues = cues, keybinds = { kb("fake4", "4") } }
+end
+
+-- PROBE 5 — an Alpha animation on the layer.  ⚠ `fromAlpha` defaults to 0.0, so both ends
+-- are set explicitly to keep it inert; the Scale probe below needs no such care because
+-- every scale attribute already defaults to 1.0 (UI.xsd:1500).
+local function probeAlpha(frame)
+  local g = frame._probeAlpha
+  if not g then
+    g = frame:CreateAnimationGroup()
+    local a = g:CreateAnimation("Alpha")
+    a:SetFromAlpha(1)
+    a:SetToAlpha(1)
+    a:SetDuration(R.POP_SECS)
+    frame._probeAlpha = g
+  end
+  g:Stop()
+  g:Play()
+end
+
+-- PROBE 6 — a Scale animation on a frame with no relationship to any cue.
+local function probeFarScale(rig)
+  local f = rig._probeFar
+  if not f then
+    f = CreateFrame("Frame", nil, rig.container)
+    f:SetSize(8, 8)
+    f:SetPoint("BOTTOM", rig.container, "BOTTOM", 0, 8)
+    local g = f:CreateAnimationGroup()
+    local a = g:CreateAnimation("Scale")   -- endpoints default to 1.0 -> inert
+    a:SetDuration(R.POP_SECS)
+    a:SetOrigin("CENTER", 0, 0)
+    f._probe = g
+    rig._probeFar = f
+  end
+  f._probe:Stop()
+  f._probe:Play()
+end
+
+--------------------------------------------------------------------------------
+-- `/cdmp rt pop stats` — MEASURE the spin instead of describing it.
+--------------------------------------------------------------------------------
+-- "Super speed spinny" is an observation, not a number, and the number is what discriminates
+-- the remaining theories.  This samples every panel's INNER ring straight off the client
+-- (`Rotation:GetProgress()`), unwraps it across revolutions and reports the ACTUAL angular
+-- rate beside what the animation was TOLD its period is.  Two things to read:
+--
+--   * the RATIO against panel 1.  A clean 2.00x says the rotation is being advanced twice
+--     per frame — a duplicated driver, and a completely different bug from a mistimed one.
+--     A ratio that CLIMBS with each further pop says something accumulates per pop.
+--   * `told` vs `measured`.  If SetDuration still reads 6.00s while the ring measures 3s,
+--     the client is not honouring its own duration, and no amount of re-timing will help.
+--
+-- ⚠ It measures the SHIPPED rings — `renderer.cueRingIn[key].rot` — never a copy.  A probe
+-- that instruments its own private animation can pass while the real one fails, which is
+-- the failure mode this whole file's design rule exists to prevent.
+local MEASURE_SECS, MEASURE_HZ = 3.0, 20
+
+local function popLabMeasure()
+  local rig = ns._renderTestRig
+  local r = rig and rig.renderer
+  if not (r and r.cueRingIn and r.cueRingIn["fake1"]) then
+    ns.Print("rt pop: no pop lab running — |cffffffff/cdmp rt pop|r first")
+    return
+  end
+  local gen = labGen
+  local acc, prev = {}, {}
+  for _, key in ipairs(POP_LAB_KEYS) do acc[key] = 0 end
+  local function sample()
+    for _, key in ipairs(POP_LAB_KEYS) do
+      local ring = r.cueRingIn[key]
+      local p = ring and ring.rot and ring.rot:GetProgress()
+      if type(p) == "number" then
+        -- Progress runs 0->1 per revolution and wraps.  At 6s and 20 Hz one step is ~0.008,
+        -- so a NEGATIVE step is a wrap and never an ambiguity — it stays unambiguous even
+        -- at ten times the nominal rate.
+        if prev[key] then
+          local d = p - prev[key]
+          if d < 0 then d = d + 1 end
+          acc[key] = acc[key] + d
+        end
+        prev[key] = p
+      end
+    end
+  end
+  local t0 = GetTime()
+  sample()
+  C_Timer.NewTicker(1 / MEASURE_HZ, sample, math.floor(MEASURE_SECS * MEASURE_HZ))
+  C_Timer.After(MEASURE_SECS + 0.2, function()
+    if labGen ~= gen or ns._renderTestRig ~= rig then return end
+    local elapsed = GetTime() - t0
+    local base = acc["fake1"] / elapsed
+    ns.Heading(("rt pop — measured spin over %.1fs (nominal: 6.00s / 0.167 rev/s)"):format(elapsed))
+    for _, key in ipairs(POP_LAB_KEYS) do
+      local ring = r.cueRingIn[key]
+      local rev = acc[key] / elapsed
+      local told = ring and ring.rot and ring.rot:GetDuration()
+      local idx = tonumber(key:match("(%d+)$"))
+      ns.Printf("  |cff88ff88%-14s|r measured %.3f rev/s (%.2fs)   told %.2fs   |cffffffff%.2fx|r control",
+        POP_LAB_CAPTIONS[idx] or key, rev, rev > 0 and (1 / rev) or 0,
+        type(told) == "number" and told or 0, base > 0 and (rev / base) or 0)
+    end
+  end)
 end
 
 local function startPopLab()
@@ -362,6 +488,17 @@ local function startPopLab()
       r:Draw(popLabSteady())
     end)
   end)
+
+  -- PANELS 5 + 6 — the two probes.  Each fires an INERT animation and touches nothing
+  -- else; the cue under them is drawn exactly like the control and is never popped.
+  rig.icons[5]:EnableMouse(true)
+  rig.icons[5]:SetScript("OnMouseDown", function()
+    if alive() then probeAlpha(r.cueLayers["fake5"]) end
+  end)
+  rig.icons[6]:EnableMouse(true)
+  rig.icons[6]:SetScript("OnMouseDown", function()
+    if alive() then probeFarScale(rig) end
+  end)
 end
 
 -- `/cdmp rt [<name>|rotate|pop|off|list]` — render a fixture; bare = the first one
@@ -377,7 +514,14 @@ function ns.RenderTest(arg)
     ns.Print("  |cff88ff88rotate|r — one cue hopping across 5 panels (live)")
     ns.Print("  |cff88ff88pop|r — the POP LAB: a steady control beside an auto-popping twin, "
       .. "plus click-to-pop and a solo pop (panels 3+4 are |cffffffffclickable|r)")
-    ns.Print("usage: |cffffffff/cdmp rt <name>|r | rotate | pop | off")
+    ns.Print("  |cff88ff88pop stats|r — MEASURE every lab panel's spin (rev/s + ratio vs the control)")
+    ns.Print("usage: |cffffffff/cdmp rt <name>|r | rotate | pop | pop stats | off")
+    return
+  end
+  -- ⚠ BEFORE stopTicker: measuring must not tear down the very lab it is measuring.
+  if arg == "pop stats" or arg == "popstats" then
+    popLabMeasure()
+    ns.Printf("rt pop: sampling %.1fs …", MEASURE_SECS)
     return
   end
   stopTicker()                               -- any view change cancels a live view
@@ -397,9 +541,10 @@ function ns.RenderTest(arg)
   end
   if arg == "pop" then
     startPopLab()
-    ns.Printf("rt: |cffffffffpop lab|r — 1 STEADY (control) · 2 AUTO-POP every %.1fs · "
-      .. "3 CLICK to pop · 4 CLICK for a solo pop.  Watch 1 against 2 first.",
-      POP_LAB_INTERVAL)
+    ns.Printf("rt: |cffffffffpop lab|r — 1 STEADY · 2 AUTO-POP %.1fs · 3 CLICK=pop · "
+      .. "4 CLICK=solo pop · 5 CLICK=alpha probe · 6 CLICK=far-scale probe", POP_LAB_INTERVAL)
+    ns.Print("  |cffffffff/cdmp rt pop stats|r measures every panel — click 3 a few times "
+      .. "first and see whether it COMPOUNDS.")
     return
   end
   if arg == "rotate" then
