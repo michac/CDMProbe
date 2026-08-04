@@ -292,6 +292,10 @@ function C.PowerContext(state, spec, sums)
       -- `readable` is the TRUST annotation, not the presence test: the client said the
       -- power is readable AND we came away with a number.
       readable = (pw.readable ~= false) and value ~= nil,
+      -- STRUCTURALLY unreadable — a PRIMARY resource, secret forever (State's readOnePower
+      -- asks C_Secrets).  Distinct from `readable == false`, which only says this pulse
+      -- came away empty.  A brain must never wait for a restricted rail to warm up.
+      restricted = pw.restricted == true,
       atCap = (projected ~= nil and maxValue ~= nil and projected >= maxValue) or false,
     }
 
@@ -309,6 +313,9 @@ function C.PowerContext(state, spec, sums)
       maxExact      = exactMax,
       incomingExact = incoming,
       modifier      = mod,
+      -- Rides the bar as well as the rail, because the DECISION LOG reads the bar and
+      -- "why is this column empty" is a question only this field can answer.
+      restricted    = pw.restricted == true,
     }
   end
   return bars, rails
@@ -530,13 +537,30 @@ end
 -- boundary comparison upstream can never be decided by a float.
 -- See guidance-contract.json -> channels/resourceBars.
 --------------------------------------------------------------------------------
+-- ⚠⚠ `value` AND `incoming` PASS `nil` THROUGH, AND THAT IS THE 2026-08-03 FIX.  They read
+-- `p.value or 0` / `p.incoming or 0` until the Havoc flight, and those two `or 0`s are what
+-- turned "we could not read the rail" into "you have zero Fury" — the project's own
+-- ABSENT-IS-NEVER-ZERO rule broken in the one place nothing tested.  Zero is the worst
+-- possible degradation for a resource: every spender becomes unaffordable and every
+-- generator maximally urgent, which is precisely the winner distribution the flight
+-- produced (Chaos Strike 0 presses, Throw Glaive 770).
+--
+-- Note the exact rail three lines down already passed absence through VERBATIM.  The
+-- inconsistency between the two halves of this one table literal WAS the bug; the exact
+-- rail's shape is the one to copy, not the display rail's.
+--
+-- ⚠ `max` (BAR_MAX_FALLBACK) and `powerType` DELIBERATELY KEEP THEIR FALLBACKS.  A missing
+-- max or token is a SPEC-AUTHORING gap, not a measurement — the Renderer needs a number to
+-- size a bar and a token to colour it, and there is nothing dishonest about defaulting a
+-- constant nobody measured.  `value` is a measurement.  The two are not the same kind of
+-- field and must not get the same treatment.
 function C:ResourceBars(ctx)
   local out = {}
   for _, p in ipairs((ctx and ctx.powers) or {}) do
     out[#out + 1] = {
-      value = p.value or 0,
+      value = p.value,
       max = p.max or BAR_MAX_FALLBACK,
-      incoming = p.incoming or 0,
+      incoming = p.incoming,
       display = p.display or "discrete",
       powerType = p.powerType or POWER_TOKEN.SoulShards or "SOUL_SHARDS",
       -- The exact rail, passed through VERBATIM — including its absence.
@@ -544,6 +568,7 @@ function C:ResourceBars(ctx)
       maxExact = p.maxExact,
       incomingExact = p.incomingExact,
       modifier = p.modifier,
+      restricted = p.restricted,
     }
   end
   return out

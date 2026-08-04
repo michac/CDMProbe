@@ -703,6 +703,31 @@ local function readCharge(chargeIdent, hasCharges, cooldownID)
   return { readable = false }
 end
 
+-- usable{usable, insufficientPower, readable, asked}.  THE AFFORDABILITY FACT — "does the
+-- client say we can pay for this press right now" — added 2026-08-03 after the Havoc
+-- flight, where every Fury gate in the brain compared against a fabricated zero because
+-- `UnitPower(player, Fury)` is a SECRET VALUE and always will be.  Read `ns.SpellUsable`'s
+-- banner in Util.lua before touching this; the game fact behind it is a per-power-type
+-- primary/secondary rule, not a Havoc quirk, and it applies to most specs in the game.
+--
+-- ⚠ ASK ABOUT THE **LIVE** ID.  In demon form the Chaos Strike frame casts ANNIHILATION
+-- 201427, and it is Annihilation's own cost the client is checking — the base's answer is
+-- about a spell you are not about to press.  `readCd` already takes `live` as its second
+-- argument for the neighbouring reason, so this follows that precedent rather than
+-- inventing one.  `asked` records WHICH id we asked about so the decision log can say so;
+-- "which id did you ask about" is the exact bug class the roster anchor exists to prevent.
+--
+-- ⚠ ABSENT IS NEVER FALSE.  A refusal is `{ readable = false }` with NO `usable` /
+-- `insufficientPower` members at all, so a consumer cannot mistake "we could not ask" for
+-- "you cannot afford it".  That collapse is the whole failure this read exists to fix, and
+-- reintroducing it one layer down would be worse than not having the read.
+local function readUsable(ident)
+  local usable, insufficient = ns.SpellUsable(ident)
+  if usable == nil then return { readable = false, asked = ns.Stash(ident) } end
+  return { readable = true, usable = usable, insufficientPower = insufficient,
+           asked = ns.Stash(ident) }
+end
+
 -- aura{active, readable}.  Spec-agnostic: we ask the client whether the PLAYER has
 -- the entry's own aura up, nothing about what it MEANS.
 --
@@ -996,6 +1021,22 @@ end
 -- the fields ABSENT, never zero, so a consumer can tell "we could not ask" from "you have
 -- none".  State still has no opinion about which power matters (invariant #3), which is why
 -- these carry Blizzard's own vocabulary — `unmodified`, not "fragments", a Soul-Shard word.
+--
+-- ⚠ AND IT NOW SAYS **WHY** IT COULD NOT READ (2026-08-03).  A rail that is STRUCTURALLY
+-- unreadable is a different fact from one that failed once, and only the former should ever
+-- render as `restricted`.  `C_Secrets.ShouldUnitPowerBeSecret(unit, powerType)` is the
+-- client's own answer, and the distinction is load-bearing rather than cosmetic: for a
+-- PRIMARY resource (Fury, Rage, Energy, Focus, Mana, …) the answer is `true` FOREVER — in a
+-- city and mid-pull alike — so a consumer that keeps waiting for the rail to warm up is
+-- waiting for something that cannot happen.  See ns.SpellUsable's banner in Util.lua for
+-- the blue-post rule and the in-game measurements.
+--
+-- ⚠ THE VALUE OMISSION BELOW WAS ALREADY CORRECT and is not what broke the Havoc flight —
+-- `value` is absent on a refusal and always has been.  What broke it was two COERCIONS
+-- downstream (`Coach:ResourceBars`' `value = p.value or 0` and the brain's `ctx.fury or 0`)
+-- turning that honest absence back into a number.  Both are gone; this field is what lets
+-- the decision log say `restricted` instead of `?` and stop the next reader re-deriving the
+-- whole finding from a blank column.
 local function readOnePower(value)
   local okM, max = pcall(UnitPowerMax, "player", value)
   if not okM or ns.IsSecret(max) or type(max) ~= "number" or max <= 0 then return nil end
@@ -1003,6 +1044,13 @@ local function readOnePower(value)
   local out
   if not okV or ns.IsSecret(val) or type(val) ~= "number" then
     out = { readable = false, max = ns.Stash(max), type = value }
+    -- Guarded like every other read here: `C_Secrets` is a 12.0 namespace and may be
+    -- absent on an older client, and a missing verdict must leave `restricted` unset
+    -- (i.e. "we do not know why") rather than assert either answer.
+    if C_Secrets and C_Secrets.ShouldUnitPowerBeSecret then
+      local okS, secret = pcall(C_Secrets.ShouldUnitPowerBeSecret, "player", value)
+      if okS and secret == true then out.restricted = true end
+    end
   else
     out = { readable = true, value = ns.Stash(val), max = ns.Stash(max), type = value }
   end
@@ -1749,9 +1797,12 @@ local function rosterView(cooldowns, fold, roster, edges, drawable, known)
           displayable = rep.displayable,
           -- three-valued knownness — the channel that replaced `pulse.dropped`
           known    = k,
-          -- live facts.  ⚠ cd + charge were read ABOUT `rid` (St.Build), never through the
-          -- row's identity ladder — §C2, the root fix.
-          cd = rep.cd, charge = rep.charge, aura = rep.aura, glow = rep.glow,
+          -- live facts.  ⚠ cd + charge + usable were read ABOUT `rid` (St.Build), never
+          -- through the row's identity ladder — §C2, the root fix.  `usable` is the
+          -- affordability verdict (2026-08-03) and is ABSENT-shaped on a refusal, so a
+          -- consumer must test `readable` rather than truthiness.
+          cd = rep.cd, charge = rep.charge, usable = rep.usable,
+          aura = rep.aura, glow = rep.glow,
           buff = rep.buff, auraFrame = rep.auraFrame,
           keybind = rep.keybind,
           dot = dotEdges[rid] or (readable(rep.spellID) and dotEdges[rep.spellID]) or nil,
@@ -2011,6 +2062,17 @@ local function virtualRow(spellID, known, gcd)
     -- a bare read.  ⚠ It is readCharge's shape ②, the MEASUREMENT shape, not ④'s inference:
     -- `max = 0` is a statement about the spell's nature, and `source = "static"` says so.
     charge = { readable = true, cur = nil, max = 0, source = "static" },
+    -- ⚠ NO AFFORDABILITY READ ON A VIRTUAL ROW, and this is a DECISION rather than an
+    -- omission (the field would otherwise default silently, which is how a gap becomes a
+    -- lie).  `ns.SpellUsable` keys on the SPELL and would answer here perfectly well — but
+    -- a virtual row exists precisely because the CDM tracks the ability NOWHERE, so there
+    -- is no `spends` fence in front of it in St.Build's loop and no cid to key anything
+    -- by; adding the read would spend a guarded call per pulse on every untracked filler
+    -- (Destruction's Incinerate, Demo's Shadow Bolt), none of which any brain gates on
+    -- affordability today.  `readable = false` means "not blocking" everywhere it is read,
+    -- which is the correct behaviour for a floor press.  The day a spec declares an
+    -- untracked SPENDER, wire it here — and give it a case first.
+    usable = { readable = false },
     aura   = { readable = true, active = false },
     glow   = readGlow(live),
     display = { cooldownID = -spellID, category = "Virtual" },
@@ -2177,6 +2239,24 @@ function St.Build(drain)
   local function readAbilityFacts(rid, rep)
     local cid = rep and rep.cooldownID or nil
     local charge = readCharge(rid, rep and rep.charges, cid)
+    -- THE AFFORDABILITY READ, FENCED ON `info.spends` (2026-08-03).  This is a guarded
+    -- call per ability per pulse at 10 Hz, and the roster anchor's whole sizing win came
+    -- from NOT making reads for rows nothing claims — so only an ability the SPEC declares
+    -- as costing a resource is asked.  Anything else can never report `insufficientPower`,
+    -- and the brain treats an unreadable verdict as "not blocking", so a fenced-out
+    -- ability behaves exactly as it did before this field existed.
+    --
+    -- ⚠ THE FENCE IS THE SPEC'S `spends`, NOT the CDM's category — the same rule that let
+    -- Havoc's three CDM-Utility rotational presses stay cueable with no pipeline edit.
+    local info = ns.SpecInfo and ns.SpecInfo(rid) or nil
+    local usable
+    if info and info.spends then
+      -- The LIVE id: `rep.liveSpellID or rid`, the same expression readCd uses one line
+      -- below, so the two cannot drift onto different spells.
+      usable = readUsable(rep and rep.liveSpellID or rid)
+    else
+      usable = { readable = false }
+    end
     -- The napkin's spend edge arrives keyed by whatever `St.BaseOfCast` resolves a cast to,
     -- which is the row's BASE — not necessarily the roster id (on Diabolist the Incinerate
     -- row's base is Shadow Bolt 686).  Bind BOTH, at the same cid, so a press debits the
@@ -2199,14 +2279,14 @@ function St.Build(drain)
     else
       cd = { state = "unknown", readable = false, source = "none" }
     end
-    return cd, charge
+    return cd, charge, usable
   end
 
   for cooldownID, entry in pairs(cooldowns) do
     local rid = ridOf[cooldownID]
-    local cd, charge
+    local cd, charge, usable
     if rid then
-      cd, charge = readAbilityFacts(rid, entry)
+      cd, charge, usable = readAbilityFacts(rid, entry)
     else
       -- A row NO declared ability claimed.  It stays in the raw diagnostic view — that view
       -- is the CDM's answer, not the spec's — but it costs nothing to read: the roster
@@ -2214,9 +2294,13 @@ function St.Build(drain)
       -- OOC guarded-call budget (§6.2).  The honest shape, not a fabricated one.
       cd = { state = "unknown", readable = false, source = "none" }
       charge = { readable = false }
+      -- ...and no affordability read either, for the same reason: the roster already said
+      -- this spec does not care about this row.  The honest shape, not a fabricated one.
+      usable = { readable = false }
     end
     entry.cd = stampCd(cooldownID, cd, now)
     entry.charge = charge
+    entry.usable = usable
   end
 
   local events = {}

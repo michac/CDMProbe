@@ -33,8 +33,10 @@ Retired directions, code **deleted** (recover from git history if revived):
 
 Registered specs: **Demonology** (266, play-settled), **Destruction** (267, shipped
 2026-07-29, flown 2026-07-30), **Retribution Paladin** (70, shipped 2026-08-02, cannot be
-flown — no max-level Paladin) and **Havoc Demon Hunter** (577, shipped 2026-08-03, **not yet
-flown — it is the in-game gate for the rest of the rollout**). Every other spec resolves
+flown — no max-level Paladin) and **Havoc Demon Hunter** (577, shipped 2026-08-03, **flown
+and FAILED the same day — `UnitPower(player, Fury)` is a SECRET value, so every Fury gate
+compared against a fabricated zero; the Phase-1 remediation shipped and the RE-FLY is the
+in-game gate for the rest of the rollout**). Every other spec resolves
 passive by design.
 
 Design context + status live in the parent workspace at

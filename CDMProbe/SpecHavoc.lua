@@ -254,17 +254,37 @@ spec.SpecBindAlias = {
 -- texture per unit of `max` (clamped at MAX_PIPS = 12) — a 120-max Fury bar would render
 -- meaningless either way.  `none` is the member that was added for exactly these specs.
 --
--- `incoming = true`: Coach:ResourceBars reads `p.incoming and sums[p.name]`, so declaring
--- it false would zero the incoming term and make `projected` permanently equal the live
--- value.  SpecPowerDelta below projects SPENDERS, and the brain ranks on projected
--- precisely so a spender in flight stops being re-cued mid-GCD.
+-- ⚠⚠ AND THE VALUE ON THIS RAIL IS **SECRET** — the 2026-08-03 finding, and the most
+-- important thing on this page.  `UnitPower("player", Enum.PowerType.Fury)` returns a Secret
+-- Value: secrecy is per power type and the rule is primary-vs-secondary [T1 blue post,
+-- *Midnight Public Alpha Addon API Changes*, 2025-11-24], Fury is the Demon Hunter's PRIMARY
+-- resource, and `C_Secrets.ShouldUnitPowerBeSecret("player", 17)` measured TRUE in a city
+-- AND mid-pull.  There is no out-of-combat window and no seed value, ever.  So the rail
+-- carries `max` and NOTHING ELSE, `PW:` renders `restricted`, and no gate in CoachHavoc may
+-- compare a Fury number — affordability comes from `ns.SpellUsable` per spell.  Read
+-- specs/havoc/rotation.md -> *Fury is SECRET* before touching any of this.
+--
+-- ⚠ `incoming = false` (was `true`).  Coach:ResourceBars reads `p.incoming and
+-- sums[p.name]`, and `spec.SpecPowerDelta` — which fed it — is DELETED: an in-flight
+-- projection onto an absent value is either a no-op or a fabrication.  This is the
+-- declarative statement that this bar carries no projection.
+--
+-- ⚠ `exactMax`/`barMax` ARE 170, MEASURED, and they were 120 (the class base) until
+-- 2026-08-03.  `UnitPowerMax` is a DIFFERENT secrecy predicate from `UnitPower` —
+-- `SecretWhenUnitPowerMaxRestricted` only applies to units that are not player-controlled —
+-- so the MAX is readable and the live read wins over these numbers on any real pulse.  They
+-- are the fallback for a pulse-less caller only, and 170 is what the test character
+-- actually reported (talent-inflated above the 120 base).  ⚠ ANY constant here is wrong for
+-- some build; that is fine precisely because it is never the answer in game.
 spec.powers = {
-  { name = "Fury", display = "none", incoming = true, token = "FURY",
-    exactMax = 120, barMax = 120 },
+  { name = "Fury", display = "none", incoming = false, token = "FURY",
+    exactMax = 170, barMax = 170 },
 }
 
 -- The cap, as a fallback for a pulse-less caller.  DISPLAY units and exact units coincide.
-spec.FURY_CAP = 120
+-- ⚠ Currently read by NOTHING that decides — `Escalate`'s full-bar rule was deleted with the
+-- Fury comparisons.  Kept so `ctx.furyMax` still has a value for the log.
+spec.FURY_CAP = 170
 
 -- The DECISION-LOG vocabulary (adding-a-spec.md Step 6).  DecisionLog.lua holds no spec
 -- constants: per-ability short codes ride `abbr` on each spec.Spec entry, and the
@@ -498,38 +518,32 @@ function spec.SpecInfo(spellID)
   return NEUTRAL, false
 end
 
--- SIGNED net Fury delta of an in-flight cast — what the rail will read AFTER this cast
--- resolves, relative to now, and which named power it moves.  The Coach folds it into
--- `incoming` (ns.Coach.InflightPower) and the brain ranks on projected = fury + incoming.
+-- ⚠⚠ `spec.SpecPowerDelta` IS **DELETED** (2026-08-03).  DO NOT WRITE IT BACK.
 --
--- ⚠ SPENDERS ONLY, ON PURPOSE — and this is RETRIBUTION'S judgement, not Destruction's.
+-- It returned the SIGNED net Fury delta of an in-flight cast so `ns.Coach.InflightPower`
+-- could fold it into `incoming` and the brain could rank on `projected = fury + incoming`.
+-- Every one of those words presupposes a readable `fury`, and there is none: the rail is
+-- SECRET (see spec.powers above).  A projection onto an absent value is either nil — the
+-- machinery doing nothing at cost — or a fabricated number, which is exactly the class of
+-- bug the 2026-08-03 flight was.  `spec.powers[1].incoming = false` is the declaration that
+-- replaces it.
+--
+-- ⚠ THE REASONING IS KEPT BECAUSE IT STILL BINDS ANYONE WHO TRIES TO BRING IT BACK.  It
+-- projected SPENDERS ONLY, which was RETRIBUTION'S judgement rather than Destruction's:
 -- Destruction projects builders because its yields are exact integers the client hands us
--- (Incinerate is deterministically 2 fragments).  Havoc's generators are auto-attack,
--- Immolation Aura ticks, Felblade and Vengeful Retreat's Tactical Retreat — every one
--- talent-modified, and simc computes `variable.fury_gen_per_sec` from SIX terms including
--- haste and three buff stack counts, none of which is on the pulse.  Authoring a base
--- number here would be exactly the guess the project's floor-is-the-contract rule forbids:
--- an over-credited builder promises a spender you cannot cast, which is the failure
--- direction that actively misleads.  Under-crediting costs one press of latency, so
--- omission is the safe half.
+-- (Incinerate is deterministically 2 fragments), whereas Havoc's generators are
+-- auto-attack, Immolation Aura ticks, Felblade and Vengeful Retreat's Tactical Retreat —
+-- every one talent-modified, with simc computing `variable.fury_gen_per_sec` from SIX terms
+-- including haste and three buff stack counts, none of it on the pulse.  Authoring a base
+-- number would be the guess the floor-is-the-contract rule forbids: an over-credited builder
+-- promises a spender you cannot cast.  That argument applied to BUILDERS while spenders were
+-- still projectable; with the rail secret it applies to both halves and there is nothing
+-- left to project.
 --
--- ⚠ AND NOTE THE UNIT: Fury's modifier is 1, so there is NO conversion here at all.  Do not
--- copy Destruction's `cost * FRAGS_PER_SHARD` multiplication — the cost reader already
--- speaks the only unit this spec has.
---
--- An UNREADABLE cost drops the spend term rather than guessing — the safe direction, since
--- it never pre-deducts power we are not sure will be spent.
-function spec.SpecPowerDelta(spellID)
-  local info = ns.SpecInfo(spellID)
-  if info.spends ~= "fury" or not ns.PowerCost then return { power = nil, delta = 0 } end
-  -- Guarded because the .toc loads this file BEFORE Coach.lua; the call is at runtime, so
-  -- the shell kit is there by then, but a missing helper must degrade, not error.
-  local pt = ns.Coach and ns.Coach.CostPowerType and ns.Coach.CostPowerType(spec)
-  if not pt then return { power = nil, delta = 0 } end
-  local cost = ns.PowerCost(spellID, pt)
-  if type(cost) ~= "number" or cost <= 0 then return { power = nil, delta = 0 } end
-  return { power = "Fury", delta = -cost }
-end
+-- ⚠ WHAT IS LOST: a spender in flight is no longer pre-deducted, so the HUD may keep cueing
+-- Chaos Strike for the fraction of a second between the cast going out and the client
+-- updating its own `IsSpellUsable` answer.  That is the same latency every other consumer of
+-- that API lives with.  Accepted; watched for in the re-fly.
 
 -- Self-register.  Registration is STATIC; ACTIVATION is the resolver's job —
 -- ns.ResolveActiveSpec detects the player's real spec on login / PLAYER_SPECIALIZATION_

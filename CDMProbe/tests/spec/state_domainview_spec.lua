@@ -300,6 +300,119 @@ describe("State domain view — the ROSTER ANCHOR (Phase 5)", function()
   end)
 
   ------------------------------------------------------------------------------
+  -- `usable` — THE AFFORDABILITY VERDICT (2026-08-03).  State's third per-ability read,
+  -- added after the Havoc flight, where every Fury gate compared against a fabricated zero
+  -- because `UnitPower(player, Fury)` is a SECRET VALUE and always will be (Fury is a
+  -- PRIMARY resource; primary resources are secret, per Blizzard's own blue post).
+  -- `C_Spell.IsSpellUsable` answers "can I pay for this" per spell without exposing the
+  -- resource, and this block proves the PLUMBING — that it is read at all, about the right
+  -- id, and that a refusal stays absent rather than becoming `false`.
+  --
+  -- ⚠ DELIBERATELY SPEC-AGNOSTIC, AND ON DESTRUCTION LIKE THE REST OF THIS FILE.  Fury's
+  -- secrecy is what MOTIVATED the read but nothing here is Fury-specific: the rule is "an
+  -- ability the spec declares with `spends` gets asked about its LIVE id", which Chaos Bolt
+  -- (spends = "shards") and its Ruination override state exactly.  The Fury-specific
+  -- behaviour — which gates consume the verdict — belongs to coach_havoc_apl_spec.
+  --
+  -- ⚠ IT DRIVES THE **CLIENT-LEVEL** FAKE, never a stub of `ns.SpellUsable`.  A harness that
+  -- stubs the reader cannot catch a mis-wired one: that is how Retribution's cost bug
+  -- survived 76 green cases and how the Fury bug survived 100.
+  ------------------------------------------------------------------------------
+  describe("St.Build affordability reads", function()
+    local CID_CB, RUINATION = 920, 433885
+    -- Same RESTORE discipline as the charge block below — see its banner.  A deletion that
+    -- outlives its file is exactly the leak H.installGlobals() exists to close.
+    local realIsSpellUsable
+    -- `live` optionally overrides the row's display identity (the Ruination transform).
+    local function withUsable(live)
+      realIsSpellUsable = _G.C_Spell.IsSpellUsable
+      _G.Enum.CooldownViewerCategory = { Essential = 0 }
+      _G.C_CooldownViewer = {
+        GetCooldownViewerCategorySet = function(v) return v == 0 and { CID_CB } or {} end,
+        GetCooldownViewerCooldownInfo = function()
+          return { spellID = CHAOS_BOLT, isKnown = true,
+                   overrideSpellID = live, linkedSpellIDs = {} }
+        end,
+      }
+      ns.VIEWERS = { { frame = "EssentialCooldownViewer" } }
+      ns.GetViewer     = function() return { n = 1 } end
+      ns.GetItemFrames = function() return { { cooldownID = CID_CB } } end
+      ns.OnLogin()
+    end
+
+    after_each(function()
+      _G.C_CooldownViewer = nil
+      _G.Enum.CooldownViewerCategory = nil
+      _G.C_Spell.IsSpellUsable = realIsSpellUsable
+    end)
+
+    it("puts the verdict on the ability record, asked about the ROSTER spellID", function()
+      withUsable()
+      fx.usable[CHAOS_BOLT] = { usable = false, insufficientPower = true }
+      local u = St.Build(false).abilities[CHAOS_BOLT].usable
+      assert.is_true(u.readable)
+      assert.is_false(u.usable)
+      assert.is_true(u.insufficientPower)
+      -- ⚠ ASSERT WHICH ID WAS ASKED, not just the outcome.  "One ability's fact filed under
+      -- another ability's key" is the bug class the roster anchor exists to prevent, and an
+      -- outcome-only assertion cannot see it.
+      assert.equals(CHAOS_BOLT, u.asked)
+      assert.equals(CHAOS_BOLT, H.asked.usable[1])
+    end)
+
+    -- ⚠ THE LIVE ID, NOT THE BASE.  A transformed frame casts the OVERRIDE, and it is the
+    -- override's own cost the client is checking — asking about the base answers about a
+    -- spell we are not about to press.  On Havoc this is Annihilation riding Chaos Strike;
+    -- here it is Ruination riding Chaos Bolt, which is the same shape and spec-agnostic.
+    it("asks about the LIVE id when the row is transformed", function()
+      withUsable(RUINATION)
+      fx.usable[RUINATION]  = { usable = true,  insufficientPower = false }
+      fx.usable[CHAOS_BOLT] = { usable = false, insufficientPower = true }
+      local u = St.Build(false).abilities[CHAOS_BOLT].usable
+      assert.equals(RUINATION, u.asked)
+      assert.is_false(u.insufficientPower)      -- Ruination's answer, not Chaos Bolt's
+      assert.equals(RUINATION, H.asked.usable[1])
+      assert.equals(1, #H.asked.usable)         -- and the base was never asked at all
+    end)
+
+    -- ⚠⚠ ABSENT IS NEVER `false`.  A refusal carries NO `insufficientPower` member at all, so
+    -- "we could not ask" and "you cannot afford it" stay distinguishable.  Collapsing them is
+    -- the absent-is-never-zero rule broken one level up — and it is the entire lesson of the
+    -- 2026-08-03 flight, where `value or 0` turned an unreadable rail into a confident zero.
+    it("a refused read is ABSENT, never a false verdict", function()
+      withUsable()
+      _G.C_Spell.IsSpellUsable = function() return nil end
+      local u = St.Build(false).abilities[CHAOS_BOLT].usable
+      assert.is_false(u.readable)
+      assert.is_nil(u.usable)
+      assert.is_nil(u.insufficientPower)
+    end)
+
+    -- The read is FENCED ON THE SPEC'S `spends`: this is a guarded call per ability per pulse
+    -- at 10 Hz, and the roster anchor's sizing win came precisely from not making reads for
+    -- rows nothing claims.  Conflagrate GENERATES shards, so it can never report
+    -- insufficient power and is never asked.
+    it("never asks about an ability the spec does not declare as spending", function()
+      realIsSpellUsable = _G.C_Spell.IsSpellUsable
+      _G.Enum.CooldownViewerCategory = { Essential = 0 }
+      _G.C_CooldownViewer = {
+        GetCooldownViewerCategorySet = function(v) return v == 0 and { CID_CB } or {} end,
+        GetCooldownViewerCooldownInfo = function()
+          return { spellID = CONFLAGRATE, isKnown = true, linkedSpellIDs = {} }
+        end,
+      }
+      ns.VIEWERS = { { frame = "EssentialCooldownViewer" } }
+      ns.GetViewer     = function() return { n = 1 } end
+      ns.GetItemFrames = function() return { { cooldownID = CID_CB } } end
+      ns.OnLogin()
+      fx.usable[CONFLAGRATE] = { usable = true, insufficientPower = false }
+      local u = St.Build(false).abilities[CONFLAGRATE].usable
+      assert.is_false(u.readable)
+      assert.equals(0, #H.asked.usable)
+    end)
+  end)
+
+  ------------------------------------------------------------------------------
   -- `charge.charged` — the MEASURED "does this have a charge pool", which is what the
   -- brain keys on.  It used to be gated on the CDM struct's `charges` flag, making the
   -- whole napkin depend on one flag being right, with no symptom if it was not: a

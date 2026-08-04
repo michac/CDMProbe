@@ -415,6 +415,26 @@ function H.installGlobals()
       return H.fx and H.fx.maxStacks and H.fx.maxStacks[spellID] or nil
     end)
 
+  -- THE AFFORDABILITY CHANNEL (2026-08-03) — `C_Spell.IsSpellUsable`, the replacement for
+  -- reading a SECRET primary resource.  See ns.SpellUsable's banner in Util.lua.
+  --
+  -- ⚠ IT RETURNS **TWO** BOOLEANS, and the pair is the whole point: `isUsable` alone cannot
+  -- express "affordable but on cooldown", which is the state the Retribution flight measured
+  -- and the reason the pipeline reads `insufficientPower` instead.
+  --
+  -- ⚠ DEFAULT-INERT LIKE EVERY FAKE HERE, and that is NOT the IsSpellOverlayed doctrine.
+  -- `IsSpellOverlayed` returns a real `false` for an unregistered id because "not overlayed"
+  -- is a genuine answer.  Here an unregistered id returns `nil` — "we could not ask" — so a
+  -- fixture that says nothing about affordability gets the UNREADABLE branch rather than a
+  -- silent "affordable" or "broke".  A fixture opts in with `H.fx.usable[id] = { usable =
+  -- bool, insufficientPower = bool }`, and a REGISTERED id returns the pair.
+  _G.C_Spell.IsSpellUsable = H.guard("C_Spell.IsSpellUsable", function(spellID)
+    record(H.asked.usable, spellID)
+    local u = H.fx and H.fx.usable and H.fx.usable[spellID]
+    if u == nil then return nil end
+    return u.usable, u.insufficientPower
+  end)
+
   -- The proc-glow channel — the CDM's only combat-readable proc signal (§6).  Returns a
   -- real boolean for every id, because that is what the client does: "not overlayed" is an
   -- answer, not a refusal.  A refusal is H.throws, and a secret answer is fx.glow[id] set
@@ -483,7 +503,7 @@ function H.fresh()
   H.secretTable, H.throws = {}, {}
   -- Per-case record of which ids each client fake was asked about.  See H.asked's header.
   H.asked = { cooldown = {}, charges = {}, glow = {}, auraByID = {}, known = {},
-              info = {}, categorySet = {}, castCount = {}, maxStacks = {} }
+              info = {}, categorySet = {}, castCount = {}, maxStacks = {}, usable = {} }
   H.specIndex = 1               -- default to Demonology so the resolver activates 266
   H.bar, H.bindings, H.macros = {}, {}, {}   -- the action-bar client fake (default: empty)
   -- ⚠ RE-INSTALL, do not assume.  A previous test may have deleted or replaced a `_G`
@@ -581,8 +601,13 @@ function H.fresh()
     --   powerCost[id] = { { type = <PowerType>, cost = n, name = "…" }, … }
     --   castCount[id] = n          -- C_Spell.GetSpellCastCount (the DERIVED channel)
     --   maxStacks[id] = n          -- C_Spell.GetSpellMaxCumulativeAuraApplications
+    --   usable[id]    = { usable = bool, insufficientPower = bool }
+    --                                -- C_Spell.IsSpellUsable (the AFFORDABILITY channel).
+    --                   ⚠ ABSENT is the UNREADABLE branch, not "affordable" — the fake
+    --                     returns nil for an unregistered id.  A spec asserting that a
+    --                     spender is BLOCKED must register `insufficientPower = true`.
     cd = {}, charges = {}, auras = {}, auraByID = {}, auraThrows = {}, glow = {},
-    power = {}, powerCost = {}, castCount = {}, maxStacks = {},
+    power = {}, powerCost = {}, castCount = {}, maxStacks = {}, usable = {},
   }
   H.fx = fx
 

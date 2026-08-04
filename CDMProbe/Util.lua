@@ -224,6 +224,67 @@ function ns.ReadCharges(spellID)
 end
 
 --------------------------------------------------------------------------------
+-- ns.SpellUsable — THE AFFORDABILITY CHANNEL (2026-08-03).  "Can I pay for this?",
+-- asked of the client, because the RESOURCE ITSELF IS UNREADABLE.
+--------------------------------------------------------------------------------
+-- WHY THIS EXISTS, and it is a game fact rather than a Havoc fact.  `UnitPower(unit,
+-- powerType)` returns a SECRET VALUE for every PRIMARY resource.  Blizzard's own words
+-- [T1 blue post, *Midnight Public Alpha Addon API Changes*, 2025-11-24]:
+--
+--     "We have relaxed restrictions around UnitPower so the player's SECONDARY resources
+--      are no longer secret (PRIMARY resources remain secret).  Affected resources: Combo
+--      Points, Runes, Soul Shards, Holy Power, Chi, Arcane Charges, Essence."
+--
+-- Fury, Rage, Energy, Focus, Mana, Insanity, Maelstrom, Runic Power and Pain are all
+-- primary and all secret.  ⚠ THE FIRST FOUR SPECS THIS ADDON SHIPPED WERE LUCKY — Soul
+-- Shards x2 and Holy Power x1 are on that never-secret list, which is why nothing here
+-- ever needed this reader and why the Havoc flight was the first to fail on it.
+--
+-- ⚠ AND THERE IS NO OUT-OF-COMBAT WINDOW.  Measured in game: Fury's
+-- `C_Secrets.GetPowerTypeSecrecy(17)` is 2 (`ContextuallySecret`) and
+-- `C_Secrets.ShouldUnitPowerBeSecret("player", 17)` is TRUE IDENTICALLY in a city and
+-- mid-pull.  The "context" is the UNIT, not combat — the predicate
+-- `SecretWhenUnitPowerRestricted` reads "…unless the subject unit does not have a power
+-- of this type", and you always have Fury.  Control: Holy Power (9) reads 0, NeverSecret.
+--
+-- THE REPLACEMENT IS BLIZZARD'S OWN: READ THE VERDICT, NOT THE RESOURCE.
+-- `C_Spell.IsSpellUsable(spellID) -> isUsable, insufficientPower` carries
+-- `SecretArguments = "AllowedWhenTainted"` and — decisively — NO `SecretReturns` and no
+-- `SecretWhen*` predicate at all [T1 src: SpellDocumentation.lua:873-888 @ 12.0.7.68887],
+-- so both returns are plain booleans from a tainted caller.  Same shape as
+-- `GetSpellCooldownDuration` -> `LuaDurationObject` for cooldowns: the client answers the
+-- question and we never see the input.
+--
+-- ⚠⚠ USE `insufficientPower`, NOT `isUsable`.  The Retribution flight measured `isUsable`
+-- returning TRUE while a spell was visibly ON COOLDOWN — it answers "can I afford it",
+-- not "can I cast it".  Readiness still comes from the CDM edges / the napkin / the charge
+-- count, and a caller that gates a press on `isUsable` has quietly replaced a channel that
+-- works with one that does not.
+--
+-- ⚠ NO `InCombatLockdown()` GATE, AND THAT IS THE WHOLE POINT — do not copy the fence down
+-- from `ns.ReadCharges` above.  That fence is a RECORD OF A MEASUREMENT (GetSpellCharges
+-- reads secret in restricted combat), not a house style.  `IsSpellUsable` was MEASURED
+-- READABLE IN COMBAT, and gating it would make every in-combat affordability answer nil —
+-- i.e. exactly the state that produced the failed flight, chosen by us this time.
+--
+-- Returns (usable, insufficientPower), both booleans, or NIL, NIL when we could not ask.
+-- ⚠ A REFUSAL MUST RETURN `nil, nil`, NEVER `false, false`.  "Cannot read" and "cannot
+-- afford" have to stay distinguishable — collapsing them is the absent-is-never-zero rule
+-- broken one level up, and it is the entire lesson of the 2026-08-03 flight.
+function ns.SpellUsable(spellID)
+  if type(spellID) ~= "number" or ns.IsSecret(spellID) then return nil, nil end
+  if not (C_Spell and C_Spell.IsSpellUsable) then return nil, nil end
+  local ok, usable, insufficient = pcall(C_Spell.IsSpellUsable, spellID)
+  if not ok then return nil, nil end
+  -- Guarded per return, like every other ladder here: the docs carry no secrecy predicate,
+  -- but a reader that TRUSTS a doc instead of asking is how this project keeps finding
+  -- bugs.  A secret or non-boolean member degrades the pair to "we could not ask".
+  if ns.IsSecret(usable) or ns.IsSecret(insufficient) then return nil, nil end
+  if type(usable) ~= "boolean" or type(insufficient) ~= "boolean" then return nil, nil end
+  return usable, insufficient
+end
+
+--------------------------------------------------------------------------------
 -- THE CLASS-RESOURCE CHANNEL (2026-08-02) — two guarded readers for the resources
 -- `Enum.PowerType` does not have.
 --------------------------------------------------------------------------------

@@ -12,22 +12,36 @@
 -- what arbitrates the document, and it is a hard deliverable (observability-map.md ->
 -- THE FLIGHT'S JOB).
 --
+-- ⚠⚠ THE FURY GATES ARE GONE, AND THAT IS THE 2026-08-03 REMEDIATION.  This suite was 100
+-- cases green over a HUD that could not cast its own rotation: `UnitPower("player", Fury)`
+-- returns a SECRET VALUE (Fury is the DH's PRIMARY resource, and primary resources are secret
+-- forever), so every `projected >= cost` gate compared against a fabricated zero.  The flight
+-- read `PW:0/+0` on all 2380 lines, with Chaos Strike / Eye Beam / Blade Dance /
+-- Metamorphosis winning ZERO and Throw Glaive 770.  ⚠ THE SUITE PASSED BECAUSE THE FIXTURE
+-- SUPPLIED THE NUMBER THE CLIENT REFUSES — it could not express the only state the game ever
+-- produces.  Affordability is now the client's own per-spell `insufficientPower` verdict, and
+-- the pulse's Fury rail is RESTRICTED by default.  See `build`'s affordability banner.
+--
 -- The list under test (specs/havoc/rotation.md; first usable line = the press):
 --   L1   Reaver's Glaive     whenever the Throw Glaive frame shows it
---   L2   Metamorphosis       Inner Demon down, Blade Dance not available
+--   L2   Metamorphosis       Inner Demon down
 --   L3   The Hunt            outside an Essence Break window, no glaive armed
 --   L4   Immolation Aura     [AoE]
 --   L5   Vengeful Retreat    Eye Beam up-or-nearly, Initiative down
---   L6   Essence Break       [META] fury >= 35
---   L7   Blade Dance         [META] -> Death Sweep
---   L8   the spender         inside an Essence Break window
---   L9   Eye Beam            -> Abyssal Gaze
---   L10  Blade Dance         [NO META]
---   L11  Felblade            fury deficit >= 40
---   L12  Immolation Aura     fury deficit >= 20
---   L13  the spender         the main dump (-> Annihilation in meta)
+--   L6   Essence Break       [META]
+--   L7   Blade Dance         [META] -> Death Sweep, affordable
+--   L8   the spender         inside an Essence Break window, affordable
+--   L9   Eye Beam            -> Abyssal Gaze, affordable
+--   L10  Blade Dance         [NO META], affordable
+--   L11  Felblade            whenever usable
+--   L13  the spender         the main dump (-> Annihilation in meta), affordable
+--   L12  Immolation Aura     whenever usable
 --   L14  Fel Rush            [AoE]
---   L15  Throw Glaive        the floor
+--   L15  Throw Glaive        affordable — the floor
+--
+-- ⚠ L13 IS EVALUATED BETWEEN L11 AND L12 and the labels stay put — Blizzard's own
+-- generator/spender/generator shape, adopted because the two generator lines lost their
+-- Fury-deficit gates and would otherwise starve the spender.  rotation.md says why.
 --
 -- ⚠ THE META FORK IS NOT A SECOND CASCADE.  Demon form is a DISPLAY OVERRIDE on frames the
 -- list already presses (Chaos Strike -> Annihilation, Blade Dance -> Death Sweep), so the
@@ -43,11 +57,12 @@ local H = dofile(dir .. "../mock_ns.lua")
 --------------------------------------------------------------------------------
 local NOW = 1000
 
--- `Enum.PowerType.Fury`, per the harness and the client (LuaEnum.lua:5681).  A cost fixture
--- is denominated in a RESOURCE; SOUL_SHARDS is here to prove the type filter REJECTS a cost
--- that is not this spec's — the exact shape that shipped a Retribution defect.
+-- `Enum.PowerType.Fury`, per the harness and the client (LuaEnum.lua:5681).  Still needed for
+-- `CostPowerType` and for the refused-rail block, even though NO gate compares a Fury number
+-- any more.  ⚠ The `SOUL_SHARDS` companion went with the cost cases: `ns.PowerCost`'s type
+-- filter is still shipped and still pinned, by the three oracles whose specs actually consume
+-- a cost — Havoc no longer does.
 local FURY = 17
-local SOUL_SHARDS = 7
 
 -- Base spellIDs (SpecHavoc.SpecIDs).  The Coach consumes the DOMAIN VIEW keyed by base
 -- spellID, so these ARE the cue keys.
@@ -93,10 +108,11 @@ local function ability(base, cid, cd, extra)
 end
 
 -- Build a pulse from high-level facts.  Cooldown-bearing abilities default to cdFar (not
--- usable — the safe reading); the spender is always present with an `unknown` cd, since its
--- gate is Fury and nothing else.
---   fury / furyMax    the live rail (0-120, modifier 1 — no unit games)
---   exactRefused      drop the exact read, exercising the value x modifier fallback
+-- usable — the safe reading); the spender is always present with an `unknown` cd, since it
+-- has no cooldown at all and its only gate is affordability.
+--   broke / afford / affordUnreadable   the AFFORDABILITY fixture — see its banner below
+--   furyMax           the readable half of the rail (UnitPowerMax is not secret)
+--   furyReadable      a hypothetical readable VALUE.  ⚠ No in-game pulse can produce one
 --   mode "st"|"aoe"   the manual target-mode toggle (`active_enemies` has no channel)
 --   meta/hunt/eyeBeam/essenceBreak/bladeDance/immo/felblade/vr/felRush/throwGlaive/rfa
 --                     a cd sub-table per button
@@ -107,8 +123,6 @@ end
 --   metaBuff          the Metamorphosis TrackedBuff row (191427) reporting IsActive()
 --   innerDemon / initiative / aotg   buff presence
 --   ebCast            put an Essence Break cast in history (`ebCastAge` seconds ago)
---   inflightSpender   put the spender in flight, so `projected = fury - cost`
---   spenderCost / danceCost / eyeBeamCost / glaiveCost   the LIVE costs the client reports
 --   noSpender         omit Chaos Strike entirely (the untracked degradation)
 --   noImmo            omit Immolation Aura entirely
 --   utility           a cd sub-table on a CDM-Utility, cadence-utility row
@@ -183,52 +197,71 @@ local function build(f)
   if f.initiative then buffs[ID.INITIATIVE] = true end
   if f.aotg       then buffs[ID.AOTG] = true end
 
-  -- The live costs, driven at CLIENT level (`fx.powerCost` fakes C_Spell.GetSpellPowerCost),
-  -- so the shipping `ns.PowerCost` ladder runs for real — the type filter, the secret guards
-  -- and the three-valued return.
-  -- ⚠ ASSIGNED UNCONDITIONALLY, INCLUDING nil.  `H.fx` is minted once per test, not once per
-  -- build, so a cost set by an earlier build() in the SAME test would leak into the next one,
-  -- invisibly (a stale cost still produces a plausible press).
-  -- ⚠ AND BOTH IDS OF EACH PAIR, because `costOf` asks about the LIVE spell: in demon form
-  -- the spender's cost comes from Annihilation's own id, not Chaos Strike's.
-  local function setCost(id, cost)
-    H.fx.powerCost[id] = cost ~= nil
-      and { { type = FURY, cost = cost, name = "FURY" } } or nil
+  -- ── AFFORDABILITY, the channel that replaced every Fury comparison ──────────
+  -- ⚠⚠ THE WHOLE FIXTURE CHANGED SHAPE ON 2026-08-03, AND IT IS NOT A REFACTOR.  This used
+  -- to drive a Fury NUMBER (`f.fury`) and four live COSTS through `fx.powerCost`, because
+  -- the brain compared `projected >= cost`.  `UnitPower("player", Fury)` returns a SECRET
+  -- VALUE — Fury is the DH's PRIMARY resource and primary resources are secret forever — so
+  -- that number never existed in game, `ctx.fury or 0` fabricated a zero, and the flight cued
+  -- Throw Glaive 770 times and Chaos Strike never.  100 green cases over a HUD that could
+  -- not cast its own rotation.  ⚠ THE OLD FIXTURE IS WHY: it SUPPLIED the number the client
+  -- refuses, so the suite could not express the only state the game ever produces.
+  --
+  -- The pulse now carries what State actually attaches: `abilities[base].usable`, the
+  -- client's per-spell `C_Spell.IsSpellUsable` verdict.  Three shapes, and the difference
+  -- between the second and third is the entire lesson:
+  --   { readable = true,  insufficientPower = false }  affordable — the client said so
+  --   { readable = true,  insufficientPower = true  }  BROKE — the client said so
+  --   { readable = false }                             COULD NOT ASK — must NOT block
+  --
+  --   broke              every Fury-costing button reports insufficientPower (the old
+  --                      `broke = true`), i.e. the state that used to be unrepresentable
+  --   afford = {[ID]=b}  per-ability override, so one spell can be broke while another in
+  --                      the SAME pulse is fine (the per-spell discrimination the in-game
+  --                      macro proved: Throw Glaive read FREE while three others read broke)
+  --   affordUnreadable   the client refuses for every id -> the fall-through-to-allowed rule
+  --
+  -- ⚠ ONLY THE FOUR ABILITIES THE LIST GATES ON RESOURCE GET A VERDICT.  Felblade,
+  -- Immolation Aura, Fel Rush, Vengeful Retreat, The Hunt and Metamorphosis are generators or
+  -- free presses, and Essence Break has NO Fury cost at all — State fences the read on the
+  -- spec's `spends`, so a fixture that handed them verdicts would be testing a read the
+  -- pipeline never makes.
+  local COSTED = { ID.CS, ID.BD, ID.EB, ID.TG }
+  for _, id in ipairs(COSTED) do
+    local row = abilities[id]
+    if row then
+      local ok = true
+      if f.broke then ok = false end
+      if f.afford ~= nil and f.afford[id] ~= nil then ok = f.afford[id] end
+      if f.affordUnreadable then
+        row.usable = { readable = false }
+      else
+        row.usable = { readable = true, usable = ok, insufficientPower = not ok }
+      end
+    end
   end
-  setCost(ID.CS, f.spenderCost);  setCost(ID.ANNI, f.spenderCost)
-  setCost(ID.BD, f.danceCost);    setCost(ID.DSWEEP, f.danceCost)
-  setCost(ID.EB, f.eyeBeamCost);  setCost(ID.AGAZE, f.eyeBeamCost)
-  setCost(ID.TG, f.glaiveCost);   setCost(ID.RG, f.glaiveCost)
 
-  -- History drives TWO independent channels, and neither is an aura read:
-  --   * the ESSENCE BREAK WINDOW (ns.Coach.CommittedWithin against 258860) — the debuff
-  --     320338 has no CDM row, so the window is derived from the CAST.
-  --   * the IN-FLIGHT PROJECTION (ns.Coach.InflightPower x ns.SpecPowerDelta).
+  -- The ESSENCE BREAK WINDOW (ns.Coach.CommittedWithin against 258860) — the debuff 320338
+  -- has no CDM row, so the window is derived from the CAST.
+  -- ⚠ THE IN-FLIGHT PROJECTION IS GONE from this fixture: `spec.SpecPowerDelta` is deleted
+  -- (there is no rail to project onto), so history now drives exactly one channel.
   local history = {}
   if f.ebCast then
     history[#history + 1] = { phase = "succeeded", spellID = ID.ESSB, base = ID.ESSB,
                               at = NOW - (f.ebCastAge or 2) }
   end
-  if f.inflightSpender then
-    -- ⚠ A COST IS REQUIRED FOR A PROJECTION TO EXIST.  SpecPowerDelta reads the cost and
-    -- declines (delta 0) when the client has no answer — the documented safe direction, since
-    -- it never pre-deducts Fury we are not sure will be spent.  A fixture that forgot this
-    -- would be asserting the refusal path while believing it asserted the projection.
-    setCost(ID.CS, f.spenderCost or 40)
-    -- Placed outside CAST_FRESH (1.0) but inside the flight window (3.0), so it is in flight
-    -- without also raising the cast_started EDGE (a different question, tested elsewhere).
-    history[#history + 1] = { phase = "start", spellID = ID.CS, base = ID.CS, at = NOW - 2 }
-  end
 
-  -- ⚠ FURY'S MODIFIER IS 1, so the exact rail and the display rail are the SAME integer.
-  -- This is the fixture's cheapest statement that none of Destruction's fragment arithmetic
-  -- applies: `unmodified` == `value`, `unmodifiedMax` == `max`.  `f.exactRefused` drops the
-  -- exact read, exercising the value x modifier fallback (which, at modifier 1, must produce
-  -- the identical number).
-  local fury, furyMax = f.fury or 0, f.furyMax or 120
-  local bar = { value = fury, max = furyMax, readable = true }
-  if not f.exactRefused then
-    bar.unmodified, bar.unmodifiedMax, bar.modifier = fury, furyMax, 1
+  -- ⚠ THE FURY RAIL IS **RESTRICTED BY DEFAULT**, because that is what the game does.  State
+  -- omits `value` on a refusal and marks `restricted` off
+  -- `C_Secrets.ShouldUnitPowerBeSecret`, which for Fury answers true in a city AND mid-pull.
+  -- `max` survives — `UnitPowerMax` is a DIFFERENT secrecy predicate and is readable (170,
+  -- measured).  `f.furyReadable` exists ONLY to prove the pipeline would carry a value if
+  -- one ever arrived; no in-game pulse can produce it.
+  local bar = { max = f.furyMax or 170, type = FURY, readable = false, restricted = true }
+  if f.furyReadable then
+    bar.readable, bar.restricted = true, nil
+    bar.value, bar.unmodified = f.furyReadable, f.furyReadable
+    bar.unmodifiedMax, bar.modifier = bar.max, 1
   end
 
   return {
@@ -317,46 +350,81 @@ describe("Havoc rotation list (from specs/havoc/rotation.md)", function()
   ----------------------------------------------------------------------------
   -- The resource rail: TRACKED, and deliberately NOT DRAWN.
   ----------------------------------------------------------------------------
-  describe("Fury rides the whole rail with display = \"none\"", function()
+  describe("Fury rides the whole rail with display = \"none\" — and it is RESTRICTED", function()
     it("emits exactly one resourceBar, marked `none`", function()
-      local bars = guidance({ fury = 40 }).resourceBars
+      local bars = guidance({}).resourceBars
       assert.equals(1, #bars)
       assert.equals("none", bars[1].display)
       assert.equals("FURY", bars[1].powerType)
     end)
 
-    it("carries real numbers, not a placeholder", function()
-      local bar = guidance({ fury = 40 }).resourceBars[1]
-      assert.equals(40, bar.value)
-      assert.equals(120, bar.max)
-      assert.equals(40, bar.valueExact)
-      assert.equals(1, bar.modifier)
+    -- ⚠⚠ THE CASE THAT WOULD HAVE CAUGHT THE FLIGHT.  `Coach:ResourceBars` read
+    -- `value = p.value or 0` until 2026-08-03, so an UNREADABLE rail reached every consumer
+    -- as a confident ZERO — the project's own absent-is-never-zero rule broken in the one
+    -- place nothing tested.  `nil` and `0` are different findings and only one of them is
+    -- true.  ⚠ `assert.is_nil` here, never `assert.equals(0, …)`.
+    it("carries NO value on a restricted rail — nil, not 0", function()
+      local bar = guidance({}).resourceBars[1]
+      assert.is_nil(bar.value)
+      assert.is_nil(bar.valueExact)
+      -- ⚠ `incoming` IS a real 0 and must not be confused with the above: `spec.powers`
+      -- declares `incoming = false`, so "nothing is in flight" is a FACT about this bar
+      -- rather than a measurement we failed to take.  Absent-is-never-zero cuts both ways.
+      assert.equals(0, bar.incoming)
+      assert.is_true(bar.restricted)
+      -- The MAX survives: `UnitPowerMax` is a different secrecy predicate and IS readable.
+      assert.equals(170, bar.max)
     end)
 
-    -- Fury's modifier is 1, so the fallback path (display x modifier) must produce the SAME
-    -- number the exact read would have.  This is the case that would catch a stray
-    -- Destruction-style x10 conversion copied into this spec.
-    it("reads the same value when the exact rail refuses (modifier 1)", function()
-      assert.equals(ID.CS, winner({ fury = 40, exactRefused = true }).cid)
-      assert.is_nil(winner({ fury = 39, exactRefused = true }))
+    -- The brain must not fabricate one either — `ctx.fury` was `furyRail.value or 0`.
+    it("leaves ctx.fury nil and says WHY, rather than reading zero", function()
+      local ctx = ctxOf({})
+      assert.is_nil(ctx.fury)
+      assert.is_false(ctx.powerReadable)
+      assert.is_true(ctx.furyRestricted)
+    end)
+
+    -- ⚠ THE POINT OF THE WHOLE PHASE: a restricted rail must still produce a CORRECT cascade.
+    -- The failed flight's rail was restricted too — what broke was that the gates read it.
+    it("still ranks the full list with the rail unreadable", function()
+      assert.equals(ID.META, winner({ meta = cdReady(), hunt = cdReady() }).cid)
+      assert.equals(ID.EB, winner({ eyeBeam = cdReady() }).cid)
+      assert.equals(ID.CS, winner({}).cid)
     end)
 
     -- ⚠ THE END OF THE CHAIN, and the whole argument for `none` over an empty `spec.powers`.
     -- An empty powers array emits no bar at all and DecisionLog's `PW:` renders `?/?` for the
     -- entire spec — losing the one instrument that can explain a decision nobody watched.
     -- Asserting the bar is not enough; this asserts the COLUMN.
-    it("reaches the decision log's PW column as real numbers, not `?/?`", function()
+    --
+    -- ⚠ AND IT MUST READ `restricted`, NEVER `0`.  The flight rendered `PW:0/+0` on all 2380
+    -- lines while Fury was in fact unreadable, so the one instrument that could have named
+    -- the problem instead corroborated the wrong answer.  A reader seeing `PW:0` has to be
+    -- able to trust it means zero.
+    it("reaches the decision log's PW column as `restricted`, never a number", function()
       H.load("DecisionLog.lua")
-      local pulse = build({ fury = 40 })
+      local pulse = build({})
       local line = ns.DecisionLog.Render(pulse, Coach:Compute(pulse), { cues = {} })
-      assert.is_truthy(line:match("PW:40/%+0"), "PW column read: " .. tostring(line:match("PW:%S+")))
+      assert.is_truthy(line:match("PW:restricted"), "PW column read: " .. tostring(line:match("PW:%S+")))
+      assert.is_nil(line:match("PW:0"))
+    end)
+
+    -- The rail is not BROKEN, only secret: if a value ever did arrive it must travel intact.
+    -- ⚠ This is the ONLY case in the file that supplies a Fury value, and no in-game pulse can
+    -- produce one — do not reach for it to set up a rotation case.
+    it("would carry a value intact if one ever arrived (modifier 1, no unit games)", function()
+      local bar = guidance({ furyReadable = 40 }).resourceBars[1]
+      assert.equals(40, bar.value)
+      assert.equals(40, bar.valueExact)
+      assert.equals(1, bar.modifier)
+      assert.is_falsy(bar.restricted)
     end)
 
     -- The decision log must be able to say WHICH source forked the list — a fork nobody can
     -- explain is exactly the hole the Destruction field capture fell into.
     it("names Metamorphosis in the PR column when the buff row is up", function()
       H.load("DecisionLog.lua")
-      local pulse = build({ fury = 40, metaBuff = true })
+      local pulse = build({ metaBuff = true })
       local line = ns.DecisionLog.Render(pulse, Coach:Compute(pulse), { cues = {} })
       assert.is_truthy(line:match("PR:[^|]*Meta"), "PR column read: " .. tostring(line:match("PR:%S+")))
     end)
@@ -420,7 +488,7 @@ describe("Havoc rotation list (from specs/havoc/rotation.md)", function()
     -- Ruination precedent exactly: a granted free press that REPLACES the button on its own
     -- frame, so sitting on it blocks nothing and gains nothing.
     it("wins off the Throw Glaive transform, above every cooldown", function()
-      local w = winner({ rgXform = true, throwGlaive = cdFar(), fury = 0,
+      local w = winner({ rgXform = true, throwGlaive = cdFar(), broke = true,
                          meta = cdReady(), hunt = cdReady() })
       assert.equals(ID.TG, w.cid)        -- keyed by the BASE frame it rides
       assert.equals("Reaver's Glaive", w.cue.note)
@@ -465,17 +533,25 @@ describe("Havoc rotation list (from specs/havoc/rotation.md)", function()
       assert.equals(ID.META, winner({ meta = cdReady(), hunt = cdReady() }).cid)
     end)
 
-    -- simc:103 is the longest single line in the APL and only THREE of its terms survive.
+    -- simc:103 is the longest single line in the APL and only ONE of its terms survives.
     it("is vetoed by Inner Demon", function()
       local w = winner({ meta = cdReady(), hunt = cdReady(), innerDemon = true })
       assert.equals(ID.HUNT, w.cid)
     end)
 
-    -- `cooldown.blade_dance.remains` means "Blade Dance is ON cooldown" — one of the few
-    -- cooldown-remains terms in this APL that survives as a BOOLEAN rather than a duration.
-    it("is vetoed by an AVAILABLE Blade Dance", function()
-      local w = winner({ meta = cdReady(), bladeDance = cdReady(), fury = 40 })
-      assert.equals(ID.BD, w.cid)        -- L10 takes it instead
+    -- ⚠⚠ THE INVERTED CASE.  This asserted the OPPOSITE until 2026-08-03 ("is vetoed by an
+    -- AVAILABLE Blade Dance"), transcribing `cooldown.blade_dance.remains` as a boolean.  It
+    -- was a MISREADING OF THE CLAUSE, not of the fragment: in full the term is
+    --   ( bd.remains & (bd.remains > gcd.max*3 | prev_gcd.{1,2,3}.death_sweep) )
+    --   | !talent.chaotic_transformation
+    -- and with simc's precedence (`&` over `|`) the whole thing is TRUE for anyone without
+    -- Chaotic Transformation — a talent we cannot read, so the escape hatch was invisible.
+    -- MEASURED: the veto suppressed Metamorphosis on all 2374 in-combat lines of the flight.
+    -- Dropped on the same rule as the Eye Beam alignment block: a 2-minute cooldown is not
+    -- held on a gate we cannot evaluate.  rotation.md Deviation 12.
+    it("is NOT vetoed by an available Blade Dance (Dev. 12 — the term was a misreading)", function()
+      local w = winner({ meta = cdReady(), bladeDance = cdReady() })
+      assert.equals(ID.META, w.cid)      -- L2 keeps it; Blade Dance is only the runner-up
     end)
 
     -- The napkin's "probably up" is ROTATION-eligible, not "never" — the shell's contract.
@@ -493,7 +569,8 @@ describe("Havoc rotation list (from specs/havoc/rotation.md)", function()
 
     -- `debuff.essence_break.down`, readable through CAST HISTORY rather than an aura.
     it("is vetoed inside an Essence Break window", function()
-      assert.is_nil(winner({ hunt = cdReady(), ebCast = true }))
+      -- `broke` clears the spender out of L8/L13 so the assertion is about L3's veto alone.
+      assert.is_nil(winner({ hunt = cdReady(), ebCast = true, broke = true }))
     end)
 
     it("fires again once the window has elapsed", function()
@@ -507,27 +584,30 @@ describe("Havoc rotation list (from specs/havoc/rotation.md)", function()
   ----------------------------------------------------------------------------
   describe("the AoE-gated lines", function()
     it("L4 — Immolation Aura fires in AoE mode, above everything below it", function()
-      local w = winner({ mode = "aoe", immo = cdReady(), eyeBeam = cdReady(), fury = 40 })
+      local w = winner({ mode = "aoe", immo = cdReady(), eyeBeam = cdReady() })
       assert.equals(ID.IA, w.cid)
       assert.equals("AoE", w.cue.note)
     end)
 
-    it("...and not in single-target, where L12's deficit gate governs instead", function()
-      -- fury 110 => deficit 10, below IMMO_DEFICIT (20): no Immolation Aura at all.
-      local w = winner({ mode = "st", immo = cdReady(), fury = 110 })
-      assert.equals(ID.CS, w.cid)        -- straight to L13
+    -- ⚠ In single-target L4 is shut, and L12 now sits BELOW the spender — so a ready
+    -- Immolation Aura loses the press to L13 rather than to a deficit threshold.  That
+    -- ordering is what stops an ungated 30 s charge category taking the press on every
+    -- recharge, and it is the thing to check first if the HUD starts under-spending.
+    it("...and not in single-target, where the spender (L13) outranks L12", function()
+      local w = winner({ mode = "st", immo = cdReady() })
+      assert.equals(ID.CS, w.cid)        -- L13, evaluated above L12
     end)
 
     it("L14 — Fel Rush fires in AoE mode, below the spender", function()
-      -- fury 0 keeps L13 shut, so the AoE filler is reachable.
-      local w = winner({ mode = "aoe", felRush = cdReady(),
+      -- `broke` keeps L13 shut, so the AoE filler is reachable.
+      local w = winner({ mode = "aoe", broke = true, felRush = cdReady(),
                          frCharge = { charged = true, cur = 1, max = 1 } })
       assert.equals(ID.FR, w.cid)
       assert.equals("AoE", w.cue.note)
     end)
 
     it("...and never in single-target", function()
-      assert.is_nil(winner({ mode = "st", felRush = cdReady(),
+      assert.is_nil(winner({ mode = "st", broke = true, felRush = cdReady(),
                              frCharge = { charged = true, cur = 1, max = 1 } }))
     end)
   end)
@@ -543,7 +623,7 @@ describe("Havoc rotation list (from specs/havoc/rotation.md)", function()
   -- moments, this line is the first suspect.
   describe("L5 — Vengeful Retreat before Eye Beam", function()
     it("fires with Eye Beam already up", function()
-      local w = winner({ vr = cdReady(), eyeBeam = cdReady(), fury = 40 })
+      local w = winner({ vr = cdReady(), eyeBeam = cdReady() })
       assert.equals(ID.VR, w.cid)
       assert.equals("before Eye Beam", w.cue.note)
     end)
@@ -555,14 +635,14 @@ describe("Havoc rotation list (from specs/havoc/rotation.md)", function()
     end)
 
     it("does NOT fire when Eye Beam is still outside the lead", function()
-      assert.is_nil(winner({ vr = cdReady(), eyeBeam = cdSoon(2.5) }))
+      assert.is_nil(winner({ vr = cdReady(), eyeBeam = cdSoon(2.5), broke = true }))
       assert.is_false(ctxOf({ eyeBeam = cdSoon(2.5) }).eyeBeamSoon)
     end)
 
     -- Vengeful Retreat exists to PROC Initiative, so pressing it while the buff is already
     -- up wastes the retreat (simc's `!buff.initiative.up`).
     it("is vetoed while Initiative is up", function()
-      local w = winner({ vr = cdReady(), eyeBeam = cdReady(), fury = 40, initiative = true })
+      local w = winner({ vr = cdReady(), eyeBeam = cdReady(), initiative = true })
       assert.equals(ID.EB, w.cid)        -- L9 takes it instead
     end)
   end)
@@ -575,26 +655,32 @@ describe("Havoc rotation list (from specs/havoc/rotation.md)", function()
     -- simc:87 sits inside a `#` comment, so `actions.meta`:121 is its only surviving home.
     -- Possibly an authoring accident; taking the file literally is the Tier-1-faithful call
     -- and it fails safe (a missed press, never a wrong one).
-    it("fires in demon form at 35 Fury", function()
-      local w = winner({ metaBuff = true, essenceBreak = cdReady(), fury = 35 })
+    it("fires in demon form", function()
+      local w = winner({ metaBuff = true, essenceBreak = cdReady() })
       assert.equals(ID.ESSB, w.cid)
     end)
 
     it("does NOT fire outside demon form, however ready it is", function()
-      local w = winner({ essenceBreak = cdReady(), fury = 40 })
+      local w = winner({ essenceBreak = cdReady() })
       assert.equals(ID.CS, w.cid)        -- falls through to L13
     end)
 
-    -- `fury >= 35` is simc's own number, and it reads the LIVE rail (a press gate, not a
-    -- pooling rule).
-    it("holds below 35 Fury", function()
-      local w = winner({ metaBuff = true, essenceBreak = cdReady(), fury = 34 })
-      assert.is_nil(w)
+    -- ⚠⚠ THE INVERTED CASE, and it is the ONE GENUINE ROTATIONAL REGRESSION of the secrecy
+    -- finding.  This asserted `is_nil` below 35 Fury until 2026-08-03.  simc's `fury>=35` is
+    -- a POOLING rule — the 4 s window wants Fury behind it to flood — and NOT a press cost:
+    -- Essence Break 258860 has no PowerType-17 row in DB2 `SpellPower`, so it is free and
+    -- `IsSpellUsable` has nothing to report.  With Fury secret there is no replacement gate,
+    -- so the window can now open on an empty bar.  Every other dropped gate loses a nuance on
+    -- a press that stays correct; this one can waste a 40 s cooldown.  rotation.md Dev. 13 —
+    -- and it is the strongest single argument for Phase 2.
+    it("fires even with every spender unaffordable (Dev. 13 — the pooling rule is gone)", function()
+      local w = winner({ metaBuff = true, essenceBreak = cdReady(), broke = true })
+      assert.equals(ID.ESSB, w.cid)
     end)
 
     -- It forks on the TRANSFORM source just as well as on the buff row.
     it("fires off the transform source alone", function()
-      local w = winner({ metaXform = "cs", essenceBreak = cdReady(), fury = 35 })
+      local w = winner({ metaXform = "cs", essenceBreak = cdReady() })
       assert.equals(ID.ESSB, w.cid)
     end)
   end)
@@ -604,7 +690,7 @@ describe("Havoc rotation list (from specs/havoc/rotation.md)", function()
     -- above eye_beam at :129); out of it Eye Beam comes first (:86 above :88).
     it("in meta, Blade Dance OUTRANKS Eye Beam", function()
       local g = guidance({ metaBuff = true, bladeDance = cdReady(), eyeBeam = cdReady(),
-                           fury = 40 })
+                            })
       local w = pressOf(g)
       assert.equals(ID.BD, w.cid)
       assert.equals("Death Sweep", w.cue.note)
@@ -612,7 +698,7 @@ describe("Havoc rotation list (from specs/havoc/rotation.md)", function()
     end)
 
     it("outside meta, Eye Beam OUTRANKS Blade Dance", function()
-      local g = guidance({ bladeDance = cdReady(), eyeBeam = cdReady(), fury = 40 })
+      local g = guidance({ bladeDance = cdReady(), eyeBeam = cdReady() })
       assert.equals(ID.EB, pressOf(g).cid)
       assert.is_nil(pressOf(g).cue.note)
       assert.equals(ID.BD, fallbackOf(g).cid)
@@ -621,9 +707,9 @@ describe("Havoc rotation list (from specs/havoc/rotation.md)", function()
     it("L10 is silent in meta and L7 is silent outside it", function()
       -- Eye Beam absent from the board on both sides, so only the Blade Dance line can fire
       -- and the NOTE says which one did.
-      local inMeta = winner({ metaBuff = true, bladeDance = cdReady(), fury = 40 })
+      local inMeta = winner({ metaBuff = true, bladeDance = cdReady() })
       assert.equals("Death Sweep", inMeta.cue.note)
-      local outside = winner({ bladeDance = cdReady(), fury = 40 })
+      local outside = winner({ bladeDance = cdReady() })
       assert.is_nil(outside.cue.note)
     end)
 
@@ -632,11 +718,11 @@ describe("Havoc rotation list (from specs/havoc/rotation.md)", function()
     -- standard single-target pick) makes Blade Dance a full ST spender; gating on `mode ==
     -- "aoe"` would make it invisible for the whole single-target rotation of that build.
     it("offers Blade Dance in SINGLE-TARGET, not only in AoE", function()
-      assert.equals(ID.BD, winner({ mode = "st", bladeDance = cdReady(), fury = 40 }).cid)
+      assert.equals(ID.BD, winner({ mode = "st", bladeDance = cdReady() }).cid)
     end)
 
     it("holds Blade Dance below its cost", function()
-      assert.is_nil(winner({ bladeDance = cdReady(), fury = 34 }))
+      assert.is_nil(winner({ bladeDance = cdReady(), broke = true }))
     end)
   end)
 
@@ -648,26 +734,29 @@ describe("Havoc rotation list (from specs/havoc/rotation.md)", function()
     -- `UNIT_SPELLCAST_SUCCEEDED` spellIDs are a settled readable channel — against the
     -- debuff's flat 4000 ms DB2 duration.
     it("promotes the spender above Eye Beam inside the window", function()
-      local g = guidance({ ebCast = true, eyeBeam = cdReady(), fury = 40 })
+      local g = guidance({ ebCast = true, eyeBeam = cdReady() })
       local w = pressOf(g)
       assert.equals(ID.CS, w.cid)
       assert.equals("Essence Break window", w.cue.note)
     end)
 
     it("does not, once the window has elapsed", function()
-      local w = winner({ ebCast = true, ebCastAge = 5, eyeBeam = cdReady(), fury = 40 })
+      local w = winner({ ebCast = true, ebCastAge = 5, eyeBeam = cdReady() })
       assert.equals(ID.EB, w.cid)
     end)
 
     it("does not, with no Essence Break cast at all", function()
-      local w = winner({ eyeBeam = cdReady(), fury = 40 })
+      local w = winner({ eyeBeam = cdReady() })
       assert.equals(ID.EB, w.cid)
       assert.is_false(ctxOf({}).ebWindow)
     end)
 
     it("still respects affordability inside the window", function()
-      local w = winner({ ebCast = true, eyeBeam = cdReady(), fury = 39 })
-      assert.equals(ID.EB, w.cid)        -- 39 < 40: L8 holds, L9 takes it
+      -- Only the SPENDER is unaffordable, so L8 holds and L9 — which the client says we can
+      -- still pay for — takes the press.  Blanket `broke` would shut L9 too and assert
+      -- nothing about the window.
+      local w = winner({ ebCast = true, eyeBeam = cdReady(), afford = { [ID.CS] = false } })
+      assert.equals(ID.EB, w.cid)
     end)
 
     -- The window boundary itself: `CommittedWithin` is inclusive at EB_WINDOW.
@@ -678,39 +767,54 @@ describe("Havoc rotation list (from specs/havoc/rotation.md)", function()
   end)
 
   ----------------------------------------------------------------------------
-  -- L9 / L11 / L12 / L13 / L15 — the body of the list.
+  -- L9 / L15 — the rest of the body (L11/L13/L12 have their own ordering block below).
   ----------------------------------------------------------------------------
   it("L9 — Eye Beam on cooldown, once affordable", function()
-    assert.equals(ID.EB, winner({ eyeBeam = cdReady(), fury = 30 }).cid)
-    assert.is_nil(winner({ eyeBeam = cdReady(), fury = 29 }))
+    assert.equals(ID.EB, winner({ eyeBeam = cdReady() }).cid)
+    assert.is_nil(winner({ eyeBeam = cdReady(), broke = true }))
   end)
 
   -- Fel-Scarred draws this frame as ABYSSAL GAZE, and the cue key is unchanged — the icon
   -- already shows the right art, which is the whole reason the fork needs no second cascade.
   it("L9 — the Abyssal Gaze override does not move the cue key", function()
-    local w = winner({ eyeBeam = cdReady(), agaze = true, fury = 30 })
+    local w = winner({ eyeBeam = cdReady(), agaze = true })
     assert.equals(ID.EB, w.cid)
   end)
 
-  describe("L11 / L12 — the two Fury generator lines", function()
-    -- simc's `fury.deficit>=15+gen*0.5` becomes a flat threshold: `fury_gen_per_sec` is a
-    -- six-term expression including haste and three stack counts, none of it on the pulse,
-    -- and a fabricated generation rate would be a guess dressed as arithmetic.
-    -- ⚠ ONE FURY EITHER SIDE OF THE THRESHOLD, and the "not below it" half asserts the press
-    -- the list DOES make rather than silence: at 81 Fury the spender is affordable, so L13
-    -- takes it.  Asserting nil there would have been asserting a different fixture.
-    it("L11 — Felblade at a deficit of 40, and not below it", function()
-      assert.equals(ID.FB, winner({ felblade = cdReady(), fury = 80 }).cid)
-      assert.equals(ID.CS, winner({ felblade = cdReady(), fury = 81 }).cid)
+  -- ⚠⚠ THE ORDERING BLOCK, REWRITTEN 2026-08-03.  Both lines used to carry a Fury DEFICIT
+  -- gate (`deficit >= 40` / `>= 20`), and a deficit is `max - value` where `value` is SECRET.
+  -- With no threshold available the lines could only be dropped or repositioned, and dropping
+  -- them where they sat — BOTH above the main dump — would have jammed two generators on and
+  -- starved the spender, i.e. the flight failure by a different mechanism.  So the evaluation
+  -- order is Blizzard's own from `assisted_combat/demonhunter_havoc.simc`:
+  --     L11 Felblade  ->  L13 spender  ->  L12 Immolation Aura
+  -- These four cases exist to pin that order; if any of them goes red the list has been
+  -- "tidied" back into numeric sequence and the spender is being starved again.
+  describe("L11 / L13 / L12 — the generator/spender/generator order", function()
+    -- Felblade is above the dump, so a ready Felblade takes the press even when the spender
+    -- is affordable.  Its real 12 s cooldown is what makes "whenever usable" self-limiting.
+    it("L11 — Felblade fires whenever usable, ABOVE the spender", function()
+      assert.equals(ID.FB, winner({ felblade = cdReady() }).cid)
+      -- ...and the spender is genuinely the runner-up, not merely absent.
+      assert.equals(ID.CS, fallbackOf(guidance({ felblade = cdReady() })).cid)
     end)
 
-    it("L12 — Immolation Aura at a deficit of 20, and not below it", function()
-      assert.equals(ID.IA, winner({ immo = cdReady(), fury = 100 }).cid)
-      assert.equals(ID.CS, winner({ immo = cdReady(), fury = 101 }).cid)
+    -- Immolation Aura is BELOW it: a 30 s charge category left ungated above the dump would
+    -- take the press on every recharge.  It only wins when the spender cannot pay.
+    it("L12 — Immolation Aura yields to the spender, and takes the press when it cannot pay", function()
+      assert.equals(ID.CS, winner({ immo = cdReady() }).cid)
+      assert.equals(ID.IA, winner({ immo = cdReady(), broke = true }).cid)
     end)
 
-    it("Felblade outranks Immolation Aura when both qualify", function()
-      local g = guidance({ felblade = cdReady(), immo = cdReady(), fury = 0 })
+    -- The whole order in one pulse.
+    it("ranks Felblade > spender > Immolation Aura with all three available", function()
+      local g = guidance({ felblade = cdReady(), immo = cdReady() })
+      assert.equals(ID.FB, pressOf(g).cid)
+      assert.equals(ID.CS, fallbackOf(g).cid)
+    end)
+
+    it("Felblade outranks Immolation Aura when the spender cannot pay", function()
+      local g = guidance({ felblade = cdReady(), immo = cdReady(), broke = true })
       assert.equals(ID.FB, pressOf(g).cid)
       assert.equals(ID.IA, fallbackOf(g).cid)
     end)
@@ -721,40 +825,44 @@ describe("Havoc rotation list (from specs/havoc/rotation.md)", function()
     -- so declaring them "filler"/"oncd" is the whole fix — no pipeline edit.
     it("cues a CDM-Utility row because the SPEC's cadence says so", function()
       assert.equals("Utility", build({}).abilities[ID.FB].category)
-      assert.equals(ID.FB, winner({ felblade = cdReady(), fury = 0 }).cid)
+      assert.equals(ID.FB, winner({ felblade = cdReady(), broke = true }).cid)
     end)
   end)
 
   describe("L13 — the main Fury dump", function()
-    it("spends at the cost and holds below it", function()
-      assert.equals(ID.CS, winner({ fury = 40 }).cid)
-      assert.is_nil(winner({ fury = 39 }))
+    -- ⚠ THE GATE IS THE CLIENT'S VERDICT, NOT A NUMBER.  `broke` means the client answered
+    -- `insufficientPower = true` for Chaos Strike; nothing here knows or asks how much Fury
+    -- that corresponds to, and nothing may.
+    it("presses when the client says affordable, and holds when it says broke", function()
+      assert.equals(ID.CS, winner({}).cid)
+      assert.is_nil(winner({ broke = true }))
     end)
 
     -- In demon form the frame casts Annihilation, and the NOTE says so — the label is the
     -- pipeline's, the cue key stays the base.
     it("keys on the base frame in demon form, and says Annihilation", function()
-      local w = winner({ metaXform = "cs", fury = 40 })
+      local w = winner({ metaXform = "cs" })
       assert.equals(ID.CS, w.cid)
       assert.equals("Annihilation", w.cue.note)
     end)
 
     it("carries no note outside demon form", function()
-      assert.is_nil(winner({ fury = 40 }).cue.note)
+      assert.is_nil(winner({}).cue.note)
     end)
 
     -- Degradation: an untracked Chaos Strike yields a nil spenderKey and BOTH spend lines
     -- simply find nothing rather than cueing a ghost.
     it("finds nothing when Chaos Strike is untracked, and the list continues", function()
-      local w = winner({ noSpender = true, fury = 120, throwGlaive = cdReady() })
+      local w = winner({ noSpender = true, throwGlaive = cdReady() })
       assert.equals(ID.TG, w.cid)        -- straight through to L15
       assert.is_nil(ctxOf({ noSpender = true }).spenderKey)
     end)
   end)
 
   it("L15 — Throw Glaive is the floor", function()
-    assert.equals(ID.TG, winner({ throwGlaive = cdReady(), fury = 25 }).cid)
-    assert.is_nil(winner({ throwGlaive = cdReady(), fury = 24 }))
+    -- ⚠ THE SPENDER SITS ABOVE IT (L13), so reaching the floor at all needs L13 shut.
+    assert.equals(ID.TG, winner({ throwGlaive = cdReady(), afford = { [ID.CS] = false } }).cid)
+    assert.is_nil(winner({ throwGlaive = cdReady(), broke = true }))
   end)
 
   -- Honest silence: every cooldown down and not enough Fury to spend is a REAL state, not a
@@ -762,7 +870,7 @@ describe("Havoc rotation list (from specs/havoc/rotation.md)", function()
   -- the Fury rail is not being read — Chaos Strike has no cooldown at all, so L13 is
   -- reachable on every tick the bar carries 40 Fury.
   it("returns no press when nothing is castable", function()
-    assert.is_nil(winner({ fury = 39 }))
+    assert.is_nil(winner({ broke = true }))
   end)
 
   ----------------------------------------------------------------------------
@@ -774,13 +882,13 @@ describe("Havoc rotation list (from specs/havoc/rotation.md)", function()
   -- never recommend.
   describe("Rain from Above", function()
     it("is never the press, however ready it is", function()
-      local g = guidance({ rfa = cdReady(), fury = 0 })
+      local g = guidance({ rfa = cdReady(), broke = true })
       assert.is_nil(pressOf(g))
       assert.is_nil(g.cues[ID.RFA])
     end)
 
     it("never takes a SOON decoration either", function()
-      local g = guidance({ rfa = cdSoon(1), throwGlaive = cdReady(), fury = 25 })
+      local g = guidance({ rfa = cdSoon(1), throwGlaive = cdReady() })
       assert.is_nil(soonSet(g)[ID.RFA])
     end)
   end)
@@ -797,22 +905,27 @@ describe("Havoc rotation list (from specs/havoc/rotation.md)", function()
   -- `usable()`'s one-charge rule requires BOTH a banked charge AND `probablyUp` — so the
   -- count, which only restores on the `ChargeGained` alert at the REAL recovery, vetoes the
   -- early cooldown read for the whole duration.  These are the cases that pin it.
+  -- ⚠ EVERY CASE BELOW CARRIES `broke = true`, and it is load-bearing rather than noise: the
+  -- fixture's Fury default INVERTED on 2026-08-03.  It used to be `fury = 0` (nothing
+  -- affordable), so a case that omitted the field got a silent spender-free board; the
+  -- affordability fixture defaults to AFFORDABLE, so L13 would take every press below and
+  -- these cases would assert the spender rather than the charge rule.
   describe("charge-aware readiness on a 1-charge pool", function()
     it("a count of ZERO vetoes a cooldown that reads READY", function()
       -- The lying-napkin shape exactly: the base cooldown expired after ~1 s, the charge is
       -- still recharging for another 9.  The COUNT decides.
-      assert.is_nil(winner({ mode = "aoe", felRush = cdReady(),
+      assert.is_nil(winner({ mode = "aoe", broke = true, felRush = cdReady(),
                              frCharge = { charged = true, cur = 0, max = 1 } }))
     end)
 
     it("both agreeing is usable", function()
-      local w = winner({ mode = "aoe", felRush = cdReady(),
+      local w = winner({ mode = "aoe", broke = true, felRush = cdReady(),
                          frCharge = { charged = true, cur = 1, max = 1 } })
       assert.equals(ID.FR, w.cid)
     end)
 
     it("a banked charge does NOT outrank a cooldown that reads down", function()
-      assert.is_nil(winner({ mode = "aoe", felRush = cdSoon(9),
+      assert.is_nil(winner({ mode = "aoe", broke = true, felRush = cdSoon(9),
                              frCharge = { charged = true, cur = 1, max = 1 } }))
     end)
 
@@ -822,18 +935,18 @@ describe("Havoc rotation list (from specs/havoc/rotation.md)", function()
     -- documents today's behaviour so the flight can arbitrate it; it is NOT an endorsement,
     -- and the one-line fix is recorded in specs/havoc/rotation.md.
     it("an ABSENT count falls back to the cooldown read (the documented residual hole)", function()
-      local w = winner({ mode = "aoe", felRush = cdReady(),
+      local w = winner({ mode = "aoe", broke = true, felRush = cdReady(),
                          frCharge = { charged = true, cur = nil, max = 1 } })
       assert.equals(ID.FR, w.cid)
     end)
 
     it("...and that fallback still respects a cooldown that is NOT ready", function()
-      assert.is_nil(winner({ mode = "aoe", felRush = cdFar(),
+      assert.is_nil(winner({ mode = "aoe", broke = true, felRush = cdFar(),
                              frCharge = { charged = true, cur = nil, max = 1 } }))
     end)
 
     it("no charge pool at all falls back to the cooldown read", function()
-      assert.equals(ID.VR, winner({ vr = cdReady(), eyeBeam = cdReady() }).cid)
+      assert.equals(ID.VR, winner({ vr = cdReady(), eyeBeam = cdReady(), broke = true }).cid)
     end)
 
     -- ⚠ THE CONFLAGRATE RULE IS UNTOUCHED.  With A Fire Inside, Immolation Aura is a 2-charge
@@ -841,105 +954,97 @@ describe("Havoc rotation list (from specs/havoc/rotation.md)", function()
     -- the count still outranks the cooldown.  If this goes red, the one-charge rule has been
     -- over-generalised.
     it("a 2-charge pool still lets a banked charge outrank the cooldown", function()
-      local w = winner({ mode = "aoe", immo = cdSoon(10),
+      local w = winner({ mode = "aoe", broke = true, immo = cdSoon(10),
                          immoCharge = { charged = true, cur = 1, max = 2 } })
       assert.equals(ID.IA, w.cid)
     end)
 
     it("...and a 2-charge pool at ZERO is still vetoed", function()
-      assert.is_nil(winner({ mode = "aoe", immo = cdReady(),
+      assert.is_nil(winner({ mode = "aoe", broke = true, immo = cdReady(),
                              immoCharge = { charged = true, cur = 0, max = 2 } }))
     end)
   end)
 
   ----------------------------------------------------------------------------
-  -- The LIVE cost — of the spell we will actually PRESS, never hardcoded.
+  -- AFFORDABILITY — the client's per-spell verdict, which REPLACED the Fury comparison.
   ----------------------------------------------------------------------------
-  describe("the spender cost is resolved live, off the LIVE spell id", function()
-    -- ⚠ THE COST IS OF THE SPELL WE WILL ACTUALLY PRESS.  In demon form the frame casts
-    -- Annihilation, and only the LIVE id carries Annihilation's own cost — identical today
-    -- (40) and not to be assumed to stay so.
-    it("reads Annihilation's id in demon form, not Chaos Strike's", function()
-      local base = build({ metaXform = "cs", fury = 44 })
-      H.fx.powerCost[ID.CS]   = { { type = FURY, cost = 40, name = "FURY" } }
-      H.fx.powerCost[ID.ANNI] = { { type = FURY, cost = 45, name = "FURY" } }
-      assert.is_nil(pressOf(Coach:Compute(base)))          -- 44 < Annihilation's 45
-      local rich = build({ metaXform = "cs", fury = 45 })
-      H.fx.powerCost[ID.CS]   = { { type = FURY, cost = 40, name = "FURY" } }
-      H.fx.powerCost[ID.ANNI] = { { type = FURY, cost = 45, name = "FURY" } }
-      assert.equals(ID.CS, pressOf(Coach:Compute(rich)).cid)
+  -- ⚠⚠ THIS BLOCK REPLACED "the spender cost is resolved live" ON 2026-08-03.  That block
+  -- drove four live COSTS through `fx.powerCost` and compared them against a Fury number the
+  -- fixture supplied — nine cases, all green, over a rotation that could not fire in game,
+  -- because `UnitPower("player", Fury)` is SECRET and the number never existed.  The cost
+  -- READER (`ns.PowerCost`) is still shipped and still tested by the three other oracles;
+  -- what is gone is any Havoc gate that consumes a cost.  ⚠ DB2 COSTS ARE NOT THE CLIENT'S
+  -- COSTS EITHER: Throw Glaive's DB2 cost of 25 was measured FREE in game, which is why the
+  -- old fallback made L15 win 770 of 2380 flight lines.
+  describe("affordability replaces the Fury comparison", function()
+    -- ⚠ THE CASE THE IN-GAME MACRO PROVED, and the one no Fury-number fixture could express:
+    -- at ONE Fury level, Chaos Strike / Eye Beam / Blade Dance all reported
+    -- `insufficientPower = true` while Throw Glaive reported FALSE — because the flag is
+    -- computed PER SPELL against its own cost.  Both halves must hold in the SAME pulse.
+    it("blocks L13 while letting L15 through, in one pulse", function()
+      local g = guidance({ throwGlaive = cdReady(),
+                           afford = { [ID.CS] = false, [ID.TG] = true } })
+      assert.equals(ID.TG, pressOf(g).cid)
     end)
 
-    it("uses the client's cost over the fallback", function()
-      assert.is_nil(winner({ fury = 40, spenderCost = 50 }))
-      assert.equals(ID.CS, winner({ fury = 40 }).cid)   -- same pulse, fallback cost of 40
+    it("...and the reverse, so the discrimination is not an ordering accident", function()
+      local g = guidance({ throwGlaive = cdReady(),
+                           afford = { [ID.CS] = true, [ID.TG] = false } })
+      assert.equals(ID.CS, pressOf(g).cid)
     end)
 
-    -- THE RULE, in one line: A COST WE CANNOT READ MUST FALL BACK TO THE DECLARED CONSTANT,
-    -- NEVER TO ZERO.  Under-promising costs a press of latency; over-promising cues a button
-    -- that cannot be pressed, which is the failure this project cares most about.
-    it("falls back to the declared 40 when the client has no answer", function()
-      assert.is_nil(winner({ fury = 39, spenderCost = nil }))
-      assert.equals(ID.CS, winner({ fury = 40, spenderCost = nil }).cid)
+    -- ⚠⚠ AN UNREADABLE VERDICT MUST NOT BLOCK THE PRESS, and the direction is the whole
+    -- lesson of the flight.  `{ readable = false }` means "we could not ask" — a DIFFERENT
+    -- fact from "you cannot afford it" — and defaulting it to unaffordable is exactly what
+    -- `ctx.fury or 0` did: it made every spender unaffordable forever.  The safe default here
+    -- is ALLOW, because the CDM / napkin / charge readiness gate still sits in front of every
+    -- line, so the worst case is a cue for a press that fails.
+    it("does not block on an UNREADABLE verdict — absent is not `broke`", function()
+      assert.equals(ID.CS, winner({ affordUnreadable = true }).cid)
+      assert.equals(ID.EB, winner({ affordUnreadable = true, eyeBeam = cdReady() }).cid)
     end)
 
-    -- A cost denominated in SOMEONE ELSE'S resource is not this spec's cost.  `ns.PowerCost`'s
-    -- type filter must reject it and the brain must fall back — never read the non-match as
-    -- free.  This is the exact shape that shipped the Retribution defect.
-    it("rejects a cost denominated in a DIFFERENT resource", function()
-      local g = build({ fury = 39 })
-      H.fx.powerCost[ID.CS] = { { type = SOUL_SHARDS, cost = 2, name = "SOUL_SHARDS" } }
-      assert.is_nil(pressOf(Coach:Compute(g)))
+    -- The three non-spender gates ride the same channel, so each is pinned.
+    it("gates Blade Dance (L7/L10), Eye Beam (L9) and Throw Glaive (L15) too", function()
+      assert.equals(ID.CS, winner({ bladeDance = cdReady(), afford = { [ID.BD] = false } }).cid)
+      assert.equals(ID.BD, winner({ bladeDance = cdReady() }).cid)
+      assert.equals(ID.CS, winner({ eyeBeam = cdReady(), afford = { [ID.EB] = false } }).cid)
+      assert.is_nil(winner({ throwGlaive = cdReady(), afford = { [ID.TG] = false, [ID.CS] = false } }))
     end)
 
-    -- A SECRET cost is the worst case of all: the state where we know least would otherwise
-    -- promise the cheapest possible press.
-    it("treats a SECRET cost as unreadable, not as free", function()
-      local g = build({ fury = 0 })
-      H.fx.powerCost[ID.CS] = { { type = FURY, cost = H.secretValue(), name = "FURY" } }
-      assert.is_nil(pressOf(Coach:Compute(g)))
+    -- L8 rides the SAME verdict as L13 — one ability, one answer, two lines.
+    it("gates both spender lines off one verdict", function()
+      assert.equals(ID.EB, winner({ ebCast = true, eyeBeam = cdReady(),
+                                    afford = { [ID.CS] = false } }).cid)
     end)
 
-    -- ⚠ A COST OF **0** IS AN ANSWER, NOT A REFUSAL — `ns.PowerCost` is three-valued.  The
-    -- project's own ABSENT-IS-NEVER-ZERO rule, run in reverse.
-    it("cues a genuinely FREE spender at zero Fury", function()
-      assert.equals(ID.CS, winner({ fury = 0, spenderCost = 0 }).cid)
+    -- ⚠ THE GATES THE LIST DELIBERATELY DOES **NOT** ASK.  Felblade, Immolation Aura, Fel
+    -- Rush and Vengeful Retreat are generators, and Essence Break has no Fury cost at all —
+    -- State fences the read on the spec's `spends`, so `broke` must leave every one of them
+    -- pressable.  A regression here means an affordability gate has crept onto a generator,
+    -- which would jam the whole list shut the moment the client says "broke".
+    it("never gates a GENERATOR on affordability", function()
+      assert.equals(ID.FB, winner({ felblade = cdReady(), broke = true }).cid)
+      assert.equals(ID.IA, winner({ immo = cdReady(), broke = true }).cid)
+      assert.equals(ID.META, winner({ meta = cdReady(), broke = true }).cid)
+      assert.equals(ID.HUNT, winner({ hunt = cdReady(), broke = true }).cid)
+      assert.equals(ID.ESSB, winner({ metaBuff = true, essenceBreak = cdReady(), broke = true }).cid)
     end)
 
-    -- The other three costs ride the same reader, so one of them is pinned too.
-    it("applies to Blade Dance as well", function()
-      -- At a client cost of 45, 40 Fury cannot afford L10 — so the list falls through to the
-      -- spender, whose own (fallback) cost of 40 it CAN afford.
-      assert.equals(ID.CS, winner({ bladeDance = cdReady(), fury = 40, danceCost = 45 }).cid)
-      assert.equals(ID.BD, winner({ bladeDance = cdReady(), fury = 40 }).cid)
+    -- The published flags, so the decision log and a future reader can see the verdict that
+    -- decided the line rather than re-deriving it.
+    it("publishes the four verdicts on the context", function()
+      local ctx = ctxOf({ afford = { [ID.CS] = false } })
+      assert.is_false(ctx.spenderAfford)
+      assert.is_true(ctx.danceAfford)
+      assert.is_true(ctx.eyeBeamAfford)
+      assert.is_true(ctx.glaiveAfford)
     end)
 
-    it("resolves Fury as the spec's cost resource, off its own powers block", function()
+    -- The spec still DECLARES Fury as its cost resource — the rail is published even though
+    -- nothing compares it, which is what keeps `PW:` alive (`display = "none"`'s argument).
+    it("resolves Fury as the spec\'s cost resource, off its own powers block", function()
       assert.equals(FURY, ns.Coach.CostPowerType(ns.ActiveSpec))
-    end)
-  end)
-
-  ----------------------------------------------------------------------------
-  -- The in-flight projection — a spender mid-GCD must not be re-cued.
-  ----------------------------------------------------------------------------
-  describe("the in-flight projection", function()
-    it("subtracts an in-flight spender, so L13 does not re-cue it", function()
-      assert.is_nil(winner({ fury = 40, inflightSpender = true }))
-      assert.equals(ID.CS, winner({ fury = 80, inflightSpender = true }).cid)
-    end)
-
-    it("projects nothing when the cost is unreadable", function()
-      assert.equals(0, ctxOf({ fury = 40 }).furyIncoming)
-    end)
-
-    -- ⚠ THE DEFICIT GATES READ THE **LIVE** VALUE, NOT THE PROJECTION.  A spender already in
-    -- flight has committed to draining the bar, and crediting that drain toward "I need Fury"
-    -- would fire the generator lines a GCD early on every single spend.
-    it("does not credit an in-flight spend toward the generator deficits", function()
-      -- live 90 => deficit 30, below FELBLADE_DEFICIT (40).  Projected 50 would read a
-      -- deficit of 70 and fire Felblade, which is the bug this pins.
-      local w = winner({ fury = 90, felblade = cdReady(), inflightSpender = true })
-      assert.equals(ID.CS, w.cid)
     end)
   end)
 
@@ -958,7 +1063,7 @@ describe("Havoc rotation list (from specs/havoc/rotation.md)", function()
     end)
 
     it("drops Immolation Aura from BOTH of its lines at once", function()
-      local g = guidance({ mode = "aoe", immo = cdReady(), felblade = cdReady(), fury = 0 })
+      local g = guidance({ mode = "aoe", immo = cdReady(), felblade = cdReady(), broke = true })
       assert.equals(ID.IA, pressOf(g).cid)           -- L4
       local fb = fallbackOf(g)
       assert.is_not_nil(fb)
@@ -967,7 +1072,7 @@ describe("Havoc rotation list (from specs/havoc/rotation.md)", function()
     end)
 
     it("drops the spender from BOTH of its lines at once", function()
-      local g = guidance({ ebCast = true, throwGlaive = cdReady(), fury = 40 })
+      local g = guidance({ ebCast = true, throwGlaive = cdReady() })
       assert.equals(ID.CS, pressOf(g).cid)           -- L8
       local fb = fallbackOf(g)
       assert.is_not_nil(fb)
@@ -976,10 +1081,10 @@ describe("Havoc rotation list (from specs/havoc/rotation.md)", function()
     end)
 
     it("drops Blade Dance from whichever line named it", function()
-      local inMeta = guidance({ metaBuff = true, bladeDance = cdReady(), fury = 40 })
+      local inMeta = guidance({ metaBuff = true, bladeDance = cdReady() })
       assert.equals(ID.BD, pressOf(inMeta).cid)      -- L7
       assert.are_not.equals(ID.BD, fallbackOf(inMeta).cid)
-      local outside = guidance({ bladeDance = cdReady(), fury = 40 })
+      local outside = guidance({ bladeDance = cdReady() })
       assert.equals(ID.BD, pressOf(outside).cid)     -- L10
       assert.are_not.equals(ID.BD, fallbackOf(outside).cid)
     end)
@@ -990,7 +1095,8 @@ describe("Havoc rotation list (from specs/havoc/rotation.md)", function()
   ----------------------------------------------------------------------------
   describe("SOON", function()
     it("decorates a tracked cooldown coming up within the lead", function()
-      local g = guidance({ throwGlaive = cdReady(), fury = 25, meta = cdSoon(2) })
+      local g = guidance({ throwGlaive = cdReady(), meta = cdSoon(2),
+                           afford = { [ID.CS] = false } })
       assert.equals(ID.TG, pressOf(g).cid)
       assert.is_true(soonSet(g)[ID.META])
     end)
@@ -999,17 +1105,17 @@ describe("Havoc rotation list (from specs/havoc/rotation.md)", function()
     -- so a CDM-Utility ROW with a rotational cadence still decorates, while a spec-declared
     -- `cadence = "utility"` never does.
     it("decorates a CDM-Utility row whose spec cadence is rotational", function()
-      local g = guidance({ throwGlaive = cdReady(), fury = 25, felblade = cdSoon(2) })
+      local g = guidance({ throwGlaive = cdReady(), felblade = cdSoon(2) })
       assert.is_true(soonSet(g)[ID.FB])
     end)
 
     it("never decorates a spec-declared utility", function()
-      local g = guidance({ throwGlaive = cdReady(), fury = 25, utility = cdSoon(1) })
+      local g = guidance({ throwGlaive = cdReady(), utility = cdSoon(1) })
       assert.is_nil(soonSet(g)[ID.UTILITY])
     end)
 
     it("does not decorate something far out", function()
-      local g = guidance({ throwGlaive = cdReady(), fury = 25, meta = cdFar() })
+      local g = guidance({ throwGlaive = cdReady(), meta = cdFar() })
       assert.is_nil(soonSet(g)[ID.META])
     end)
   end)
@@ -1031,8 +1137,8 @@ describe("Havoc rotation list (from specs/havoc/rotation.md)", function()
 
     it("does the same for The Hunt, Eye Beam and Blade Dance", function()
       assert.equals("LATE", winner({ hunt = overdue() }).cue.emphasis)
-      assert.equals("LATE", winner({ eyeBeam = overdue(), fury = 30 }).cue.emphasis)
-      assert.equals("LATE", winner({ bladeDance = overdue(), fury = 35 }).cue.emphasis)
+      assert.equals("LATE", winner({ eyeBeam = overdue() }).cue.emphasis)
+      assert.equals("LATE", winner({ bladeDance = overdue() }).cue.emphasis)
     end)
 
     -- ⚠ EVERY ABILITY ON A CHARGE CATEGORY IS DELIBERATELY ABSENT: a charged ability raises
@@ -1056,29 +1162,94 @@ describe("Havoc rotation list (from specs/havoc/rotation.md)", function()
     -- META-GATED (L6), so a ready Essence Break outside demon form is correctly idle rather
     -- than late — and escalating it would nag for a press the list refuses to make.
     it("never escalates Essence Break, whose gate is the fork rather than the cooldown", function()
-      local w = winner({ metaBuff = true, essenceBreak = overdue(), fury = 40 })
+      local w = winner({ metaBuff = true, essenceBreak = overdue() })
       assert.equals(ID.ESSB, w.cid)
       assert.equals("ROTATION", w.cue.emphasis)
     end)
 
-    -- The readable overcap dump — the analogue of Destruction's Chaos-Bolt-at-full-bar.
-    it("calls the spender LATE at a FULL Fury bar", function()
-      local w = winner({ fury = 120 })
+    -- ⚠⚠ THE "SPENDER PARKED AT A FULL FURY BAR" RULE IS **DELETED**, AND THE CASE THAT
+    -- PINNED IT WITH IT (2026-08-03).  It was Destruction's Chaos-Bolt-at-full-bar analogue
+    -- and it read `ctx.fury >= ctx.furyMax` — a comparison against a value that does not
+    -- exist.  In game it fired on `0 >= 120`, i.e. never; restoring it against any fabricated
+    -- number would make it fire ALWAYS, which is worse.  ⚠ IT IS ALSO NOT RECOVERABLE through
+    -- `IsSpellUsable`, which is BINARY — a spender is equally "affordable" at 40 Fury and at
+    -- 170, so overcap is invisible to it BY CONSTRUCTION.  This is the one thing Phase 1
+    -- knowingly gives up; Phase 2's LuaCurveObject is the only route back.
+    -- This case replaces both, and asserts the ABSENCE so nobody quietly re-adds the rule.
+    it("never calls the spender LATE — overcap is unreadable, not merely unread", function()
+      local w = winner({})
       assert.equals(ID.CS, w.cid)
-      assert.equals("LATE", w.cue.emphasis)
-    end)
-
-    -- Gated on ACTUAL Fury, not the projection: an in-flight spender has already committed to
-    -- draining the bar, so projecting it would call you late for something you are mid-way
-    -- through fixing.
-    it("does not call it LATE below the cap", function()
-      assert.equals("ROTATION", winner({ fury = 119 }).cue.emphasis)
+      assert.equals("ROTATION", w.cue.emphasis)
     end)
 
     it("never escalates a filler", function()
-      local w = winner({ throwGlaive = overdue(), fury = 25 })
+      local w = winner({ throwGlaive = overdue(), afford = { [ID.CS] = false } })
       assert.equals(ID.TG, w.cid)
       assert.equals("ROTATION", w.cue.emphasis)
+    end)
+  end)
+
+  ----------------------------------------------------------------------------
+  -- END TO END, THROUGH THE REAL `St.Build` — the case that would have caught the flight.
+  ----------------------------------------------------------------------------
+  -- ⚠⚠ NOTHING TESTED State -> resourceBars -> the BRAIN for a **REFUSED** rail before
+  -- 2026-08-03, and that is the hole the whole flight fell through.  Every case above hands
+  -- the Coach a hand-built pulse, so the rail arrived exactly as the fixture wrote it — and
+  -- the fixture always wrote a number the client refuses.  This block drives the SHIPPING
+  -- State with `UnitPower` refusing (the only thing Fury ever does) and asserts the three
+  -- places the old code manufactured a zero.
+  describe("a REFUSED Fury rail, driven through the real State", function()
+    local FURY_TYPE = 17
+    local realShouldBeSecret
+    local function pulse()
+      H.load("State.lua")
+      -- The rail the game actually presents: MAX readable (a different secrecy predicate),
+      -- VALUE refused.  `unmodified` is omitted too — the exact read is just as secret.
+      H.fx.power[FURY_TYPE] = { max = 170 }
+      realShouldBeSecret = _G.C_Secrets
+      _G.C_Secrets = { ShouldUnitPowerBeSecret = function(_, t) return t == FURY_TYPE end }
+      -- ⚠ `OnLogin` builds the Enum.PowerType name cache; without it `readPower` walks an
+      -- empty map and the pulse carries NO rail at all — which is a different (and much
+      -- quieter) failure than the refused one under test.
+      ns.OnLogin()
+      return ns.State.Build(false)
+    end
+    after_each(function() _G.C_Secrets = realShouldBeSecret end)
+
+    it("State reports the rail unreadable AND says it is restricted", function()
+      local p = pulse().power.Fury
+      assert.is_false(p.readable)
+      assert.is_true(p.restricted)
+      -- ⚠ `is_nil`, never `equals(0, …)`.  This half was always correct; the two coercions
+      -- downstream are what undid it.
+      assert.is_nil(p.value)
+      assert.is_nil(p.unmodified)
+      assert.equals(170, p.max)
+    end)
+
+    it("the bar carries the absence through to the Coach, not a zero", function()
+      local bar = Coach:Compute(pulse()).resourceBars[1]
+      assert.is_nil(bar.value)
+      assert.is_nil(bar.valueExact)
+      assert.is_true(bar.restricted)
+    end)
+
+    it("and the brain does not behave as though Fury were 0", function()
+      local ctx = ns.Specs[577]:Context(pulse(), Coach)
+      assert.is_nil(ctx.fury)
+      assert.is_true(ctx.furyRestricted)
+      -- The flight's signature, asserted as an ABSENCE: at a fabricated zero every spender
+      -- was unaffordable and every generator maximally urgent.  With no verdict available
+      -- the affordability gates fall through to ALLOWED instead.
+      assert.is_true(ctx.spenderAfford)
+      assert.is_true(ctx.eyeBeamAfford)
+    end)
+
+    it("...and the decision log says `restricted` rather than a number", function()
+      H.load("DecisionLog.lua")
+      local p = pulse()
+      local line = ns.DecisionLog.Render(p, Coach:Compute(p), { cues = {} })
+      assert.is_truthy(line:match("PW:restricted"), "PW column read: " .. tostring(line:match("PW:%S+")))
     end)
   end)
 

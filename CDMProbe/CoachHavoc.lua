@@ -59,19 +59,33 @@ local spec = ns.Specs[577]   -- the Havoc object registered by SpecHavoc.lua
 spec.LATE_LEAD = 4.0    -- a probably-up press left elapsed this long => overdue.  Read by
                         -- the shell's Classify off ns.ActiveSpec.LATE_LEAD.
 
--- Fury costs, ALWAYS resolved live through env.powerCostFn (talent-modifiable); these are
--- only the fallbacks for a harness or an unreadable read.  Never hardcode a cost at a call
--- site.  T1 DB2 @ 12.0.7, SpellPower PowerType 17 — and the OVERRIDES carry the same
--- numbers on their own ids (Annihilation 40, Death Sweep 35, Abyssal Gaze 30), which is one
--- of the properties that identified them.
-spec.SPENDER_COST_FALLBACK  = 40   -- Chaos Strike / Annihilation
-spec.DANCE_COST_FALLBACK    = 35   -- Blade Dance / Death Sweep
-spec.EYE_BEAM_COST_FALLBACK = 30   -- Eye Beam / Abyssal Gaze
-spec.GLAIVE_COST_FALLBACK   = 25   -- Throw Glaive / Reaver's Glaive
-
--- L6's Fury floor, simc's own number (`essence_break,if=fury>=35`).  A press gate, not a
--- pooling rule.
-spec.ESSENCE_BREAK_FURY = 35
+-- ⚠⚠ THE FOUR `*_COST_FALLBACK` CONSTANTS AND `ESSENCE_BREAK_FURY` ARE **DELETED**
+-- (2026-08-03), ALONG WITH EVERY FURY COMPARISON IN THIS FILE.  Do not restore them.
+--
+-- `UnitPower("player", Enum.PowerType.Fury)` RETURNS A SECRET VALUE.  Secrecy is per power
+-- type and the rule is primary-vs-secondary [T1 blue post, *Midnight Public Alpha Addon API
+-- Changes*, 2025-11-24]; Fury is the Demon Hunter's PRIMARY resource, so it is secret in a
+-- city and mid-pull alike — `C_Secrets.GetPowerTypeSecrecy(17)` = 2 (`ContextuallySecret`),
+-- `ShouldUnitPowerBeSecret("player", 17)` = true, measured both places.  There is no
+-- out-of-combat window and no seed value, EVER.  A cost constant that nothing can compare
+-- against is not a fallback, it is a trap.
+--
+-- WHAT IT COST: the 2026-08-03 flight.  `ctx.fury or 0` fabricated a zero, every
+-- `projected >= cost` was false, and Chaos Strike, Eye Beam, Blade Dance and Metamorphosis
+-- won ZERO of 2374 in-combat lines while Throw Glaive won 770 — because its
+-- `GLAIVE_COST_FALLBACK = 25` was itself wrong (the live client reports Throw Glaive FREE)
+-- and 0 >= 0 passes.  ⚠ **DB2 COSTS ARE NOT THE CLIENT'S COSTS.**
+--
+-- WHAT REPLACES THEM: `ns.SpellUsable` -> `insufficientPower`, per spell, attached by State
+-- as `abilities[base].usable`.  Read `affordable()` in RankWinner and ns.SpellUsable's
+-- banner in Util.lua.  The cost NUMBER is never needed, so `env.powerCostFn` is no longer
+-- consulted here at all.
+--
+-- WHAT IS GENUINELY LOST, stated so nobody re-derives it: `IsSpellUsable` is BINARY — false
+-- at 40 Fury and at 170 alike — so OVERCAP AVOIDANCE is unrecoverable through it.  Havoc
+-- will overcap and the HUD will not warn.  Blizzard's own assisted-combat list accepts the
+-- same loss (zero Fury references in 20 lines).  specs/havoc/rotation.md -> *What this
+-- costs, knowingly* and docs/multi-class-rollout.md -> *Phase 2* carry the recovery design.
 
 -- THE ESSENCE BREAK WINDOW, in seconds — and it is a DB2 fact, not a tuned lead.  simc
 -- gates four lines on `debuff.essence_break.up`/`.down`, and that debuff (320338) has NO
@@ -102,14 +116,20 @@ spec.EB_WINDOW = 4.0
 -- If the flight shows VR cueing at wrong moments, L5 is the first suspect.
 spec.EYE_BEAM_LEAD = 1.5
 
--- The Fury DEFICITS that gate the two generator lines.  simc computes them against
--- `variable.fury_gen_per_sec`, a six-term expression including haste and three buff stack
--- counts — none of which is on the pulse.  Flat thresholds are the honest reduction:
--- simc's :90 is `fury.deficit>=15+gen*0.5` (~25 at typical haste) and :92 is
--- `fury.deficit>20+gen*gcd.max` (~35).  Rounded to numbers that keep the two lines in the
--- same order rather than pretending to a precision we do not have.
-spec.FELBLADE_DEFICIT = 40
-spec.IMMO_DEFICIT     = 20
+-- ⚠ `FELBLADE_DEFICIT` AND `IMMO_DEFICIT` ARE **DELETED** TOO, for the same reason one
+-- level up: a Fury DEFICIT is `max - value`, and `value` does not exist.  They gated the
+-- two generator lines (L11, L12).
+--
+-- What replaces them is POSITION, not a weaker threshold — and it is Blizzard's own shape.
+-- `ActionPriorityLists/assisted_combat/demonhunter_havoc.simc` presses a bare `felblade`
+-- with no gate of any kind, between two `chaos_strike` lines, and an `immolation_aura`
+-- gated only on enemy count.  So the evaluation order became
+-- **L11 Felblade -> L13 spender -> L12 Immolation Aura**: a generator fires when usable,
+-- the spender takes the press whenever the client says it is affordable, and the second
+-- generator sits BELOW it.  ⚠ THAT ORDERING IS LOAD-BEARING — leaving both generators above
+-- the main dump with their gates removed would jam them on and starve the spender, which is
+-- the flight failure reproduced by a different mechanism.  The L-numbers stay put (the
+-- brain, rotation.md and the oracle all key on them); only the order moved.
 
 -- ⚠ THE ONE GENUINELY UNSETTLED READ (the ART_FROM_RITUAL / RET_HOL_FROM_BUFF precedent).
 -- rotation.md L1 is "if a Reaver's Glaive is armed, press it", and the unambiguous source
@@ -178,54 +198,33 @@ function spec:Context(state, env)
     return (state.buffs and state.buffs[spellID] == true) or false
   end
 
-  -- The in-flight projection, derived from the pulse's cast history.
-  local sums = ns.Coach.InflightPower(state, ns.SpecPowerDelta)
-
-  -- ── THE FURY RAIL ──────────────────────────────────────────────────────────
-  -- Shared arithmetic (ns.Coach.PowerContext): the exact read, the display-value fallback
-  -- when the client refuses, the cap fallbacks, and the ctx.powers fold.  ⚠ Fury's modifier
-  -- is 1, so `rails.Fury.value` is simply Fury — there is no second unit in this spec and
-  -- nothing here is named `*Frags`.
-  local bars, rails = ns.Coach.PowerContext(state, self, sums)
+  -- ── THE FURY RAIL — PUBLISHED, NEVER COMPARED ──────────────────────────────
+  -- Shared arithmetic (ns.Coach.PowerContext).  ⚠ THE RAIL IS SECRET AND SO EVERY FIELD
+  -- BELOW IS EXPECTED TO BE `nil` IN PRACTICE — it is kept because the whole point of
+  -- `display = "none"` is that Fury reaches the DECISION LOG's `PW:` column, and a column
+  -- that reads `restricted` is the instrument that explains a decision nobody watched.
+  -- ⚠ NOTHING IN RankWinner OR Escalate MAY READ `ctx.fury`.  There is no fallback and no
+  -- warm-up: `restricted` means secret forever, not "not yet".  Affordability comes from
+  -- `ctx.affordable`, below.
+  --
+  -- ⚠ NO `sums` ARGUMENT.  `ns.SpecPowerDelta` is deleted for this spec — an in-flight
+  -- projection onto an absent value is either a no-op or a fabrication, and the second is
+  -- the bug being remediated.  `spec.powers[1].incoming = false` says so declaratively, so
+  -- `incoming` folds to 0 and `projected` stays nil.
+  local bars, rails = ns.Coach.PowerContext(state, self)
   local furyRail = rails.Fury or {}
 
   local ctx = {
     facts = factsByBase,
     mode = state.mode,
-    fury = furyRail.value,
-    furyIncoming = furyRail.incoming or 0,
+    fury = furyRail.value,               -- expected nil.  DO NOT COERCE.
     furyMax = furyRail.max or self.FURY_CAP,
-    furyProjected = furyRail.projected,
-    atCap = furyRail.atCap or false,
     powerReadable = furyRail.readable or false,
+    -- STRUCTURALLY unreadable, straight from C_Secrets via State.  Published so the log can
+    -- say WHY the column is empty, and so a future reader does not re-derive the finding.
+    furyRestricted = furyRail.restricted or false,
   }
   ctx.powers = bars
-
-  -- WHICH RESOURCE THIS SPEC'S COSTS ARE DENOMINATED IN.  Resolved from `spec.powers` by
-  -- the shell kit, NOT written as a literal here — `Enum.PowerType.Fury` is 17, but a brain
-  -- that hardcodes 17 is one refactor away from the Soul-Shard bug in a new direction.
-  -- nil (no Enum / nothing declared) means every cost falls back to the declared constant,
-  -- which is the honest degradation.
-  ctx.costPowerType = ns.Coach.CostPowerType(self)
-
-  -- The live costs.  The shell owns the INJECTED reader (env.powerCostFn = cfg.powerCost);
-  -- this brain owns WHICH spells cost, in WHICH resource, and the fallbacks.
-  --
-  -- ⚠ NO UNIT CONVERSION.  Fury's divisor is 1, so display units ARE exact units.
-  -- Destruction multiplies by 10 at this exact point; copying that here would be a silent
-  -- 10x error that no test would catch, because 40 * 10 is still a plausible-looking gate.
-  --
-  -- ⚠ A COST OF **0** IS AN ANSWER, NOT A REFUSAL.  `ns.PowerCost` is three-valued since
-  -- 2026-08-03 — nil means unreadable, 0 means explicitly free — so this guard tests for a
-  -- NUMBER and lets a real zero through.  `nil` MUST fall through to the fallback; a spec
-  -- whose cost cannot be read must under-promise, never cue a press that fails.
-  local function costOf(spellID, fallback)
-    if env and env.powerCostFn and spellID and ctx.costPowerType then
-      local c = env.powerCostFn(spellID, ctx.costPowerType)
-      if type(c) == "number" then return c end
-    end
-    return fallback
-  end
 
   -- ── Readiness, CHARGE-AWARE ────────────────────────────────────────────────
   -- An ability with a charge banked is usable even while its recharge timer runs, so a
@@ -350,23 +349,43 @@ function spec:Context(state, env)
   -- Vengeful Retreat line (:81).
   ctx.initiative = buffActive(S.INITIATIVE)
 
-  -- ── The spender, and the three other Fury costs ────────────────────────────
-  -- ⚠ THE COST IS OF THE SPELL WE WILL ACTUALLY PRESS, not of the base always.  In demon
-  -- form the frame casts Annihilation, and only the LIVE id carries Annihilation's own
-  -- cost — which happens to be identical today (40) and must not be assumed to stay so.
-  -- Falls back to the base id where there is no transform, and to the declared constant
-  -- where the client refuses.  Retribution learned this one the same way.
-  local function liveOf(base)
-    local rec = base and factsByBase[base]
-    return (rec and rec.live) or base
+  -- ── AFFORDABILITY — the channel that replaced the Fury comparison ──────────
+  -- `abilities[base].usable` is State's per-ability read of `C_Spell.IsSpellUsable`, asked
+  -- about the LIVE id (State's readAbilityFacts) and fenced on the spec's `spends` field.
+  -- Its shape is ABSENT-on-refusal: `{ readable = false }` carries no `insufficientPower`
+  -- member at all, so "we could not ask" and "you cannot afford it" stay distinguishable.
+  --
+  -- ⚠ USE `insufficientPower`, NOT `isUsable`.  `isUsable` was MEASURED true on a spell
+  -- visibly on cooldown during the Retribution flight — it answers "can I afford it", not
+  -- "can I cast it".  Readiness is `usable()`'s job, three blocks up, and it stays there.
+  --
+  -- ⚠ AN UNREADABLE VERDICT DOES NOT BLOCK.  `nil`/absent falls through to TRUE.  That is
+  -- the safe direction HERE and only here, because every line that calls this also passes
+  -- the CDM/napkin/charge readiness gate first — so the worst case is a cue for a press
+  -- that fails, where the opposite default reproduces the exact flight failure (an absent
+  -- read becoming "unaffordable" on every ability, forever).
+  local function affordable(base)
+    local row = base and abilities[base]
+    local u = row and row.usable
+    if not (u and u.readable) then return true end
+    return u.insufficientPower ~= true
   end
+  ctx.affordable = affordable
+
   -- The BASE key the spend lines return.  Resolved through `facts`, so an untracked Chaos
   -- Strike yields nil and both spend lines simply find nothing rather than cueing a ghost.
-  ctx.spenderKey     = factsByBase[S.CHAOS_STRIKE] and S.CHAOS_STRIKE or nil
-  ctx.spenderCost    = costOf(liveOf(S.CHAOS_STRIKE),  self.SPENDER_COST_FALLBACK)
-  ctx.danceCost      = costOf(liveOf(S.BLADE_DANCE),   self.DANCE_COST_FALLBACK)
-  ctx.eyeBeamCost    = costOf(liveOf(S.EYE_BEAM),      self.EYE_BEAM_COST_FALLBACK)
-  ctx.glaiveCost     = costOf(liveOf(S.THROW_GLAIVE),  self.GLAIVE_COST_FALLBACK)
+  ctx.spenderKey = factsByBase[S.CHAOS_STRIKE] and S.CHAOS_STRIKE or nil
+
+  -- Published for the decision log and the oracle — the four gates the list actually asks,
+  -- resolved once here so RankWinner's two runs (winner + runner-up) cannot disagree.
+  -- ⚠ ONLY THE ABILITIES THE LIST GATES ON RESOURCE APPEAR.  Felblade, Immolation Aura,
+  -- Fel Rush, Vengeful Retreat, The Hunt and Metamorphosis are generators or free presses;
+  -- Essence Break has NO Fury cost at all (its old `fury>=35` was a POOLING rule — see
+  -- rotation.md Deviation 13), so there is nothing for the client to report.
+  ctx.spenderAfford  = affordable(S.CHAOS_STRIKE)
+  ctx.danceAfford    = affordable(S.BLADE_DANCE)
+  ctx.eyeBeamAfford  = affordable(S.EYE_BEAM)
+  ctx.glaiveAfford   = affordable(S.THROW_GLAIVE)
 
   -- ── L5's cross-ability anticipation read ───────────────────────────────────
   -- See EYE_BEAM_LEAD's note for why this one read is licensed where every other
@@ -413,16 +432,20 @@ end
 -- Aura sits on L4 and L12, Blade Dance on L7 and L10, and the spender on L8 and L13.  Each
 -- pair keys on ONE base spellID, so one exclusion drops both occurrences and the shell's
 -- honest second place is a genuine re-run rather than "the next line".
+--
+-- ⚠⚠ NOT ONE LINE BELOW COMPARES A FURY NUMBER, AND NONE MAY (2026-08-03).  Fury is secret
+-- — see the deleted-tunables banner at the top of this file.  Affordability is the client's
+-- own per-spell `insufficientPower` verdict, resolved in Context as `ctx.*Afford`.
+--
+-- ⚠ THE EVALUATION ORDER IS **L11 -> L13 -> L12**, and the out-of-sequence L-numbers are
+-- deliberate: they are permanent labels that rotation.md and coach_havoc_apl_spec both key
+-- on, so renumbering would silently invalidate every cross-reference for a cosmetic gain.
+-- The shape is Blizzard's — generator, spender, generator — from
+-- `assisted_combat/demonhunter_havoc.simc`, and it exists because the two generator lines
+-- lost their Fury-deficit gates: left above the main dump ungated they would jam on and
+-- starve the spender, which is the flight failure by a different mechanism.
 function spec:RankWinner(ctx, excluded)
   local S = ids()
-  -- Fury throughout, plain integers: `projected` is the live rail plus the signed in-flight
-  -- delta.  There is no second unit in this spec.
-  local projected = ctx.furyProjected or ctx.fury or 0
-  -- The DEFICIT gates read the LIVE value, not the projection: a spender already in flight
-  -- has committed to draining the bar, and crediting that drain toward "I need Fury" would
-  -- fire the generator lines a GCD early on every single spend.
-  local live = ctx.fury or 0
-  local deficit = (ctx.furyMax or self.FURY_CAP) - live
 
   -- The Coach decides in BASE spellIDs, so key() is IDENTITY — it only gates on the ability
   -- being TRACKED (present in ctx.facts).  An untracked line yields nil and evaluation
@@ -451,14 +474,30 @@ function spec:RankWinner(ctx, excluded)
 
   -- L2 — METAMORPHOSIS: the whole burst window, as a plain press.  Nothing is staged for it
   -- and nothing is held, so it never reads as a hold.
-  -- ⚠ simc:103 is the longest single line in the APL and only THREE of its terms survive.
-  -- `!buff.inner_demon.up` is readable (389693 is tracked).  `cooldown.blade_dance.remains`
-  -- means "Blade Dance is ON cooldown", which is `not bladeDanceUsable` — one of the few
-  -- cooldown-remains terms in this APL that survives as a BOOLEAN rather than a duration.
-  -- The Eye Beam alignment block (five `cooldown.eye_beam.remains>=N` clauses) is dropped
-  -- entirely: every term is a secret read, and holding a 2-minute cooldown on a gate we
-  -- cannot evaluate would be worse than landing it out of sync.
-  if ctx.metaUsable and not ctx.innerDemon and not ctx.bladeDanceUsable then
+  -- ⚠ simc:103 is the longest single line in the APL and only ONE of its terms survives:
+  -- `!buff.inner_demon.up` (389693 is tracked).  The Eye Beam alignment block (five
+  -- `cooldown.eye_beam.remains>=N` clauses) is dropped because every term is a secret read.
+  --
+  -- ⚠⚠ THE BLADE DANCE TERM WAS **DROPPED 2026-08-03**, AND IT WAS A MISREADING, NOT A
+  -- SIMPLIFICATION.  This line used to carry `not ctx.bladeDanceUsable`, derived from the
+  -- fragment `cooldown.blade_dance.remains` read as a truthy duration.  Reading the fragment
+  -- instead of the clause was the error.  In full, with simc's precedence (`&` over `|`):
+  --
+  --   ( cooldown.blade_dance.remains
+  --     & ( cooldown.blade_dance.remains > gcd.max*3 | prev_gcd.{1,2,3}.death_sweep ) )
+  --   | !talent.chaotic_transformation
+  --
+  -- Two independent disqualifications.  (1) The whole clause is TRUE for anyone WITHOUT
+  -- Chaotic Transformation — the talent that makes Meta reset Eye Beam and Blade Dance, and
+  -- the only reason the gate exists — and `talent.chaotic_transformation` is not readable,
+  -- so the escape hatch is invisible to us.  (2) Even with it, the requirement is "Blade
+  -- Dance is ~3 GCDs from ready, or a Death Sweep just went out", not "Blade Dance is on
+  -- cooldown".  MEASURED CONSEQUENCE: the term vetoed Metamorphosis on ALL 2374 in-combat
+  -- lines of the 2026-08-03 flight — zero presses of a 2-minute cooldown.
+  --
+  -- Dropped, on the same rule the Eye Beam block already got: holding a 2-minute cooldown on
+  -- a gate we cannot evaluate is worse than landing it out of sync.  rotation.md Dev. 12.
+  if ctx.metaUsable and not ctx.innerDemon then
     k, lv, nt = pick(key(S.METAMORPHOSIS), "ROTATION"); if k then return k, lv, nt end
   end
 
@@ -504,7 +543,14 @@ function spec:RankWinner(ctx, excluded)
   -- simc authoring accident rather than a tuning decision — taking the file literally is the
   -- Tier-1-faithful call and it fails safe (a missed press, never a wrong one).  Re-check on
   -- the next simc pull.  `fury>=35` is simc's own number.
-  if ctx.inMeta and ctx.essenceBreakUsable and live >= self.ESSENCE_BREAK_FURY then
+  -- ⚠ `fury>=35` IS DROPPED, and it is the one genuine ROTATIONAL regression of the secrecy
+  -- finding.  It was a POOLING rule — the 4 s window wants Fury behind it to flood — not a
+  -- press cost: Essence Break 258860 has NO PowerType-17 row in DB2 `SpellPower`, so it
+  -- costs nothing and `IsSpellUsable` has nothing to report.  With no readable Fury there is
+  -- no replacement, so the window can now open on an empty bar and the lines below it
+  -- generate rather than spend inside it.  Every other dropped gate loses a nuance on a
+  -- press that stays correct; this one can waste a 40 s cooldown.  rotation.md Dev. 13.
+  if ctx.inMeta and ctx.essenceBreakUsable then
     k, lv, nt = pick(key(S.ESSENCE_BREAK), "ROTATION"); if k then return k, lv, nt end
   end
 
@@ -512,7 +558,7 @@ function spec:RankWinner(ctx, excluded)
   -- Sweep heads the meta list (actions.meta:118 / :122 / :130, all above eye_beam at :129),
   -- and out of it Eye Beam comes first (:86 above :88).  That inversion is ONE of the two
   -- things the fork genuinely changes, and it is why this line and L10 are separate.
-  if ctx.inMeta and ctx.bladeDanceUsable and projected >= (ctx.danceCost or 0) then
+  if ctx.inMeta and ctx.bladeDanceUsable and ctx.danceAfford then
     k, lv, nt = pick(key(S.BLADE_DANCE), "ROTATION", "Death Sweep"); if k then return k, lv, nt end
   end
 
@@ -520,7 +566,7 @@ function spec:RankWinner(ctx, excluded)
   -- Essence Break is a ~4 s amplification window and the whole point is to flood it with
   -- spenders; casting anything weak inside it is the mistake the line exists to prevent.
   -- The window comes from CAST HISTORY, not an aura — see EB_WINDOW's banner.
-  if ctx.ebWindow and projected >= (ctx.spenderCost or 0) then
+  if ctx.ebWindow and ctx.spenderAfford then
     k, lv, nt = pick(ctx.spenderKey, "ROTATION", "Essence Break window")
     if k then return k, lv, nt end
   end
@@ -529,7 +575,7 @@ function spec:RankWinner(ctx, excluded)
   -- six-clause alignment expression (`eb_aligned`, `raid_event.adds`, `desired_targets`,
   -- Eternal Hunt) built almost entirely from secret cooldown reads and sim-only facts.  What
   -- survives is "it is up and you can afford it", which is also what the KB says.
-  if ctx.eyeBeamUsable and projected >= (ctx.eyeBeamCost or 0) then
+  if ctx.eyeBeamUsable and ctx.eyeBeamAfford then
     k, lv, nt = pick(key(S.EYE_BEAM), "ROTATION"); if k then return k, lv, nt end
   end
 
@@ -540,34 +586,42 @@ function spec:RankWinner(ctx, excluded)
   -- Gating on `mode == "aoe"` instead would make it INVISIBLE for the whole single-target
   -- rotation of the standard build; over-pressing it on a First-Blood-less build costs a
   -- little damage on a press that is still positive.  rotation.md Deviation 8.
-  if not ctx.inMeta and ctx.bladeDanceUsable and projected >= (ctx.danceCost or 0) then
+  if not ctx.inMeta and ctx.bladeDanceUsable and ctx.danceAfford then
     k, lv, nt = pick(key(S.BLADE_DANCE), "ROTATION"); if k then return k, lv, nt end
   end
 
   -- L11 — FELBLADE for Fury (simc:90).  ⚠ Filed CDM-**Utility** by Blizzard and cueable
   -- anyway, because the pipeline's fences read the SPEC-authored `cadence` — see the file
-  -- header.  simc's `fury.deficit>=15+gen*0.5` becomes a flat deficit: `fury_gen_per_sec`
-  -- is a six-term expression including haste and three stack counts, none of it on the
-  -- pulse, and a fabricated generation rate would be a guess dressed as arithmetic.
-  if ctx.felbladeUsable and deficit >= self.FELBLADE_DEFICIT then
+  -- header.
+  -- ⚠ THE DEFICIT GATE IS GONE (2026-08-03): a Fury deficit is `max - value` and `value` is
+  -- secret.  Position replaces it — Felblade fires when usable and the spender sits
+  -- IMMEDIATELY BELOW, so the press costs one GCD the rotation was going to spend generating
+  -- anyway.  That is Blizzard's own handling (`assisted_combat` presses a BARE `felblade`
+  -- between two `chaos_strike` lines).  Felblade's real 12 s cooldown is what makes
+  -- "whenever usable" self-limiting; Immolation Aura's 30 s charge category is not, which is
+  -- why L12 went BELOW the dump and this did not.
+  if ctx.felbladeUsable then
     k, lv, nt = pick(key(S.FELBLADE), "ROTATION"); if k then return k, lv, nt end
-  end
-
-  -- L12 — IMMOLATION AURA for Fury (simc:91-92), the second and lower of its two lines.
-  -- Same flat-deficit reduction as L11.  Fel-Scarred draws this frame as CONSUMING FIRE.
-  if ctx.immoUsable and deficit >= self.IMMO_DEFICIT then
-    k, lv, nt = pick(key(S.IMMOLATION_AURA), "ROTATION"); if k then return k, lv, nt end
   end
 
   -- L13 — THE SPENDER (simc:95 outside meta, :134 inside): the main Fury dump, and the line
   -- that runs most of the time.  In demon form the frame casts Annihilation.
+  -- ⚠ EVALUATED HERE, BETWEEN L11 AND L12 — see RankWinner's header.  The label stays 13.
   -- ⚠ simc's threshold is `75 - gen*gcd - 20*cs_machine + 25*pool_glaive_tempest`, three
-  -- terms of which are talent-derived and unreadable.  With none of them the gate is simply
-  -- "can you afford it", which is the implicit affordability gate every line already
-  -- carries.  The POOLING nuance is lost; the press is not.  rotation.md Deviation 9.
-  if projected >= (ctx.spenderCost or 0) then
+  -- terms of which are talent-derived and unreadable — and since 2026-08-03 the FOURTH term,
+  -- Fury itself, is unreadable too.  "Can you afford it" is no longer a reduction of simc's
+  -- gate; it is the only formulation the client can answer.  rotation.md Deviation 9.
+  if ctx.spenderAfford then
     k, lv, nt = pick(ctx.spenderKey, "ROTATION", ctx.inMeta and "Annihilation" or nil)
     if k then return k, lv, nt end
+  end
+
+  -- L12 — IMMOLATION AURA for Fury (simc:91-92), the second and lower of its two lines.
+  -- Fel-Scarred draws this frame as CONSUMING FIRE.  Deficit gate dropped as L11's was, and
+  -- it moved BELOW the spender for the reason stated there: a 30 s charge category left
+  -- ungated above the dump would take the press on every recharge.
+  if ctx.immoUsable then
+    k, lv, nt = pick(key(S.IMMOLATION_AURA), "ROTATION"); if k then return k, lv, nt end
   end
 
   -- L14 — FEL RUSH as the AoE filler (simc:94, `active_enemies>1`).  Also CDM-Utility.
@@ -584,16 +638,24 @@ function spec:RankWinner(ctx, excluded)
   -- we cannot read; folding to the filler under-presses it on that build and is correct
   -- everywhere else.  On Aldrachi Reaver this frame becomes Reaver's Glaive, which L1 has
   -- already claimed by the time evaluation reaches here.
-  if ctx.throwGlaiveUsable and projected >= (ctx.glaiveCost or 0) then
+  -- ⚠ AND ITS FALLBACK COST WAS **WRONG** — the reason this line won 770 of 2380 flight
+  -- lines.  `GLAIVE_COST_FALLBACK = 25` came from DB2 `SpellPower`, but the live client
+  -- reports Throw Glaive with `insufficientPower = false` at a Fury level where Chaos
+  -- Strike, Eye Beam and Blade Dance all reported true — i.e. FREE.  Against a fabricated
+  -- Fury of 0, `0 >= 25` was false for everything else and this line inherited the rotation.
+  -- ⚠ DB2 COSTS ARE NOT THE CLIENT'S COSTS.  Asking the client is now the only channel.
+  if ctx.throwGlaiveUsable and ctx.glaiveAfford then
     k, lv, nt = pick(key(S.THROW_GLAIVE), "ROTATION"); if k then return k, lv, nt end
   end
 
-  -- No press.  Honest, and visible in the decision log as `w:-` — which on this spec is the
-  -- signature of "every cooldown is down and there is not enough Fury for a spender", a real
-  -- state rather than a bug.  ⚠ Havoc should show it LESS than Retribution did (13.9 % in
-  -- combat on v0.32.90): Chaos Strike has no cooldown at all, so L13 is reachable on every
-  -- tick the bar carries 40 Fury.  A high in-combat `w:-` here means the FURY RAIL is not
-  -- being read, not that the list has a hole — check `PW:` first.
+  -- No press.  Honest, and visible in the decision log as `w:-`.
+  -- ⚠ READ THE WINNER **DISTRIBUTION**, NOT THIS RATIO, when judging a flight.  The failed
+  -- 2026-08-03 pass scored 0.0 % in-combat `w:-` — a perfect score — precisely BECAUSE the
+  -- generator lines were jammed on and something always won.  A low ratio proves the list
+  -- always has an answer, not that the answer is right.  The acceptance is that Chaos
+  -- Strike / Annihilation is the MOST COMMON winner, as it is in any real Havoc rotation.
+  -- ⚠ If `w:-` is genuinely high, the suspect is no longer the Fury rail (nothing reads it):
+  -- check `usable()`'s charge inputs and the CDM coverage first.
   return nil
 end
 
@@ -627,16 +689,20 @@ function spec:Escalate(winnerKey, level, ctx)
     return "LATE"
   end
 
-  -- 2. The spender parked at a FULL Fury bar — the readable overcap dump, the analogue of
-  --    Destruction's Chaos-Bolt-at-full-bar rule and Retribution's spender-at-cap.  Gated
-  --    on ACTUAL Fury, not the projection: an in-flight spender has already committed to
-  --    draining the bar, so projecting it would call you late for something you are mid-way
-  --    through fixing.  No burst carve-out, because Havoc never pools for a window on
-  --    purpose.
-  if rec.base == ctx.spenderKey and ctx.fury
-      and ctx.fury >= (ctx.furyMax or self.FURY_CAP) then
-    return "LATE"
-  end
+  -- 2. ⚠ THE "SPENDER PARKED AT A FULL FURY BAR" RULE IS **DELETED** (2026-08-03), NOT
+  --    MOVED.  It was the analogue of Destruction's Chaos-Bolt-at-full-bar and
+  --    Retribution's spender-at-cap, and it read `ctx.fury >= ctx.furyMax` — a comparison
+  --    against a value that DOES NOT EXIST.  Fury is secret (see the file header); the rule
+  --    fired on `0 >= 120`, i.e. never, and restoring it against any fabricated number
+  --    would make it fire ALWAYS, which is worse.
+  --
+  --    ⚠ IT IS ALSO NOT RECOVERABLE THROUGH THE NEW CHANNEL.  `IsSpellUsable` is BINARY: a
+  --    spender is equally "affordable" at 40 Fury and at 170, so overcap is invisible to it
+  --    BY CONSTRUCTION.  This is the single thing Phase 1 knowingly gives up.  The only
+  --    route back is Phase 2's `LuaCurveObject` — `UnitPowerPercent(unit, type, unmodified,
+  --    curve)` evaluated in C and handed straight to a draw call, so Lua never sees the
+  --    number.  docs/multi-class-rollout.md carries the design.  DO NOT reinstate this
+  --    against a Lua-side value; there will never be one.
 
   return level
 end

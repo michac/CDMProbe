@@ -193,11 +193,24 @@ function DL.Render(pulse, guidance, drawList)
   -- all-integer `PW:` column in a capture therefore means the exact read is not wired
   -- (State step 1) or not being passed through (Coach:ResourceBars), which is precisely the
   -- signal the in-flight verification of this phase looks for.
+  --
+  -- ⚠⚠ AND IT MUST NEVER PRINT A NUMBER THAT IS NOT A MEASUREMENT (2026-08-03).  The Havoc
+  -- flight rendered `PW:0/+0` on all 2380 lines while Fury was in fact UNREADABLE, because
+  -- `Coach:ResourceBars` coerced an absent value to zero — so the one instrument that could
+  -- have named the problem instead corroborated the wrong answer.  A future reader seeing
+  -- `PW:0` has to be able to trust that it means ZERO.
+  --   `restricted`  the rail is STRUCTURALLY unreadable — a PRIMARY resource, secret
+  --                 forever (State asks C_Secrets.ShouldUnitPowerBeSecret).  Not a
+  --                 transient miss; nothing will ever fill this column in.
+  --   `?`           we came away with nothing this pulse, reason unknown — the pre-existing
+  --                 honest blank, which also covers a PASSIVE spec's absent bar.
   local bar = (guidance.resourceBars or {})[1] or {}
   local mod = num(bar.modifier)
   local xVal, xInc = num(bar.valueExact), num(bar.incomingExact)
   local pwStr
-  if mod and mod > 1 and xVal then
+  if bar.restricted == true then
+    pwStr = "restricted"
+  elseif mod and mod > 1 and xVal then
     pwStr = string.format("%.1f", xVal / mod)
       .. "/" .. (xInc and string.format("%+.1f", xInc / mod) or "?")
   else

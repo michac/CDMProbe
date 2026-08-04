@@ -1005,9 +1005,24 @@ function R:drawResourceRow(barIndex, bar)
     for _, pip in ipairs(row) do pip:Hide() end
     return
   end
+  -- ⚠ AN UNMEASURED RAIL DRAWS NOTHING (2026-08-03), and this is the LAST of the three
+  -- absent-is-never-zero coercions the Havoc flight exposed.  `bar.value or 0` used to sit
+  -- on the line below, which renders a rail we could not read as a row of EMPTY pips —
+  -- i.e. pixels that say "you have zero" about a number nobody measured.  A primary
+  -- resource (Fury, Rage, Energy, …) is secret FOREVER, so this is not a transient state
+  -- that self-corrects on the next pulse; it is the permanent condition of most specs in
+  -- the game.  Hiding the row is the honest answer and it costs nothing: no shipped spec
+  -- can reach here today (both secret-rail specs declare `display = "none"` and return
+  -- above), so this is the guard that will be right for the FIRST one that does.
+  -- `max` keeps its `or 0` — a missing max is a spec-authoring gap, not a measurement.
+  local value = bar.value
+  if type(value) ~= "number" then
+    for _, pip in ipairs(row) do pip:Hide() end
+    return
+  end
   local col = self.powerColor[bar.powerType] or self.powerColor.SOUL_SHARDS
   local anchor = self.registry[bar.anchorTo] or self.registry.UIPARENT
-  local max, value = bar.max or 0, bar.value or 0
+  local max = bar.max or 0
   if max > MAX_PIPS then max = MAX_PIPS end
   for i = 1, max do
     local pip = row[i]
