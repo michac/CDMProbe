@@ -433,12 +433,24 @@ spec.Spec = {
     kind = "button", spends = "fury", cadence = "oncd", expect = false,
     abbr = "AG", label = "Abyssal Gaze (Fel-Scarred override)",
   },
+  -- ⚠ `chargePool` IS CORRECTNESS-BEARING, NOT DOCUMENTATION (2026-08-03, off a live AoE
+  -- flight).  Consuming Fire is Immolation Aura in demon form — ONE button, ONE in-game
+  -- charge pool (confirmed in game: spending a Consuming Fire charge lowers Immolation
+  -- Aura's count) — but it is a SEPARATE CDM row with its own cooldownID.  The charge napkin
+  -- used to key on that cooldownID, so the two rows kept two independent estimates and
+  -- neither saw the other's presses: leaving Meta restored a stale 2/2 and the HUD cued
+  -- Immolation Aura with nothing to press.  This field is what joins them.  See State.lua's
+  -- `chargeEst` header for the capture.
+  --
+  -- ⚠ ANY future override of a CHARGED button needs this, and nothing will remind you — the
+  -- failure is silent, only appears in the form you are not currently in, and self-corrects
+  -- the moment you leave combat.  Vengeance and Devourer both fork on Metamorphosis.
   [S.CONSUMING_FIRE] = {
-    kind = "button", cadence = "oncd", expect = false,
+    kind = "button", cadence = "oncd", expect = false, chargePool = S.IMMOLATION_AURA,
     abbr = "CFire", label = "Consuming Fire (Fel-Scarred override)",
   },
   [S.CONSUMING_FIRE_ALT] = {
-    kind = "button", cadence = "oncd", expect = false,
+    kind = "button", cadence = "oncd", expect = false, chargePool = S.IMMOLATION_AURA,
     abbr = "CFire2", label = "Consuming Fire (Fel-Scarred override, alt ID)",
   },
   [S.REAVERS_GLAIVE] = {

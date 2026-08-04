@@ -487,12 +487,30 @@ describe("State domain view — the ROSTER ANCHOR (Phase 5)", function()
       assert.equals(0, ch.max)
     end)
 
+    -- ⚠ THE KEY IS THE POOL, NOT THE COOLDOWN ID (2026-08-03).  Conflagrate declares no
+    -- `chargePool`, so its pool key is its own roster spellID — which is the point: an
+    -- ability that is nobody's override keys on itself and nothing about it changed.  This
+    -- read was `CID_CONF` until the Havoc flight; see State.lua's `chargeEst` header.
     it("seeds the napkin off the exact read, and binds it for the spend", function()
       withCharges(2, 2)
       St.Build(false)
-      assert.equals(2, (St.Charges.Read(CID_CONF)))
+      assert.equals(2, (St.Charges.Read(CONFLAGRATE)))
       St.Charges.Spend(CONFLAGRATE)          -- the binding must have happened in Build
-      assert.equals(1, (St.Charges.Read(CID_CONF)))
+      assert.equals(1, (St.Charges.Read(CONFLAGRATE)))
+    end)
+
+    -- Build must wire the ALERT path too, not just the spend path — they are two different
+    -- maps and only the spend one was ever asserted here.
+    it("binds the row's cooldownID to the pool, so a recharge alert lands", function()
+      withCharges(2, 2)
+      St.Build(false)
+      assert.equals(CONFLAGRATE, St.Charges.PoolOfCid(CID_CONF))
+      St.Charges.Spend(CONFLAGRATE)
+      St.Acquire()                           -- onAlert drops everything at zero consumers
+      St.OnAlert({ cooldownID = CID_CONF },
+                 _G.Enum.CooldownViewerAlertEventType.ChargeGained)
+      St.Release()
+      assert.equals(2, (St.Charges.Read(CONFLAGRATE)))
     end)
 
     it("falls back to the napkin estimate once the live read goes dark", function()
@@ -505,6 +523,54 @@ describe("State domain view — the ROSTER ANCHOR (Phase 5)", function()
       assert.equals(1, ch.cur)
       assert.equals("napkin", ch.source)
       assert.is_false(ch.readable)           -- an estimate is never laundered as a read
+    end)
+
+    -- ── THE `chargePool` WIRING, ON HAVOC (2026-08-03) ──────────────────────────────────
+    -- The cases above run Destruction, where every charged ability is its own pool — so
+    -- they pass whether or not Build reads `chargePool` at all.  MUTATION-CHECKED: replace
+    -- `(specInfo and specInfo.chargePool) or rid` with a bare `rid` and this block goes red
+    -- while the rest of the suite stays green, which is exactly why it exists.
+    --
+    -- Consuming Fire 452487 is Immolation Aura 258920 in demon form: one button, one shared
+    -- in-game charge pool (confirmed in game), two CDM rows.  Its row must resolve to the
+    -- BASE's pool, or a press in Meta debits an estimate the base form never reads.
+    describe("a declared chargePool joins two rows to one estimate", function()
+      local IA, CFIRE = 258920, 452487
+      local CID_CFIRE = 911
+
+      local function havocConsumingFireRow()
+        realGetSpellCharges = _G.C_Spell.GetSpellCharges
+        H.setSpecIndex(5); ns.ResolveActiveSpec()        -- Havoc 577
+        _G.Enum.CooldownViewerCategory = { Essential = 0 }
+        _G.C_CooldownViewer = {
+          GetCooldownViewerCategorySet = function(v) return v == 0 and { CID_CFIRE } or {} end,
+          GetCooldownViewerCooldownInfo = function() return { spellID = CFIRE,
+                                                              isKnown = true, charges = true } end,
+        }
+        _G.C_Spell.GetSpellCharges = function()
+          return { currentCharges = 2, maxCharges = 2 }
+        end
+        ns.VIEWERS = { { frame = "EssentialCooldownViewer" } }
+        ns.GetViewer     = function() return { n = 1 } end
+        ns.GetItemFrames = function() return { { cooldownID = CID_CFIRE } } end
+        ns.OnLogin()
+      end
+
+      it("the override's row files its charges under the BASE's pool", function()
+        havocConsumingFireRow()
+        St.Build(false)
+        assert.equals(IA, St.Charges.PoolOfCid(CID_CFIRE))
+        assert.equals(2, (St.Charges.Read(IA)))
+      end)
+
+      -- The defect verbatim: press it in demon form, and the count the base form reads
+      -- must have moved.  Keyed by cooldownID this left IA's estimate untouched.
+      it("a press on the override debits the count the base form reads", function()
+        havocConsumingFireRow()
+        St.Build(false)
+        St.Charges.Spend(CFIRE)
+        assert.equals(1, (St.Charges.Read(IA)))
+      end)
     end)
   end)
 
@@ -1193,6 +1259,54 @@ describe("State charge napkin (field-fix C2)", function()
     St.Charges.Seed(CONF_CID, 0, 2)
     St.OnAlert({ cooldownID = CONF_CID }, A.ChargeGained)
     assert.equals(1, (St.Charges.Read(CONF_CID)))
+  end)
+
+  -- ── ONE POOL, TWO ROWS (2026-08-03) ────────────────────────────────────────────────────
+  -- The Havoc AoE flight's defect, as a unit: Metamorphosis swaps Immolation Aura's CDM row
+  -- for Consuming Fire, a SEPARATE cooldownID drawing on the SAME in-game charge pool.  The
+  -- napkin used to key on the cooldownID, so each row kept its own count, neither saw the
+  -- other's presses, and leaving demon form restored a stale 2/2 that the Coach then cued
+  -- with nothing to press.  The pool key is what joins them.
+  describe("a base and its display override share ONE pool", function()
+    local IA, CFIRE = 258920, 452487        -- the roster ids
+    local IA_CID, CFIRE_CID = 40653, 40999  -- two rows, two cooldownIDs
+
+    before_each(function()
+      -- Both rows bound to Immolation Aura's pool, which is what the spec's `chargePool`
+      -- declaration makes Build do.
+      St.Charges.Seed(IA, 2, 2)
+      St.Charges.Bind(IA, IA); St.Charges.BindCid(IA_CID, IA)
+      St.Charges.Bind(CFIRE, IA); St.Charges.BindCid(CFIRE_CID, IA)
+    end)
+
+    it("a press in demon form debits the count the BASE form reads", function()
+      St.Charges.Spend(CFIRE)
+      assert.equals(1, (St.Charges.Read(IA)))
+    end)
+
+    it("a recharge alert on the OVERRIDE's row credits the shared pool", function()
+      St.Charges.Spend(CFIRE); St.Charges.Spend(CFIRE)
+      assert.equals(0, (St.Charges.Read(IA)))
+      St.OnAlert({ cooldownID = CFIRE_CID }, A.ChargeGained)
+      assert.equals(1, (St.Charges.Read(IA)))
+    end)
+
+    -- THE REGRESSION ITSELF.  Spend both charges in demon form, drop out, and the base must
+    -- report zero.  Keyed by cooldownID this read 2 — the exact line that cued Immolation
+    -- Aura at no charges for 118 of L12's 452 `charge_cap` cues.
+    it("leaving demon form does NOT restore a stale count", function()
+      St.Charges.Spend(CFIRE); St.Charges.Spend(CFIRE)
+      assert.equals(0, (St.Charges.Read(IA)))
+    end)
+
+    -- The other direction, so the join cannot be one-way: an ability that declares no pool
+    -- keys on itself and stays completely independent.
+    it("an unrelated charged ability is untouched by either", function()
+      St.Charges.Seed(CONF_CID, 2, 2)
+      St.Charges.Bind(17962, CONF_CID)
+      St.Charges.Spend(CFIRE)
+      assert.equals(2, (St.Charges.Read(CONF_CID)))
+    end)
   end)
 
   it("clamps at max — a gain past the cap cannot invent a charge", function()

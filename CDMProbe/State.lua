@@ -402,8 +402,30 @@ St.dotEdge = {}          -- cooldownID -> { state = "pandemic"|"fresh"|"absent",
 -- header).  A credit inside the floor is refused.  Duplicate drains are absorbed; genuine
 -- restores still land; and the cases this gets wrong (a true cooldown-RESET proc granting
 -- a charge early) bias DOWN, which is the allowed direction.
-local chargeEst = {}     -- cooldownID -> { cur, max, recharge, lastGain }
-local chargeCid = {}     -- base spellID -> the cooldownID of its CHARGED row (spend needs it)
+-- ⚠ KEYED BY THE CHARGE POOL, NOT BY THE ROW.  Measured 2026-08-03 on a Havoc AoE flight:
+-- Metamorphosis swaps Immolation Aura's CDM row for Consuming Fire, and those are two rows
+-- with two cooldownIDs — so keyed by cooldownID this kept TWO INDEPENDENT ESTIMATES OF ONE
+-- SHARED IN-GAME CHARGE POOL.  Neither saw the other's presses, and leaving demon form
+-- restored a count that predated every Consuming Fire cast:
+--
+--     t135.5  CH:IA~2/2        base form
+--     t135.6  CH:CFire2~0/2    enters Meta — the override's own pool, never seeded
+--       …every press debits CFire2…
+--     t162.0  CH:IA~2/2        leaves Meta — IA's pool untouched, stale, and CUEABLE
+--
+-- Confirmed against the client at two combat drops, where the exact OOC read landed at
+-- +0.0s (no recharge window to explain it): napkin 2/2 vs `GetSpellCharges` 1/2, twice.
+-- The visible symptom was Immolation Aura cued at zero charges — 118 of L12's 452
+-- `charge_cap` cues fired on a pool the log rendered as `0/2`.
+--
+-- This is roster-state-plan §6.3's rule one level up: facts about one ability must be read
+-- about ONE identity.  Phase 5 joined an ability's cooldown and its charges onto the same
+-- spellID; a base and its display override are the same BUTTON, so they must share one
+-- estimate.  The pool key is the BASE's roster spellID, declared by the spec (`chargePool`)
+-- because nothing in the client's runtime surface exposes the shared ChargeCategory.
+local chargeEst = {}     -- POOL KEY (base spellID) -> { cur, max, recharge, lastGain }
+local chargeCid = {}     -- base spellID -> the POOL KEY its presses debit
+local chargePoolOfCid = {}  -- cooldownID -> POOL KEY (the ChargeGained alert arrives by cid)
 
 -- Fraction of the measured recharge a second credit must clear.  Not 1.0: haste and CDR
 -- make a real restore land EARLIER than the OOC-measured duration, and refusing those
@@ -415,10 +437,10 @@ local CHARGE_GAIN_FLOOR_FRACTION = 0.5
 -- any real charge recharge in the game, so it cannot suppress a legitimate gain.
 local CHARGE_GAIN_FLOOR_MIN = 1.0
 
-local function chargeSeed(cooldownID, cur, max, recharge)
-  if not (cooldownID and type(cur) == "number") then return end
-  local prev = chargeEst[cooldownID]
-  chargeEst[cooldownID] = {
+local function chargeSeed(poolKey, cur, max, recharge)
+  if not (poolKey and type(cur) == "number") then return end
+  local prev = chargeEst[poolKey]
+  chargeEst[poolKey] = {
     cur = cur,
     max = (type(max) == "number") and max or nil,
     -- KEEP the last positive measurement.  `cooldownDuration` reads 0 at full charges, and
@@ -432,8 +454,8 @@ local function chargeSeed(cooldownID, cur, max, recharge)
   }
 end
 
-local function chargeRead(cooldownID)
-  local e = cooldownID and chargeEst[cooldownID]
+local function chargeRead(poolKey)
+  local e = poolKey and chargeEst[poolKey]
   if not e then return nil end
   return e.cur, e.max
 end
@@ -441,8 +463,8 @@ end
 -- A cast landed: spend one.  Floors at 0 — never negative, and never "we must have had
 -- more than we counted".
 local function chargeSpend(base)
-  local cid = base and chargeCid[base]
-  local e = cid and chargeEst[cid]
+  local pool = base and chargeCid[base]
+  local e = pool and chargeEst[pool]
   if not e then return end
   e.cur = math.max(0, e.cur - 1)
 end
@@ -454,8 +476,8 @@ end
 -- ⚠ GATED BY THE GAIN FLOOR (see the block comment above).  The alert is a queue drain,
 -- not a charge, so a second credit inside the floor is refused as a duplicate.  `now`
 -- defaults to GetTime() so the alert path and the specs share one clock.
-local function chargeGain(cooldownID, now)
-  local e = cooldownID and chargeEst[cooldownID]
+local function chargeGain(poolKey, now)
+  local e = poolKey and chargeEst[poolKey]
   if not e then return end
   now = (type(now) == "number") and now or GetTime()
 
@@ -476,8 +498,14 @@ end
 
 -- Test seam (the C2 spec drives the whole loop off synthetic pulses).
 St.Charges = { Seed = chargeSeed, Read = chargeRead, Spend = chargeSpend, Gain = chargeGain,
-               Bind = function(base, cid) if base and cid then chargeCid[base] = cid end end,
-               Reset = function() wipe(chargeEst); wipe(chargeCid) end }
+               Bind = function(base, pool) if base and pool then chargeCid[base] = pool end end,
+               -- The alert arrives by cooldownID and the estimate lives under a pool key, so
+               -- the translation has to be a stored fact rather than an assumption.
+               BindCid = function(cid, pool)
+                 if cid and pool then chargePoolOfCid[cid] = pool end
+               end,
+               PoolOfCid = function(cid) return cid and chargePoolOfCid[cid] or nil end,
+               Reset = function() wipe(chargeEst); wipe(chargeCid); wipe(chargePoolOfCid) end }
 
 -- FOLD cache (W4 domain-view re-layer), keyed by cooldownID.  base-spellID -> cooldownID
 -- is N:1 (a summon is one Essential row + one TrackedBar/TrackedBuff row), and Build's
@@ -640,7 +668,11 @@ end
 -- live override (a pet dispel taking over the Grimoire button, whose cooldown must not be
 -- read and filed under the base ability's key).  Both ladders exclude the *live* override
 -- for that reason; they differ only on rung 3.
-local function readCharge(chargeIdent, hasCharges, cooldownID)
+-- ⚠ THE THIRD ARGUMENT IS THE POOL KEY, NOT THE COOLDOWN ID (2026-08-03).  See `chargeEst`'s
+-- header: a base and its display override are two rows drawing on ONE in-game charge pool,
+-- so the estimate is filed under the pool, and this read seeds and reads the same key the
+-- spend and the gain do.
+local function readCharge(chargeIdent, hasCharges, poolKey)
   local cur, max, recharge = ns.ReadCharges(chargeIdent)
   if cur ~= nil then
     -- ⚠ `>= 1`, NOT `> 1` — MEASURED 2026-08-03, and the `> 1` was a real defect.
@@ -677,14 +709,14 @@ local function readCharge(chargeIdent, hasCharges, cooldownID)
       -- The exact read ALWAYS wins, and re-seeds the napkin (the combat-exit correction).
       -- `recharge` rides along: this OOC read is the ONLY place the gain floor can be
       -- measured, so seeding the count and seeding the floor are the same event.
-      chargeSeed(cooldownID, cur, max, recharge)
+      chargeSeed(poolKey, cur, max, recharge)
       return { readable = true, cur = ns.Stash(cur), max = ns.Stash(max),
                source = "live", charged = true }
     end
     -- ② A MEASUREMENT: the client answered, and the answer is "no charge pool".
     return { readable = true, cur = nil, max = 0, source = "live" }
   end
-  local ecur, emax = chargeRead(cooldownID)
+  local ecur, emax = chargeRead(poolKey)
   if ecur ~= nil then
     return { readable = false, cur = ecur, max = emax, source = "napkin", charged = true }
   end
@@ -1258,7 +1290,10 @@ local function onAlert(item, event)
   -- `now` is the alert's own timestamp, so the gain floor is measured on the same clock
   -- the edge arrived on rather than a re-read of GetTime().
   if event == A.ChargeGained then
-    chargeGain(cid, now)
+    -- ⚠ THROUGH THE POOL MAP.  The alert names a ROW; the estimate belongs to the shared
+    -- charge POOL that row draws on, which on a display-overridden button is a different
+    -- key.  Falling back to the cid keeps a never-bound row behaving exactly as before.
+    chargeGain(chargePoolOfCid[cid] or cid, now)
     pushEvent({ kind = "charge_gained", cooldownID = cid, at = now })
   end
 end
@@ -2232,13 +2267,20 @@ function St.Build(drain)
   -- spellID` — Blizzard's own narrower ladder — and the whole point of §C2 is that the two
   -- ladders can no longer name different spells, so it gets `rid` too.
   --
-  -- ⚠ THE COOLDOWN ID STILL COMES FROM THE ROW, and it has to: `cdBaseline`, `readyEdge`
-  -- and the CHARGE NAPKIN (`chargeEst`, and the gain floor `ns.ReadCharges`' third return
-  -- seeds) are all keyed by cooldownID.  Passing the claimed row's cid is what preserves
-  -- that seed cadence unchanged — the read moved, the bookkeeping did not.
+  -- ⚠ THE COOLDOWN ID STILL COMES FROM THE ROW, and it has to: `cdBaseline` and `readyEdge`
+  -- are keyed by cooldownID.  Passing the claimed row's cid is what preserves that seed
+  -- cadence unchanged — the read moved, the bookkeeping did not.
+  --
+  -- ⚠ THE CHARGE NAPKIN IS THE ONE EXCEPTION, AND IT BECAME ONE ON 2026-08-03.  It used to
+  -- be cid-keyed too; a Havoc AoE flight proved that wrong (see `chargeEst`'s header — one
+  -- shared pool, two rows, two drifting counts, Immolation Aura cued at zero charges).  It
+  -- is keyed by the POOL now: the spec's declared `chargePool`, or the ability's own roster
+  -- id when it declares none, which is every ability that is nobody's override.
   local function readAbilityFacts(rid, rep)
     local cid = rep and rep.cooldownID or nil
-    local charge = readCharge(rid, rep and rep.charges, cid)
+    local specInfo = ns.SpecInfo and ns.SpecInfo(rid) or nil
+    local pool = (specInfo and specInfo.chargePool) or rid
+    local charge = readCharge(rid, rep and rep.charges, pool)
     -- THE AFFORDABILITY READ, FENCED ON `info.spends` (2026-08-03).  This is a guarded
     -- call per ability per pulse at 10 Hz, and the roster anchor's whole sizing win came
     -- from NOT making reads for rows nothing claims — so only an ability the SPEC declares
@@ -2248,7 +2290,7 @@ function St.Build(drain)
     --
     -- ⚠ THE FENCE IS THE SPEC'S `spends`, NOT the CDM's category — the same rule that let
     -- Havoc's three CDM-Utility rotational presses stay cueable with no pipeline edit.
-    local info = ns.SpecInfo and ns.SpecInfo(rid) or nil
+    local info = specInfo
     local usable
     if info and info.spends then
       -- The LIVE id: `rep.liveSpellID or rid`, the same expression readCd uses one line
@@ -2259,12 +2301,18 @@ function St.Build(drain)
     end
     -- The napkin's spend edge arrives keyed by whatever `St.BaseOfCast` resolves a cast to,
     -- which is the row's BASE — not necessarily the roster id (on Diabolist the Incinerate
-    -- row's base is Shadow Bolt 686).  Bind BOTH, at the same cid, so a press debits the
+    -- row's base is Shadow Bolt 686).  Bind BOTH, at the same POOL, so a press debits the
     -- estimate whichever id the SUCCEEDED event carried.
+    --
+    -- ⚠ AND BIND THE ROW'S CID TO THE POOL TOO — that is the whole fix.  Pressing Consuming
+    -- Fire fires SUCCEEDED for the override (debited here, via `rid`/`b`) while the recharge
+    -- that follows raises ChargeGained on the OVERRIDE'S OWN ROW; without this map that
+    -- credit would land on a second estimate and the base's count would never move.
     if charge.charged then
-      chargeCid[rid] = cid
+      chargeCid[rid] = pool
       local b = rep and rep.spellID
-      if readable(b) then chargeCid[b] = cid end
+      if readable(b) then chargeCid[b] = pool end
+      if cid then chargePoolOfCid[cid] = pool end
     end
     -- THE COOLDOWN RUNG IS TAB 1's, and only tab 1's (§3.8).  Tab 2's value cascade is
     -- totem -> aura -> edit mode -> zeros: there is no spell-cooldown source in it at all
