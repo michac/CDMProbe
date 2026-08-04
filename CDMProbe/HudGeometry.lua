@@ -51,12 +51,17 @@ G.BAR   = { anchorTo = "UIPARENT", point = "CENTER", dy = -18, pip = 14, gap = 4
 -- DrawList channel now (G.keybind below); the parameter was REMOVED rather than
 -- deprecated, because leaving it would preserve exactly the ambiguity that cost us the
 -- special case in three files.
-function G.cue(anchorTo, emphasis)
+-- ⚠ `next` IS A PASS-THROUGH FLAG, NOT GEOMETRY (2026-08-03).  It says "the look-ahead
+-- landed back on THIS ability", i.e. press it twice, and the Renderer answers with a small
+-- COMPANION DOT beside the main one.  It carries no position of its own: the companion is
+-- offset from the cue dot inside the Renderer, so the two can never drift apart.
+function G.cue(anchorTo, emphasis, isNext)
   local d = G.DOT
   return {
     anchorTo = anchorTo, point = d.point, relPoint = d.relPoint,
     dx = d.dx, dy = d.dy, size = d.size,
     emphasis = emphasis,
+    next = isNext or nil,
   }
 end
 

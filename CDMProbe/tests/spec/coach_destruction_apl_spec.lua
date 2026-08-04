@@ -801,27 +801,40 @@ describe("Destruction rotation list (from specs/destruction/rotation.md)", funct
   end)
 
   ----------------------------------------------------------------------------
-  -- ROTATION_FALLBACK — the winner's ABILITY removed, list re-run from the top.
+  -- ROTATION_FALLBACK — THE LOOK-AHEAD since 2026-08-03 (was: the runner-up).
   ----------------------------------------------------------------------------
-  describe("fallback (ROTATION_FALLBACK)", function()
-    it("Ruination winner -> Soul Fire surfaces as the runner-up", function()
+  -- ⚠⚠ THE TOKEN'S MEANING CHANGED.  It used to be "re-run the list with the winner's
+  -- ability EXCLUDED"; it is now "advance the board one GCD as if you pressed the winner,
+  -- and re-rank".  Chaos Bolt has NO cooldown, so one GCD later it is still the answer —
+  -- the look-ahead lands back on the winner, no second cue is emitted, and the winner's own
+  -- cue carries `next = true` (the Renderer draws a companion dot on that one icon).
+  local function repeats(g, key)
+    return g.cues[key] ~= nil and g.cues[key].next == true
+  end
+
+  describe("look-ahead (ROTATION_FALLBACK)", function()
+    it("Ruination winner -> Chaos Bolt has no cooldown, so it repeats", function()
       local g = Coach:Compute(build({ art = "ruination", shards = 3, soulFire = cdReady() }))
       assert.equals(ID.CB, pressOf(g).cid)
-      assert.equals(ID.SF, fallbackOf(g).cid)
+      assert.is_true(repeats(g, ID.CB))
+      assert.is_nil(fallbackOf(g))
     end)
 
-    it("removing Chaos Bolt suppresses L1, L3 AND L11 (all three ride one base id)", function()
-      -- Ruination armed AND the bar full: with Chaos Bolt pulled, the L11 dump must not
-      -- resurface — the floor answers instead.
-      local g = Coach:Compute(build({ art = "ruination", shards = 5 }))
-      assert.equals(ID.CB, pressOf(g).cid)
-      assert.equals(ID.INC, fallbackOf(g).cid)
-    end)
-
-    it("Chaos Bolt winner -> the Incinerate floor is the runner-up", function()
+    it("Chaos Bolt winner -> also repeats, for the same reason", function()
       local g = Coach:Compute(build({ shards = 3 }))
       assert.equals(ID.CB, pressOf(g).cid)
-      assert.equals(ID.INC, fallbackOf(g).cid)
+      assert.is_true(repeats(g, ID.CB))
+    end)
+
+    -- ⚠ THE EXCLUSION MACHINERY SURVIVES WITHOUT A SHELL CALLER, and is now tested
+    -- directly.  `RankWinner(ctx, excluded)` is still part of the brain contract; Emit
+    -- stopped calling it when the runner-up became a look-ahead.  The property is real and
+    -- worth keeping: the spender sits on L1, L3 AND L11, all keyed on one base id, so an
+    -- exclusion must not simply re-offer it one line lower.
+    it("RankWinner's exclusion still drops L1, L3 AND L11 at once", function()
+      local ctx = ns.ActiveSpec:Context(build({ art = "ruination", shards = 5 }), Coach)
+      assert.equals(ID.CB, (ns.ActiveSpec:RankWinner(ctx)))
+      assert.equals(ID.INC, (ns.ActiveSpec:RankWinner(ctx, ID.CB)))
     end)
 
     it("no fallback when removing the winner leaves nothing castable", function()

@@ -880,13 +880,16 @@ describe("Retribution rotation list (from specs/retribution/rotation.md)", funct
     -- ⚠ THE EXCLUSION IS BY BASE SPELLID, so it drops EVERY line that names the ability.
     -- The spender sits on three lines (L1 / L4 / L8) and they all key on the same base, so
     -- excluding the winner must not simply re-offer it one line lower.
-    it("drops the spender from all three of its lines at once", function()
-      local g = guidance({ hp = 5, woa = cdFar(), toll = cdReady() })
-      assert.equals(ID.TV, pressOf(g).cid)          -- L4
-      local fb = fallbackOf(g)
-      assert.is_not_nil(fb)
-      assert.are_not.equals(ID.TV, fb.cid)          -- NOT the same button one line down
-      assert.equals(ID.DT, fb.cid)                  -- L6
+    -- ⚠ REWRITTEN 2026-08-03: the shell no longer calls RankWinner with an exclusion (the
+    -- runner-up became a one-GCD LOOK-AHEAD), so the property is asserted DIRECTLY against
+    -- the cascade instead of through the guidance.  It is still real and still worth
+    -- pinning — the spender keys on one base id across L1 / L4 / L8.
+    it("RankWinner's exclusion drops the spender from all three lines at once", function()
+      local ctx = ns.ActiveSpec:Context(build({ hp = 5, woa = cdFar(), toll = cdReady() }), Coach)
+      assert.equals(ID.TV, (ns.ActiveSpec:RankWinner(ctx)))        -- L4
+      local second = (ns.ActiveSpec:RankWinner(ctx, ID.TV))
+      assert.are_not.equals(ID.TV, second)                          -- not one line down
+      assert.equals(ID.DT, second)                                  -- L6
     end)
 
     it("drops Blade of Justice from both of its lines at once", function()

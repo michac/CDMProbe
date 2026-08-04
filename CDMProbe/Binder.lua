@@ -114,7 +114,10 @@ function B:bindCues(guidance, layout)
     -- draw=false demotes to "no emphasis", which now means "no cue at all".
     local emphasis = (cue and cue.draw ~= false) and cue.emphasis or nil
     if emphasis then
-      out[#out + 1] = G.cue(cid, emphasis)
+      -- `next` rides the cue rather than becoming a second entry: `cues` is keyed by BASE
+      -- spellID upstream and this channel by ICON, so a repeat has nowhere else to live —
+      -- see Coach:Emit.  It means "the look-ahead landed back on this ability".
+      out[#out + 1] = G.cue(cid, emphasis, cue.next == true)
     end
   end
   return out

@@ -210,6 +210,67 @@ describe("Renderer", function()
     assert.is_nil(r.cueFrames["fake1"])
   end)
 
+  ----------------------------------------------------------------------------
+  -- THE COMPANION DOT — the look-ahead's "press it again" (2026-08-03).
+  ----------------------------------------------------------------------------
+  -- The runner-up cue became a one-GCD LOOK-AHEAD, and on a fast spec it very often lands
+  -- back on the ability already being cued (Chaos Strike has no cooldown and won 35 % of a
+  -- real flight).  A second ICON cannot say that, so the repeat is a flag on the cue and a
+  -- small second dot beside the first.
+  describe("the `next` companion dot", function()
+    it("is absent unless the cue asks for it", function()
+      local r = rigged(1)
+      r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" } } })
+      assert.is_nil(r.nextDots["fake1"])
+    end)
+
+    it("draws beside the main dot, in the SAME colour", function()
+      local r = rigged(1)
+      r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION", next = true } } })
+      local nx = r.nextDots["fake1"]
+      assert.is_not_nil(nx)
+      assert.is_true(nx._shown)
+      -- ⚠ SAME HUE AS THE CUE, deliberately: it is the same decision twice, and a second
+      -- colour would read as a second, different call.
+      assert.is_true(colorEq(nx._color, theme.ROTATION[1], theme.ROTATION[2], theme.ROTATION[3]))
+      -- ...and it is SMALLER, so the pair reads as "now, then again" rather than two presses.
+      assert.is_true(nx._size[1] < r.cueFrames["fake1"]._size[1],
+                     "the companion is not smaller than the cue dot")
+    end)
+
+    it("hides again when the repeat stops, and is POOLED not destroyed", function()
+      local r = rigged(1)
+      r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION", next = true } } })
+      local nx = r.nextDots["fake1"]
+      r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION" } } })
+      assert.is_false(nx._shown)
+      assert.equals(nx, r.nextDots["fake1"])
+    end)
+
+    -- ⚠⚠ THE CULL, MUTATION-CHECKED BY CONSTRUCTION.  The companion is culled from
+    -- `hideCueArt`, which runs off the CUE-active set — so a handle that leaves the board
+    -- entirely must take its companion with it.  Drop the `nextDots` line from hideCueArt
+    -- and this goes red: the small dot would be left lit on an icon carrying no cue at all,
+    -- which is the exact shape of the v0.32.32 stray-decoration bug.
+    it("is culled when the whole handle leaves the board", function()
+      local r = rigged(2)
+      r:Draw({ cues = { { anchorTo = "fake1", emphasis = "ROTATION", next = true },
+                        { anchorTo = "fake2", emphasis = "SOON" } } })
+      local nx = r.nextDots["fake1"]
+      assert.is_true(nx._shown)
+      r:Draw({ cues = { { anchorTo = "fake2", emphasis = "SOON" } } })
+      assert.is_false(nx._shown, "the companion outlived its cue")
+    end)
+
+    -- An unknown token draws no dot at all, so it must draw no companion either — the
+    -- "never guess a colour" rule applies to both or the companion becomes the guess.
+    it("is not drawn for an emphasis the theme does not know", function()
+      local r = rigged(1)
+      r:Draw({ cues = { { anchorTo = "fake1", emphasis = "MADE_UP", next = true } } })
+      assert.is_nil(r.nextDots["fake1"])
+    end)
+  end)
+
   it("no cues => nothing drawn, no error", function()
     local r = rigged(1)
     assert.has_no.errors(function() r:Draw({}) end)

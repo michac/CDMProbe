@@ -150,6 +150,24 @@ spec.EYE_BEAM_LEAD = 1.5
 -- cascade.
 spec.HAVOC_RG_FROM_BUFF = false
 
+-- ⚠ THE SECOND PARKED SWITCH (2026-08-03), and unlike the first it is parked on a
+-- MEASUREMENT rather than a worry.  `ctx.ampWindow` would like Inertia in it — Inertia is a
+-- real damage amp and it was present on 39.1 % of the flight's in-combat lines, so it is
+-- plainly not a stuck constant.  But the tracked id is the TALENT (427640); the real aura is
+-- 427641 with a 5 s duration, and the observed ON-runs were
+--     20.0 · 12.2 · 6.7 · 6.6 · 5.7 · 0.8  seconds
+-- A 20-second run is FOUR buff durations.  Either the row latches, or it is reporting
+-- something adjacent (the talent being known, a trigger, a stack refresh chain) — and we
+-- cannot tell which from one capture.  Folding it into the amp window would let a possibly-
+-- latched row promote high-damage lines for 20 s at a time, which is the Light's Deliverance
+-- failure with a bigger blast radius.
+--
+-- FLIP IT only when a capture shows 427640 present in runs that track the 5 s aura.  The
+-- decision log already prints `Inrt` in its `PR:` column, so the evidence collects itself —
+-- this is a question a flight CAN settle, which is exactly what earns a switch rather than a
+-- documented gap (contrast the Reaver's Glaive spend sequence, where the read does not exist).
+spec.HAVOC_INERTIA_FROM_BUFF = false
+
 -- ⚠ AND THE THING THAT IS NOT A SWITCH, stated here so nobody adds one.  The Reaver's
 -- Glaive SPEND SEQUENCE (simc's `variable.rg_inc` / `rg_ds`, six APL lines at :56-61) is
 -- not implemented, and the reason is DATA rather than difficulty: Rending Strike 442442 and
@@ -387,6 +405,48 @@ function spec:Context(state, env)
   ctx.eyeBeamAfford  = affordable(S.EYE_BEAM)
   ctx.glaiveAfford   = affordable(S.THROW_GLAIVE)
 
+  -- ── CHARGE-CAP PRESSURE (L12) ──────────────────────────────────────────────
+  -- "The pool is full, so recharge is being thrown away."  simc's `charges=2` on the
+  -- anti-cap Immolation Aura line, generalised to `cur >= max` so it is right for a 1-charge
+  -- build too (A Fire Inside is unreadable).
+  -- ⚠ ABSENT IS NOT AT-CAP.  A missing count must read FALSE, not true: an unmeasured pool
+  -- promoting a generator above the spender is the jam this line exists to avoid, and the
+  -- in-combat count is a napkin estimate biased to UNDERCOUNT — which fails the safe way.
+  local function atChargeCap(base)
+    local ch = base and abilities[base] and abilities[base].charge
+    local cur, mx = ch and num(ch.cur), ch and num(ch.max)
+    return (cur ~= nil and mx ~= nil and mx >= 1 and cur >= mx) or false
+  end
+  ctx.immoAtCap = atChargeCap(S.IMMOLATION_AURA)
+
+  -- ── THE AMP WINDOW ─────────────────────────────────────────────────────────
+  -- "Is a damage-amplification window open right now?"  Published as ONE signal plus its
+  -- named parts, so a line can read the summary and the decision log can say WHICH source
+  -- opened it — the same discipline `ctx.inMeta` uses for the meta fork.
+  --
+  -- ⚠ ONLY PROVEN CHANNELS ARE IN IT.  Each of the three was observed working in the
+  -- 2026-08-03 flight, which is the bar; a signal that merely *should* work is a parked
+  -- switch, not a term.
+  --   ebWindow    cast history vs 320338's flat 4000 ms  — the debuff has no CDM row
+  --   inMeta      the TrackedBuff row OR either meta transform — forked correctly 6x
+  --   initiative  388108, the crit window Vengeful Retreat exists to proc
+  --
+  -- ⚠⚠ INERTIA IS DELIBERATELY **NOT** IN IT, and this is a measurement rather than caution.
+  -- 427640 is the TALENT id (rotation.md Deviation 2 — the real aura is 427641, 5 s, and the
+  -- *trigger* is a third aura with no row at all).  Its ON-runs in the flight were
+  -- 20.0 / 12.2 / 6.7 / 6.6 / 5.7 / 0.8 s against a 5 s buff: not a stuck constant, but a
+  -- 20-second run is four durations, so the row is not a clean buff instance.  Gating a
+  -- rotation line on it is the Light's Deliverance shape exactly, so it takes the same
+  -- treatment: a one-line switch, defaulted OFF, flipped only when a capture shows 427640
+  -- present ONLY while the buff genuinely is.  See HAVOC_INERTIA_FROM_BUFF.
+  ctx.inertia = buffActive(S.INERTIA)
+  ctx.ampFromEB    = ctx.ebWindow
+  ctx.ampFromMeta  = ctx.inMeta
+  ctx.ampFromInit  = ctx.initiative
+  ctx.ampWindow = ctx.ampFromEB or ctx.ampFromMeta or ctx.ampFromInit
+    or (self.HAVOC_INERTIA_FROM_BUFF and ctx.inertia)
+    or false
+
   -- ── L5's cross-ability anticipation read ───────────────────────────────────
   -- See EYE_BEAM_LEAD's note for why this one read is licensed where every other
   -- `cooldown.X.remains` gate in the APL is dropped.  `anticipated` + a positive
@@ -599,9 +659,40 @@ function spec:RankWinner(ctx, excluded)
   -- anyway.  That is Blizzard's own handling (`assisted_combat` presses a BARE `felblade`
   -- between two `chaos_strike` lines).  Felblade's real 12 s cooldown is what makes
   -- "whenever usable" self-limiting; Immolation Aura's 30 s charge category is not, which is
-  -- why L12 went BELOW the dump and this did not.
+  -- why L12b went BELOW the dump and this did not.
   if ctx.felbladeUsable then
     k, lv, nt = pick(key(S.FELBLADE), "ROTATION"); if k then return k, lv, nt end
+  end
+
+  -- L12 — IMMOLATION AURA AT ITS CHARGE CAP (simc:72, "Prevent IA charge capping").
+  -- ⚠ ADDED 2026-08-03 BECAUSE THE FLIGHT PROVED L12b UNREACHABLE: Immolation Aura won ZERO
+  -- presses across 839 in-combat lines on which it was ready with a banked charge, because
+  -- L12b sits below a spender that is affordable almost always.  Both positions were wrong
+  -- once the Fury-deficit gate died — above the dump ungated it jams, below it never fires —
+  -- so the fix is a SECOND occurrence with the gate simc actually uses, which is readable.
+  --
+  -- simc:72 is `talent.a_fire_inside&(charges=2|full_recharge_time<gcd.max*2)&
+  -- variable.bd_not_blocking&!debuff.essence_break.up`.  What survives:
+  --   `charges=2`            -> `cur >= max` — the charge pool is FULL and the next tick of
+  --                             recharge is thrown away.  Fully readable (State's count).
+  --   `!debuff.essence_break.up` -> `not ctx.ebWindow` — never spend the amp window on a
+  --                             generator; that is the mistake L8 exists to prevent.
+  --   `variable.bd_not_blocking` -> `not ctx.bladeDanceUsable` — Blade Dance is the better
+  --                             press when it is up, and it sits above this line anyway.
+  -- DROPPED: `full_recharge_time<gcd.max*2` (no honest per-charge countdown here — Immolation
+  -- Aura is one of the three rows whose base cooldown reads WRONG), and `talent.a_fire_inside`
+  -- (unreadable; at 1 charge `cur >= max` is simply true whenever it is up, which is the
+  -- correct behaviour for that build anyway).
+  --
+  -- ⚠ SIMC'S "won't overcap Fury" HALF IS DROPPED AND WILL NOT COME BACK.  maxroll's only
+  -- Fury sentence for this spec is "Cast Immolation Aura if you won't overcap on fury", and
+  -- Fury is secret.  It matters less than it reads: top-100 Mythic parses waste **14.1 % of
+  -- all Fury generated** (n=7, WCL 12.0.7), and the dominant source is **Demon Blades**, a
+  -- PASSIVE that cannot be gated by anything.  Erring toward pressing is the right side of a
+  -- decision the best players in the world do not win either.
+  if ctx.immoUsable and ctx.immoAtCap and not ctx.ebWindow and not ctx.bladeDanceUsable then
+    k, lv, nt = pick(key(S.IMMOLATION_AURA), "ROTATION", "charge cap")
+    if k then return k, lv, nt end
   end
 
   -- L13 — THE SPENDER (simc:95 outside meta, :134 inside): the main Fury dump, and the line
@@ -616,10 +707,11 @@ function spec:RankWinner(ctx, excluded)
     if k then return k, lv, nt end
   end
 
-  -- L12 — IMMOLATION AURA for Fury (simc:91-92), the second and lower of its two lines.
-  -- Fel-Scarred draws this frame as CONSUMING FIRE.  Deficit gate dropped as L11's was, and
-  -- it moved BELOW the spender for the reason stated there: a 30 s charge category left
-  -- ungated above the dump would take the press on every recharge.
+  -- L12b — IMMOLATION AURA as the plain filler (simc:74), the lower of its two lines and
+  -- Fel-Scarred's CONSUMING FIRE.  Deficit gate dropped as L11's was, and it stays BELOW the
+  -- spender for the reason stated there: a 30 s charge category left ungated above the dump
+  -- would take the press on every recharge.  L12 above catches the case that actually costs
+  -- damage — the pool sitting at cap — so this line is now genuinely the leftover.
   if ctx.immoUsable then
     k, lv, nt = pick(key(S.IMMOLATION_AURA), "ROTATION"); if k then return k, lv, nt end
   end

@@ -159,6 +159,27 @@ describe("DecisionLog.Render", function()
     assert.truthy(s:find("G{w:-}", 1, true), s)
   end)
 
+  -- ⚠ THE LOOK-AHEAD LANDING ON THE WINNER (2026-08-03).  There is no ROTATION_FALLBACK cue
+  -- in that case — the repeat rides the winner's own cue as `next` — so without a marker the
+  -- log would be silent about a decision the SCREEN is making (a second companion dot).
+  -- That is the same hole the `DR:` field was re-sourced to close, in a new place.
+  it("renders `+1` on the winner when the look-ahead repeats it", function()
+    local pulse = build{ shards = 2 }
+    local g = guidance({ [ID.SB] = "ROTATION" })
+    g.cues[ID.SB].next = true
+    local s = ns.DecisionLog.Render(pulse, g, drawList{ CID.SB })
+    assert.truthy(s:find("G{w:SB+1", 1, true), s)
+  end)
+
+  -- ...and the marker must not appear when it does not repeat, or it means nothing.
+  it("omits `+1` when the look-ahead names a different ability", function()
+    local pulse = build{ shards = 2 }
+    local g = guidance({ [ID.SB] = "ROTATION", [ID.HOG] = "ROTATION_FALLBACK" })
+    local s = ns.DecisionLog.Render(pulse, g, drawList{ CID.SB })
+    assert.is_nil(s:find("+1", 1, true), s)
+    assert.truthy(s:find("fb:", 1, true), s)
+  end)
+
   it("dropped cue (in guidance, absent from drawList) ⇒ ×", function()
     local pulse = build{ shards = 1 }
     local g = guidance({ [ID.SB] = "ROTATION" })

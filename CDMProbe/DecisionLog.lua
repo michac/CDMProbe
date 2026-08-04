@@ -56,6 +56,10 @@ local SESSIONS = 6       -- sessions kept on disk
 
 -- Guidance emphasis -> compact Binder token.  Generic (spec-agnostic), so it stays a
 -- shell local rather than moving to the per-spec log vocabulary.
+-- ⚠ `RFB` NOW MEANS "the NEXT press", not "the runner-up" (2026-08-03) — the token kept its
+-- name so a capture stays greppable across the change; guidance-contract.json carries the
+-- ruling.  A repeat of the WINNER emits no RFB at all: it rides the winner's cue as
+-- `next`, and the log renders that as a trailing `+1` on the `w:` field.
 local EMPH = { ROTATION = "ROT", LATE = "LATE", ROTATION_FALLBACK = "RFB", SOON = "SOON" }
 
 --------------------------------------------------------------------------------
@@ -290,11 +294,17 @@ function DL.Render(pulse, guidance, drawList)
   -- SOON = a sorted list.
   local cues = guidance.cues or {}
   local wCode, wLate, wNote, fbCode
+  local wRepeat = false
   local soon = {}
   for spellID, cue in pairs(cues) do
     local emph = cue.emphasis
     if emph == "ROTATION" or emph == "LATE" then
       wCode, wLate, wNote = codeForSpell(spellID), (emph == "LATE"), cue.note
+      -- THE LOOK-AHEAD LANDED BACK ON THE WINNER (2026-08-03).  There is no RFB cue in this
+      -- case — the repeat rides the winner — so without this the log would be silent about
+      -- a decision the screen is making, which is exactly what the `DR:` field exists to
+      -- stop happening elsewhere.
+      wRepeat = (cue.next == true)
     elseif emph == "ROTATION_FALLBACK" then
       fbCode = codeForSpell(spellID)
     elseif emph == "SOON" then
@@ -306,6 +316,9 @@ function DL.Render(pulse, guidance, drawList)
     local w = (wLate and "w!" or "w:") .. wCode
     local note = clean(wNote)
     if note ~= "" then w = w .. ":" .. note end
+    -- `+1` = "and again next GCD".  A trailing marker rather than a field of its own, so
+    -- every existing `w:` grep keeps matching.
+    if wRepeat then w = w .. "+1" end
     gParts[#gParts + 1] = w
   else
     gParts[#gParts + 1] = "w:-"

@@ -74,7 +74,7 @@ local ID = {
   -- overrides (no icon of their own; they ride a tracked frame)
   ANNI = 201427, DSWEEP = 210152, AGAZE = 452497, CFIRE = 452487, RG = 442294,
   -- buffs
-  INNER_DEMON = 389693, INITIATIVE = 388108, AOTG = 442290,
+  INNER_DEMON = 389693, INITIATIVE = 388108, AOTG = 442290, INERTIA = 427640,
   -- a plain utility, for the SOON exclusion
   UTILITY = 198589,   -- Blur
 }
@@ -121,7 +121,7 @@ end
 --   agaze / cfire     the two Fel-Scarred display overrides
 --   rgXform           show Reaver's Glaive on the Throw Glaive frame (Aldrachi Reaver)
 --   metaBuff          the Metamorphosis TrackedBuff row (191427) reporting IsActive()
---   innerDemon / initiative / aotg   buff presence
+--   innerDemon / initiative / aotg / inertia   buff presence
 --   ebCast            put an Essence Break cast in history (`ebCastAge` seconds ago)
 --   noSpender         omit Chaos Strike entirely (the untracked degradation)
 --   noImmo            omit Immolation Aura entirely
@@ -196,6 +196,7 @@ local function build(f)
   if f.innerDemon then buffs[ID.INNER_DEMON] = true end
   if f.initiative then buffs[ID.INITIATIVE] = true end
   if f.aotg       then buffs[ID.AOTG] = true end
+  if f.inertia    then buffs[ID.INERTIA] = true end
 
   -- ── AFFORDABILITY, the channel that replaced every Fury comparison ──────────
   -- ⚠⚠ THE WHOLE FIXTURE CHANGED SHAPE ON 2026-08-03, AND IT IS NOT A REFACTOR.  This used
@@ -818,6 +819,105 @@ describe("Havoc rotation list (from specs/havoc/rotation.md)", function()
       assert.equals(ID.FB, pressOf(g).cid)
       assert.equals(ID.IA, fallbackOf(g).cid)
     end)
+  end)
+
+  ----------------------------------------------------------------------------
+  -- L12 — IMMOLATION AURA AT ITS CHARGE CAP (simc:72).
+  ----------------------------------------------------------------------------
+  -- ⚠ THE FLIGHT DEFECT THIS BLOCK EXISTS FOR.  With only L12b (below the spender),
+  -- Immolation Aura won ZERO presses across 839 in-combat lines on which it was ready with a
+  -- banked charge — the spender is affordable almost always, so the line was unreachable.
+  -- Both positions are wrong once the Fury-deficit gate dies; the readable fix is simc's own
+  -- anti-cap gate, which promotes IA above the dump ONLY when recharge is being thrown away.
+  describe("L12 — the anti-charge-cap line", function()
+    local FULL = { charged = true, cur = 2, max = 2 }
+    local HALF = { charged = true, cur = 1, max = 2 }
+
+    it("fires ABOVE the spender when the pool is at cap", function()
+      local w = winner({ immo = cdReady(), immoCharge = FULL })
+      assert.equals(ID.IA, w.cid)
+      assert.equals("charge cap", w.cue.note)
+    end)
+
+    -- The regression guard for the flight defect, stated as the pair.
+    it("...and below cap the spender still wins (L12b is the leftover)", function()
+      assert.equals(ID.CS, winner({ immo = cdReady(), immoCharge = HALF }).cid)
+      -- ...but L12b still catches it when the spender cannot pay.
+      assert.equals(ID.IA, winner({ immo = cdReady(), immoCharge = HALF, broke = true }).cid)
+    end)
+
+    -- `!debuff.essence_break.up` — never spend the amp window on a generator.
+    it("never fires inside an Essence Break window", function()
+      local w = winner({ immo = cdReady(), immoCharge = FULL, ebCast = true })
+      assert.equals(ID.CS, w.cid)           -- L8 takes the window instead
+      assert.equals("Essence Break window", w.cue.note)
+    end)
+
+    -- `variable.bd_not_blocking` — Blade Dance is the better press when it is up.
+    it("yields to an available Blade Dance", function()
+      assert.equals(ID.BD, winner({ immo = cdReady(), immoCharge = FULL,
+                                    bladeDance = cdReady() }).cid)
+    end)
+
+    -- ⚠⚠ ABSENT IS NOT AT-CAP, and the direction is the whole safety argument.  The
+    -- in-combat count is a napkin estimate biased to UNDERCOUNT, and an unmeasured pool
+    -- promoting a generator above the spender is the jam this gate exists to avoid.
+    it("an ABSENT or unreadable count is NOT at cap", function()
+      assert.equals(ID.CS, winner({ immo = cdReady(), immoCharge = nil }).cid)
+      assert.equals(ID.CS, winner({ immo = cdReady(),
+                                    immoCharge = { charged = true, cur = nil, max = 2 } }).cid)
+      assert.is_false(ctxOf({ immo = cdReady() }).immoAtCap)
+    end)
+
+    -- A 1-charge build (no A Fire Inside) is at cap whenever it is up — correct, and the
+    -- reason the gate is `cur >= max` rather than simc's literal `charges=2`.
+    it("treats a 1-charge pool at 1/1 as capped", function()
+      assert.is_true(ctxOf({ immo = cdReady(),
+                             immoCharge = { charged = true, cur = 1, max = 1 } }).immoAtCap)
+    end)
+  end)
+
+  ----------------------------------------------------------------------------
+  -- The AMP WINDOW — one published signal, three PROVEN sources.
+  ----------------------------------------------------------------------------
+  describe("ctx.ampWindow", function()
+    it("is false with nothing up, and names each source that opens it", function()
+      local c = ctxOf({})
+      assert.is_false(c.ampWindow)
+      assert.is_false(c.ampFromEB); assert.is_false(c.ampFromMeta); assert.is_false(c.ampFromInit)
+    end)
+
+    it("opens on the Essence Break window", function()
+      local c = ctxOf({ ebCast = true })
+      assert.is_true(c.ampFromEB); assert.is_true(c.ampWindow)
+    end)
+
+    it("opens in demon form", function()
+      local c = ctxOf({ metaBuff = true })
+      assert.is_true(c.ampFromMeta); assert.is_true(c.ampWindow)
+    end)
+
+    it("opens on Initiative", function()
+      local c = ctxOf({ initiative = true })
+      assert.is_true(c.ampFromInit); assert.is_true(c.ampWindow)
+    end)
+
+    -- ⚠⚠ INERTIA IS EXCLUDED BY DEFAULT, ON A MEASUREMENT.  427640 is the TALENT id; the
+    -- real aura is 5 s, and the flight's ON-runs were 20.0 / 12.2 / 6.7 / 6.6 / 5.7 / 0.8 s.
+    -- A 20-second run is four durations, so the row may latch — and a latched row would
+    -- promote high-damage lines for 20 s at a stretch.  Same treatment as
+    -- HAVOC_RG_FROM_BUFF: parked, off, flipped only when a capture settles it.
+    it("does NOT open on Inertia while the switch is off", function()
+      local c = ctxOf({ inertia = true })
+      assert.is_true(c.inertia)          -- the signal is read and published...
+      assert.is_false(c.ampWindow)       -- ...and deliberately not trusted
+    end)
+
+    it("DOES open on Inertia once the switch is flipped (documented, not endorsed)", function()
+      ns.Specs[577].HAVOC_INERTIA_FROM_BUFF = true
+      assert.is_true(ctxOf({ inertia = true }).ampWindow)
+      ns.Specs[577].HAVOC_INERTIA_FROM_BUFF = false
+    end)
 
     -- ⚠ THE FINDING THIS SPEC EXISTS TO RECORD: Felblade / Vengeful Retreat / Fel Rush are
     -- filed CDM-**UTILITY** by Blizzard and the fixture files them that way.  Both fences
@@ -1071,13 +1171,16 @@ describe("Havoc rotation list (from specs/havoc/rotation.md)", function()
       assert.equals(ID.FB, fb.cid)                   -- L11
     end)
 
-    it("drops the spender from BOTH of its lines at once", function()
-      local g = guidance({ ebCast = true, throwGlaive = cdReady() })
-      assert.equals(ID.CS, pressOf(g).cid)           -- L8
-      local fb = fallbackOf(g)
-      assert.is_not_nil(fb)
-      assert.are_not.equals(ID.CS, fb.cid)           -- NOT L13's spender again
-      assert.equals(ID.TG, fb.cid)                   -- L15
+    -- ⚠ REWRITTEN 2026-08-03: the shell no longer calls RankWinner with an exclusion (the
+    -- runner-up became a one-GCD LOOK-AHEAD), so this asserts the cascade property directly.
+    -- Chaos Strike has NO cooldown, so through the guidance the look-ahead correctly lands
+    -- back on it — which is what the `next` flag is for, not what this case is about.
+    it("RankWinner's exclusion drops the spender from BOTH of its lines at once", function()
+      local ctx = ns.Specs[577]:Context(build({ ebCast = true, throwGlaive = cdReady() }), Coach)
+      assert.equals(ID.CS, (ns.Specs[577]:RankWinner(ctx)))         -- L8
+      local second = (ns.Specs[577]:RankWinner(ctx, ID.CS))
+      assert.are_not.equals(ID.CS, second)                          -- NOT L13's spender again
+      assert.equals(ID.TG, second)                                  -- L15
     end)
 
     it("drops Blade Dance from whichever line named it", function()

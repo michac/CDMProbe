@@ -168,6 +168,7 @@ function R.New(cfg)
   self.cueHolderAnchor = {}     -- anchorTo -> the frame the holder is currently on
   self.cueLayers  = {}          -- anchorTo -> the CUE LAYER frame (see ensureLayer)
   self.cueFrames  = {}          -- anchorTo -> dot texture (diff-by-key pool)
+  self.nextDots   = {}          -- anchorTo -> COMPANION dot (the look-ahead repeat, 2026-08-03)
   self.cueKeys    = {}          -- anchorTo -> keybind-hint fontstring (diff-by-key)
   self.cueRingIn   = {}         -- anchorTo -> the INNER ring texture (faster, brighter)
   self.cueRingOut  = {}         -- anchorTo -> the OUTER ring, counter-rotating
@@ -583,8 +584,60 @@ function R:hideCueArt(key)
   if dot then dot:Hide() end
   local disc = self.cueDiscs[key]
   if disc then disc:Hide() end
+  -- ⚠ THE COMPANION DOT JOINS THE CULL HERE, not on its own loop.  It is keyed by the same
+  -- handle and created only inside the branch that creates the main dot, so a handle with a
+  -- companion and no dot cannot exist — the same construction argument the rings rely on.
+  local nx = self.nextDots[key]
+  if nx then nx:Hide() end
   parkRing(self.cueRingOut[key])
   parkRing(self.cueRingIn[key])
+end
+
+--------------------------------------------------------------------------------
+-- THE COMPANION DOT — "press this, then press it again" (2026-08-03).
+--------------------------------------------------------------------------------
+-- WHY IT EXISTS.  The runner-up cue became a one-GCD LOOK-AHEAD, and on a fast spec the
+-- look-ahead very often lands back on the ability you were already told to press: Chaos
+-- Strike has no cooldown at all and won 35 % of a real Havoc flight.  A second ICON cannot
+-- say that, and re-using the winner's own cue entry would overwrite its press-now emphasis
+-- (`cues` is keyed by base spellID upstream, this channel by icon).  So the repeat is a
+-- FLAG on the cue and a small second dot beside the first.
+--
+-- ⚠ IT IS A PLAIN, STATIC TEXTURE AND MUST STAY ONE.  `R.BURST`'s rule is absolute here:
+-- NOTHING THAT IS AN ANCESTOR OF A ROTATING TEXTURE MAY BE ANIMATED — the counter-rotating
+-- rings hang off the same cue LAYER, so animating the layer (or scaling it to make room)
+-- would make the rings read as spinning far too fast, permanently, exactly as the retired
+-- `Scale` pop did twice. This draws a sibling texture at a fixed offset and does nothing
+-- else. Do not "improve" it with a pulse.
+--
+-- ⚠ IT BORROWS THE CUE'S COLOUR rather than introducing a token.  The companion is the SAME
+-- decision as the dot it sits beside — one press, twice — and a second hue would read as a
+-- second, different call.
+local NEXT_DOT_SCALE = 0.55     -- of the main dot; small enough to read as "and again"
+local NEXT_DOT_GAP   = 2        -- px between the two rims
+
+function R:drawNextDot(key, layer, c, sz, col)
+  local want = (c.next == true) and col ~= nil
+  local nx = self.nextDots[key]
+  if not want then
+    if nx then nx:Hide() end
+    return
+  end
+  if not nx then
+    nx = maskedDisc(layer, "OVERLAY")
+    self.nextDots[key] = nx
+  end
+  local nsz = math.max(math.floor(sz * NEXT_DOT_SCALE + 0.5), 4)
+  nx:SetColorTexture(col[1], col[2], col[3], col[4] or 1)
+  nx:SetSize(nsz, nsz)
+  nx.mask:ClearAllPoints()
+  nx.mask:SetSize(nsz, nsz)
+  nx.mask:SetPoint("CENTER", nx, "CENTER", 0, 0)
+  nx:ClearAllPoints()
+  -- Offset along +x from the cue dot's centre, so the pair reads left-to-right as
+  -- "now, then again" and never overlaps the keybind (which lives upper-LEFT).
+  nx:SetPoint("CENTER", layer, "CENTER", sz / 2 + NEXT_DOT_GAP + nsz / 2, 0)
+  nx:Show()
 end
 
 function R:drawCues(cues)
@@ -618,6 +671,7 @@ function R:drawCues(cues)
         -- GLOW_SPEC entry) rides a layer BELOW it, so the crisp dot + keybind stay on top.
         dot:SetAlpha(1)
         dot:Show()
+        self:drawNextDot(key, layer, c, sz, col)
         local out = self:setCueRings(key, layer, dot, gs and col or nil, sz, gs)
         -- ARRIVAL: the cue is drawn and shown, so the flare just plays over it.  Only for a
         -- handle that was NOT on the board last draw — a steady redraw at 10 Hz must not

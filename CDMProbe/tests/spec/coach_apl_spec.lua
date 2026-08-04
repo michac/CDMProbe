@@ -172,9 +172,9 @@ end
 
 --------------------------------------------------------------------------------
 describe("Coach rotation list (Tier-1, from apl-prototype/pseudocode.md)", function()
-  local Coach
+  local ns, Coach
   before_each(function()
-    local ns = H.fresh()
+    ns = H.fresh()
     H.load("Coach.lua")
     Coach = ns.Coach.New()
   end)
@@ -296,8 +296,10 @@ describe("Coach rotation list (Tier-1, from apl-prototype/pseudocode.md)", funct
 
     it("Shadow Bolt is the floor when HoG is unaffordable (higher-cost talent)", function()
       -- cfg.shardCost forces HoG's cost to 4; at 3 shards HoG can't fire -> SB floor.
-      local ns = H.fresh(); H.load("Coach.lua")
-      local coach = ns.Coach.New({ shardCost = function() return 4 end })
+      -- ⚠ a LOCAL re-mint (this case wants its own cost injection), renamed so it does not
+      -- shadow the suite-level `ns` the look-ahead cases read.
+      local ns2 = H.fresh(); H.load("Coach.lua")
+      local coach = ns2.Coach.New({ shardCost = function() return 4 end })
       local w = pressOf(coach:Compute(build({ shards = 3 })))
       assert.equals(ID.SB, w.cid)
     end)
@@ -330,20 +332,37 @@ describe("Coach rotation list (Tier-1, from apl-prototype/pseudocode.md)", funct
   end)
 
   ----------------------------------------------------------------------------
-  -- ROTATION_FALLBACK — the honest second place (winner's ability removed, list
-  -- re-run from the top).  Always shown when a castable alternative exists.
+  -- ROTATION_FALLBACK — THE LOOK-AHEAD since 2026-08-03 (was: the honest second place).
   ----------------------------------------------------------------------------
-  describe("fallback (ROTATION_FALLBACK)", function()
-    it("Ruination winner -> Dreadstalkers surfaces as the fallback", function()
+  -- ⚠⚠ THE TOKEN'S MEANING CHANGED, SO THESE CASES CHANGED WITH IT.  It used to be "re-run
+  -- the list with the winner's ability EXCLUDED" — a substitute at the same instant ("if I
+  -- am wrong, press this"). It is now "advance the board one GCD as if you pressed the
+  -- winner, and re-rank" — a SEQUENCE hint. Two consequences show up all over this block:
+  --   * an ability with NO cooldown is legitimately the next press too, so the look-ahead
+  --     lands on the WINNER and there is no second cue at all — the winner's cue carries
+  --     `next = true` and the Renderer draws a companion dot (the double-tap hint);
+  --   * the EXCLUSION machinery (`RankWinner(ctx, excluded)`) no longer has a shell caller.
+  --     It is still exercised below, directly, because it is a real cascade property.
+  local function repeats(g, key)   -- did the look-ahead land back on the winner?
+    return g.cues[key] ~= nil and g.cues[key].next == true
+  end
+
+  describe("look-ahead (ROTATION_FALLBACK)", function()
+    -- ⚠ INVERTED 2026-08-03. This asserted Dreadstalkers as the runner-up. Hand of Gul'dan
+    -- has NO cooldown (SpecDemonology declares no baseCD, correctly — it is a shard
+    -- spender), so one GCD later it is still the top castable line and the honest answer to
+    -- "what next" is HoG again.
+    it("Ruination winner -> HoG has no cooldown, so the next press is HoG again", function()
       local g = Coach:Compute(build({ art = "ruination", shards = 3, dread = cdProbably() }))
       assert.equals(ID.HOG, pressOf(g).cid)
-      assert.equals(ID.DREAD, fallbackOf(g).cid)
+      assert.is_true(repeats(g, ID.HOG))
+      assert.is_nil(fallbackOf(g))          -- no SECOND icon; the repeat rides the winner's
     end)
 
-    it("Demonbolt (L5) winner -> the Shadow Bolt build branch is the fallback", function()
+    it("Demonbolt (L5) winner -> also cooldown-less, so it repeats", function()
       local g = Coach:Compute(build({ shards = 2, core = true }))
       assert.equals(ID.DB, pressOf(g).cid)
-      assert.equals(ID.SB, fallbackOf(g).cid)  -- the skipped-then-reachable L5 SB
+      assert.is_true(repeats(g, ID.DB))
     end)
 
     it("Dreadstalkers winner -> Implosion is the fallback when both are up", function()
@@ -352,18 +371,40 @@ describe("Coach rotation list (Tier-1, from apl-prototype/pseudocode.md)", funct
       assert.equals(ID.IMPLOSION, fallbackOf(g).cid)
     end)
 
-    it("Hand of Gul'dan winner -> the Shadow Bolt floor is shown as the fallback", function()
-      -- Always-show-any-castable: even a filler<->filler pairing surfaces.
+    it("Hand of Gul'dan winner -> repeats, because it has no cooldown to start", function()
       local g = Coach:Compute(build({ shards = 3 }))
       assert.equals(ID.HOG, pressOf(g).cid)
-      assert.equals(ID.SB, fallbackOf(g).cid)
+      assert.is_true(repeats(g, ID.HOG))
     end)
 
-    it("no fallback when removing the winner leaves nothing castable", function()
-      -- Winner is the Shadow Bolt floor itself; removing it, no line fires.
+    it("no next cue when the winner is the floor and nothing else is castable", function()
+      -- Shadow Bolt has no cooldown either, so the honest answer is "press it again".
       local g = Coach:Compute(build({ shards = 2, core = false }))
       assert.equals(ID.SB, pressOf(g).cid)
       assert.is_nil(fallbackOf(g))
+      assert.is_true(repeats(g, ID.SB))
+    end)
+
+    -- ⚠⚠ THE PROPERTY THE WHOLE FEATURE RESTS ON, and the one a spec-table omission would
+    -- silently break: an ability WITH a declared cooldown must NOT repeat, because pressing
+    -- it starts that cooldown.  `spec.Spec[id].baseCD` / `.chargeCD` is the only source
+    -- ns.Coach.Advance has — a rotational button with a real cooldown and no declared number
+    -- would stay "ready" in the hypothetical and be re-offered forever.
+    it("an ability WITH a cooldown does not repeat — it goes on cooldown", function()
+      local g = Coach:Compute(build({ dread = cdProbably(), implosion = cdProbably(), shards = 3 }))
+      assert.equals(ID.DREAD, pressOf(g).cid)
+      assert.is_falsy(repeats(g, ID.DREAD))
+      assert.equals(ID.IMPLOSION, fallbackOf(g).cid)   -- a DIFFERENT icon carries the next
+    end)
+
+    -- ⚠ THE EXCLUSION MACHINERY SURVIVES WITHOUT A SHELL CALLER, and is tested directly
+    -- rather than through the guidance.  `RankWinner(ctx, excluded)` is still part of the
+    -- brain contract; Emit stopped calling it when the runner-up became a look-ahead.
+    it("RankWinner still honours an explicit exclusion", function()
+      local state = build({ dread = cdProbably(), implosion = cdProbably(), shards = 3 })
+      local ctx = ns.ActiveSpec:Context(state, Coach)
+      assert.equals(ID.DREAD, (ns.ActiveSpec:RankWinner(ctx)))
+      assert.equals(ID.IMPLOSION, (ns.ActiveSpec:RankWinner(ctx, ID.DREAD)))
     end)
   end)
 

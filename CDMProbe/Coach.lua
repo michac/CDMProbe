@@ -212,6 +212,119 @@ function C.InflightPower(state, deltaFn, window)
   return sums
 end
 
+--------------------------------------------------------------------------------
+-- ns.Coach.Advance — THE ONE-GCD LOOK-AHEAD (2026-08-03)
+--------------------------------------------------------------------------------
+-- WHAT IT IS.  A PURE `(state, winnerKey, lead) -> state2` that answers *"what does the
+-- board look like one global cooldown from now, assuming the player presses the winner?"*
+-- The shell then runs the spec's own Context + RankWinner over `state2`, so the look-ahead
+-- is computed by THE SAME CASCADE that picked the winner — no second rotation model, no
+-- per-spec knowledge in here.
+--
+-- WHY IT REPLACED THE RUNNER-UP.  `ROTATION_FALLBACK` used to be "re-run the list with the
+-- winner's ability excluded" — a SUBSTITUTE at the same instant ("if I'm wrong, press this")
+-- rather than a SEQUENCE.  On a fast spec the more useful hint is what comes NEXT, because
+-- it tells you what to be ready for rather than hedging a call the list already made.
+-- Decided 2026-08-03; guidance-contract.json's emphasis vocabulary carries the ruling.
+--
+-- ⚠⚠ WHAT IT DELIBERATELY DOES **NOT** MODEL, and this is the honesty boundary:
+--   * RESOURCES.  Fury is a SECRET VALUE and most specs' primary resource is (see
+--     ns.SpellUsable).  There is no readable number to decrement, so `power`, and every
+--     affordability verdict riding `abilities[*].usable`, pass through UNTOUCHED.  The
+--     look-ahead therefore assumes you can still afford whatever you can afford now.  That
+--     is wrong immediately after a spend — and it is the LEAST-WRONG option available,
+--     because the alternative is a fabricated number, which is the exact bug class that
+--     failed the 2026-08-03 Havoc flight.
+--   * BUFFS AND CAST HISTORY.  A press that would open a window (Metamorphosis -> demon
+--     form, Vengeful Retreat -> Initiative, Essence Break -> its window) does not flip it
+--     here.  Modelling that means per-spec knowledge in shell kit; it is a deliberate
+--     follow-up, not an oversight.  Consequence: the look-ahead under-predicts the burst
+--     lines, i.e. it fails toward showing the STEADY-STATE next press.
+--   * `state.at`.  NOT advanced, on purpose.  Rolling the clock would age every napkin,
+--     every dot timer and every history window by a GCD as a side effect of asking one
+--     question about cooldowns.  Only `cd.remaining` moves.
+--
+-- ⚠ AND THE INVARIANT THAT MAKES THE PREDICTION SAFE: a cooldown crossing zero here is
+-- marked `state = "ready"` with `source = "lookahead"`, which is a CLAIM, not an
+-- observation.  It may only ever reach the NEXT cue — never the press-now cue, which is
+-- still ranked off the real pulse.  `source` names the provenance so the decision log and
+-- any future consumer can tell a predicted readiness from a measured one.
+local LOOKAHEAD_LEAD = 1.0   -- seconds.  See the note below.
+
+-- ⚠ A CONSTANT, BECAUSE THE PULSE CARRIES NO GCD.  `ns.ReadGCD` is COMBAT-GATED (its read
+-- is secret in restricted combat), so the one number this wants is unavailable exactly when
+-- it is wanted.  1.0 s sits between the 1.5 s unhasted global and the ~0.86 s a geared Havoc
+-- actually runs at (MEASURED: the median Felblade-after-Vengeful-Retreat gap across seven
+-- top-100 Mythic parses, WCL 12.0.7).  A spec may override with `spec.LOOKAHEAD_LEAD`.
+-- Being wrong by ±0.2 s only shifts WHICH near-ready ability the hint names, never whether
+-- the press-now cue is right.
+local function shallow(t)
+  local o = {}
+  for k, v in pairs(t) do o[k] = v end
+  return o
+end
+
+-- The winner's own cooldown AFTER pressing it.  The declared `baseCD`/`chargeCD` is the
+-- source, NOT a client read: this runs per tick and `ns.BaseCooldown` is a guarded call, and
+-- more importantly the declared number is the one the spec author reasoned about.
+-- ⚠ NO DECLARED COOLDOWN MEANS IT STAYS READY, and that is correct rather than a gap —
+-- Chaos Strike genuinely has none, so "press it again" is the true answer and the cue
+-- carries `next` on the SAME icon (the double-tap hint).
+local function spentCd(row, base, lead)
+  local info = ns.SpecInfo and ns.SpecInfo(base) or nil
+  local len = info and (num(info.baseCD) or num(info.chargeCD)) or nil
+  local ch = row.charge or {}
+  local cur = num(ch.cur)
+  -- A banked charge survives the press: still pressable next GCD.
+  if cur ~= nil and cur - 1 >= 1 then return row.cd end
+  if not len or len <= 0 then return row.cd end          -- no cooldown -> unchanged
+  return { state = "on-cooldown", remaining = math.max(len - lead, 0),
+           readable = false, source = "lookahead", changedAt = (row.cd or {}).changedAt }
+end
+
+local function spentCharge(ch)
+  if not ch then return ch end
+  local cur = num(ch.cur)
+  if cur == nil then return ch end
+  local o = shallow(ch)
+  o.cur = math.max(cur - 1, 0)
+  return o
+end
+
+-- Everything the player did NOT press simply gets one GCD closer to ready.
+local function advancedCd(cd, lead)
+  if type(cd) ~= "table" then return cd end
+  if cd.state ~= "on-cooldown" then return cd end        -- ready / unknown pass through
+  local r = num(cd.remaining)
+  if r == nil then return cd end
+  local left = r - lead
+  if left > 0 then
+    local o = shallow(cd); o.remaining = left; return o
+  end
+  -- Crossed zero: a PREDICTION, labelled as one.
+  return { state = "ready", remaining = 0, readable = false, source = "lookahead",
+           changedAt = cd.changedAt }
+end
+
+function C.Advance(state, winnerKey, lead)
+  lead = num(lead) or LOOKAHEAD_LEAD
+  local src = state.abilities or {}
+  local out = {}
+  for id, row in pairs(src) do
+    local nrow = shallow(row)
+    if id == winnerKey then
+      nrow.cd = spentCd(row, id, lead)
+      nrow.charge = spentCharge(row.charge)
+    else
+      nrow.cd = advancedCd(row.cd, lead)
+    end
+    out[id] = nrow
+  end
+  local s2 = shallow(state)
+  s2.abilities = out
+  return s2
+end
+
 -- Truncate TOWARD ZERO.  Used only to render an EXACT-unit projection back into the DISPLAY
 -- units a pip bar speaks — never in a gate (gates compare exact integers), so this is the
 -- only place a division reaches.  Toward-zero is the honest direction for both signs: a
@@ -476,10 +589,17 @@ end
 --    abilities, so the fallback (ROTATION_FALLBACK) and SOON are non-press by
 --    construction and coexist with the one press; plus resourceBars.
 --------------------------------------------------------------------------------
--- fallbackKey/fallbackNote — the SECOND place from RankWinner(ctx, winnerKey): the
--- honest "what would I press instead" once the winner's ability is removed.  Always
--- offered when castable.
-function C:Emit(state, ctx, winnerKey, level, winnerNote, fallbackKey, fallbackNote)
+-- `nextKey`/`nextNote` — THE LOOK-AHEAD (2026-08-03): what the SAME cascade picks one GCD
+-- from now, ranked over `ns.Coach.Advance(state, winnerKey)`.  It REPLACED the runner-up
+-- (`RankWinner(ctx, winnerKey)` — "what would I press instead"); see C.Advance's banner for
+-- why, and for what the model deliberately does not simulate.
+--
+-- ⚠ WHEN IT LANDS ON THE WINNER'S OWN ABILITY it is NOT emitted as a second cue — the
+-- winner's cue carries `next = true` instead, and the Renderer draws a companion dot on the
+-- same icon.  That is the DOUBLE-TAP hint, and it is the common case on this pipeline's
+-- fastest spec: Chaos Strike has no cooldown at all and won 35 % of a real flight, so a
+-- second dot on one icon says "press it twice" where a second icon would have to lie.
+function C:Emit(state, ctx, winnerKey, level, winnerNote, nextKey, nextNote)
   local cues = {}
 
   local function put(k, emphasis, note)
@@ -492,10 +612,18 @@ function C:Emit(state, ctx, winnerKey, level, winnerNote, fallbackKey, fallbackN
   -- The one press.
   if winnerKey then put(winnerKey, level, winnerNote) end
 
-  -- The fallback — always shown when castable (never the winner's ability; RankWinner
-  -- excluded it).  ROTATION_FALLBACK: a real runner-up press, not a "press now" claim.
-  if fallbackKey and fallbackKey ~= winnerKey and not cues[fallbackKey] then
-    put(fallbackKey, "ROTATION_FALLBACK", fallbackNote)
+  -- THE LOOK-AHEAD.  Two shapes, and the difference is the whole feature:
+  --   * a DIFFERENT ability -> its own cue, emphasis ROTATION_FALLBACK ("press this next").
+  --   * the SAME ability    -> no second cue; the winner's own cue is flagged `next`, and
+  --                            the Renderer draws a companion dot on that one icon.
+  -- ⚠ `next` RIDES THE EXISTING CUE rather than becoming a second entry keyed on the same
+  -- ability, because `cues` is keyed BY BASE SPELLID — a second entry would overwrite the
+  -- first and the press-now emphasis would be lost.  The Binder and Renderer are keyed by
+  -- ICON for the same reason; see Renderer:drawCues.
+  if nextKey and nextKey == winnerKey then
+    if cues[winnerKey] then cues[winnerKey].next = true end
+  elseif nextKey and not cues[nextKey] then
+    put(nextKey, "ROTATION_FALLBACK", nextNote)
   end
 
   -- SOON — a DUMB per-ability "coming off cooldown" decoration (W4 Phase 8): any tracked
@@ -609,13 +737,33 @@ function C:Compute(state)
   local ctx = spec:Context(state, self)
   local winnerKey, level, note = spec:RankWinner(ctx)
   level = spec:Escalate(winnerKey, level, ctx)
-  -- The honest second place: re-run the list with the winner's ability excluded.  Always
-  -- computed; Emit shows it whenever it is castable, so the runner-up itself carries the
-  -- "I am not certain" signal rather than a separate hedge token.
-  local fbKey, fbNote
+
+  -- THE LOOK-AHEAD (2026-08-03).  Advance the board one GCD as if the player pressed the
+  -- winner, then ask the SAME cascade what it picks — so the hint is "what comes next",
+  -- not "what would I press instead".
+  --
+  -- ⚠ IT RUNS THE SPEC'S OWN `Context` OVER THE ADVANCED STATE rather than mutating `ctx`.
+  -- `ctx` is the brain's private fold and carries derived facts (`usable()` verdicts, the
+  -- SOON handshakes, the transforms) that a shell-side edit could not keep consistent —
+  -- re-folding is the only way the second answer is computed by the same rules as the
+  -- first.  Cost is one extra Context + RankWinner per tick over a small table; the shell
+  -- already ran RankWinner twice for the runner-up it replaced.
+  --
+  -- ⚠ THE WINNER IS **NOT** EXCLUDED from the re-rank, deliberately.  An ability with no
+  -- cooldown is genuinely the next press too, and saying so is the point — see Emit.
+  local nextKey, nextNote
   if winnerKey then
-    local k, _, nt = spec:RankWinner(ctx, winnerKey)
-    fbKey, fbNote = k, nt
+    local ok, s2 = pcall(C.Advance, state, winnerKey, spec.LOOKAHEAD_LEAD)
+    if ok and s2 then
+      local ok2, k, _, nt = pcall(function()
+        local c2 = spec:Context(s2, self)
+        return spec:RankWinner(c2)
+      end)
+      -- ⚠ GUARDED, AND THE FAILURE MODE IS SILENCE.  A brain that throws on a hypothetical
+      -- board must not take the PRESS-NOW cue down with it: the look-ahead is a decoration
+      -- and the press is the product.  A refusal simply emits no next cue.
+      if ok2 then nextKey, nextNote = k, nt end
+    end
   end
-  return self:Emit(state, ctx, winnerKey, level, note, fbKey, fbNote)
+  return self:Emit(state, ctx, winnerKey, level, note, nextKey, nextNote)
 end
