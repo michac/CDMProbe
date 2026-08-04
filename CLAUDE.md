@@ -34,9 +34,11 @@ Retired directions, code **deleted** (recover from git history if revived):
 Registered specs: **Demonology** (266, play-settled), **Destruction** (267, shipped
 2026-07-29, flown 2026-07-30), **Retribution Paladin** (70, shipped 2026-08-02, cannot be
 flown — no max-level Paladin) and **Havoc Demon Hunter** (577, shipped 2026-08-03, **flown
-and FAILED the same day — `UnitPower(player, Fury)` is a SECRET value, so every Fury gate
-compared against a fabricated zero; the Phase-1 remediation shipped and the RE-FLY is the
-in-game gate for the rest of the rollout**). Every other spec resolves
+twice**: the first pass FAILED — `UnitPower(player, Fury)` is a SECRET value, so every Fury
+gate compared against a fabricated zero — and the Phase-1 remediation then **flew clean**
+(Chaos Strike + Annihilation the top winner at 35.4 %, `PW:restricted` throughout). A third
+flight is owed for v0.32.95's charge-cap gate, amp window and look-ahead, and it remains the
+in-game gate for the rest of the rollout). Every other spec resolves
 passive by design.
 
 Design context + status live in the parent workspace at
