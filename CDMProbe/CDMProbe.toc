@@ -2,7 +2,7 @@
 ## Title: CDMProbe
 ## Notes: Experimental probe / kitchen-sink for skinning Blizzard's Cooldown Manager (Demonology + Destruction + Retribution + Havoc).
 ## Author: Michael Christiansen
-## Version: 0.32.94
+## Version: 0.32.95
 ## SavedVariables: CDMProbeDB
 
 Core.lua
