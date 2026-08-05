@@ -1658,6 +1658,64 @@ end
 
 -- The drawn cue: one FontString per target, parented to our own holder and ANCHORED to
 -- Blizzard's icon.
+--------------------------------------------------------------------------------
+-- ⚠⚠ WHERE THE CUE DRAWS IS INDEPENDENT OF WHERE IT READS, and conflating the two was a
+-- mistake inherited from house style rather than from anything the mechanism requires.
+--------------------------------------------------------------------------------
+-- The READ genuinely needs the CDM item frame: `item.auraInstanceID` is the only live
+-- in-combat aura instance id available, and without it the technique is dead.
+--
+-- The DRAW needs NOTHING.  By the time we hold the string, the threshold comparison has
+-- already happened in C; the text is just text, and it can land anywhere on screen.
+--
+-- Anchoring the draw to the item bought every problem this cue has had: the same aura living
+-- on TWO viewers so the frame flip-flopped, a strata fight with `frameLevel="512"` bar
+-- children, competing with Blizzard's own stack count in the same few pixels, and a cue
+-- rendered on a small icon in the corner of the screen when its whole job is to catch the
+-- eye mid-rotation.  `screen` is the default for exactly that last reason — a rotation cue
+-- belongs where you are already looking.
+--
+-- `item` is kept because it is the right answer for a DIFFERENT question ("which of these
+-- icons is at cap?"), and because losing the ability to A/B them would make a future
+-- regression here unfalsifiable.
+L.stackAnchor = "screen"    -- "screen" | "item"
+
+local stackPanel
+
+local function ensureStackPanel()
+  if stackPanel then return stackPanel end
+  local f = CreateFrame("Frame", nil, UIParent)
+  f:SetSize(340, 100)
+  -- Above centre: clear of the action bars, inside the eye's rotation-scanning arc.
+  f:SetPoint("CENTER", UIParent, "CENTER", 0, 220)
+  f:SetFrameStrata("TOOLTIP")
+  f:SetFrameLevel(1000)
+  f:Show()
+  f.rows = {}
+  stackPanel = f
+  return f
+end
+
+-- One row per target: a dim ALWAYS-ON label and a big value that is empty until the
+-- threshold is met.  ⚠ BOTH ARE ANCHORED TO THE PANEL, never to each other — the value
+-- string takes a secret, which marks its anchoring secret and propagates DOWN to dependents
+-- (§4.8.1), so anything hung off it would be poisoned for no reason.  The value is a leaf.
+local function stackPanelRow(t, index)
+  local p = ensureStackPanel()
+  if p.rows[t.key] then return p.rows[t.key] end
+  local y = -(index - 1) * 46
+  local label = p:CreateFontString(nil, "OVERLAY")
+  ns.SetFont(label, 12)
+  label:SetTextColor(0.62, 0.62, 0.66, 1)
+  label:SetPoint("TOPLEFT", p, "TOPLEFT", 0, y)
+  local value = p:CreateFontString(nil, "OVERLAY")
+  ns.SetFont(value, 34, "OUTLINE")
+  value:SetTextColor(t.color[1], t.color[2], t.color[3], 1)
+  value:SetPoint("TOPLEFT", p, "TOPLEFT", 0, y - 13)
+  p.rows[t.key] = { label = label, value = value }
+  return p.rows[t.key]
+end
+
 -- ⚠ POOLED PER (target, ITEM FRAME), not per target.  Keyed only by target, a FontString was
 -- torn down and rebuilt every time the resolved frame changed — which for Demonic Core, on
 -- two viewers, was several times a second.  A frame is never destroyed in WoW, so pooling by
@@ -1719,6 +1777,22 @@ local function paintStack(t, text)
   -- cue reporting a threshold that is not met, which is strictly worse than drawing nothing.
   for _, fs in pairs(stackFrames[t.key] or {}) do pcall(fs.SetText, fs, "") end
   local painted = 0
+
+  -- SCREEN MODE: one fixed row, always in the same place, never flipping between viewers.
+  if L.stackAnchor == "screen" then
+    local index = 1
+    for i, tt in ipairs(STACK_TARGETS) do if tt.key == t.key then index = i end end
+    local row = stackPanelRow(t, index)
+    if row then
+      row.label:SetText(string.format("%s  >=%d", t.label, t.min))
+      row.label:Show()
+      pcall(row.value.SetText, row.value, text)
+      row.value:Show()
+      painted = painted + 1
+    end
+    return painted
+  end
+
   for _, hit in ipairs(L.FindAuraItems(t.spellID)) do
     local fs = stackFontString(t, hit.item)
     if fs then
@@ -1784,6 +1858,7 @@ function L.StackCue(on)
   ns.db.curvelab_stack = on and true or false
   if stackTicker then stackTicker:Cancel(); stackTicker = nil end
   if on then
+    if stackPanel then stackPanel:Show() end
     -- 5 Hz: stacks move fast on Demonology and the cue is the only signal.
     stackTicker = C_Timer.NewTicker(0.2, function() pcall(L.StackRefresh) end)
     L.StackRefresh()
@@ -1791,6 +1866,7 @@ function L.StackCue(on)
     for _, pool in pairs(stackFrames) do
       for _, fs in pairs(pool) do pcall(fs.SetText, fs, ""); fs:Hide() end
     end
+    if stackPanel then stackPanel:Hide() end
   end
 end
 
@@ -1875,6 +1951,15 @@ ns.RegisterCommand("curve",
         return ns.Printf("stack cue: %s now fires at |cffffffff>= %d|r stacks%s",
           t.label, t.min, wasOff and "  (and the cue is now |cff88ff88ON|r)" or "")
       end
+      local where = stackArg:match("^where%s+(%a+)$")
+      if where == "screen" or where == "item" then
+        L.stackAnchor = where
+        if ns.db then ns.db.curvelab_stackAnchor = where end
+        L.StackCue(true)
+        return ns.Printf("stack cue draws on |cffffffff%s|r%s", where,
+          where == "screen" and "  (a fixed panel above centre — the READ still comes from "
+            .. "the CDM item, only the DRAW moved)" or "  (anchored to each CDM frame)")
+      end
       if stackArg:find("locate") then
         L.StackCue(true)
         ns.Heading("stack cue — WHERE IT DRAWS (10 s, a ▼marker, not a reading)")
@@ -1898,7 +1983,9 @@ ns.RegisterCommand("curve",
       end
       ns.Heading("stack cue — a threshold cue on a SECRET stack count")
       for _, line in ipairs(stackLines()) do ns.Print(line) end
-      return ns.Print("  |cffffd100/cdmp curve stack|r on | off | locate | imps <n> | core <n>")
+      ns.Printf("  drawing on |cffffffff%s|r", tostring(L.stackAnchor))
+      return ns.Print("  |cffffd100/cdmp curve stack|r on | off | locate | where screen|item "
+        .. "| imps <n> | core <n>")
     end
     if rest:find("clear") then
       ns.db.curvelab = {}
@@ -1949,5 +2036,6 @@ local prevOnLogin = ns.OnLogin
 function ns.OnLogin()
   if prevOnLogin then prevOnLogin() end
   if ns.db and ns.db.curvelab_on then L.Watch(true) end
+  if ns.db and ns.db.curvelab_stackAnchor then L.stackAnchor = ns.db.curvelab_stackAnchor end
   if ns.db and ns.db.curvelab_stack then L.StackCue(true) end
 end

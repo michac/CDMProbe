@@ -403,6 +403,24 @@ describe("CurveLab — the curve / secret-display lab", function()
       end
     end)
 
+    it("draws independently of WHERE it reads", function()
+      -- The READ needs the CDM item (`item.auraInstanceID` is the only live in-combat
+      -- instance id).  The DRAW needs nothing: by the time we hold the string the threshold
+      -- comparison has already happened in C.  Conflating them was house style, not a
+      -- requirement, and it cost the two-viewer flip-flop and a strata fight.
+      installViewer(fakeItem(4242))
+      _G.C_UnitAuras.GetAuraApplicationDisplayCount = function() return "7" end
+      ns.db.curvelab_stack = true
+      L.stackAnchor = "screen"
+      L.StackRefresh()
+      assert.equals("ok", L.stackLast.imps.state)      -- read still went through the item…
+      assert.is_true((L.stackLast.imps.painted or 0) > 0)   -- …and something was drawn
+      -- …and it still works with NO item to anchor to, which `item` mode cannot do.
+      L.stackAnchor = "item"
+      L.StackRefresh()
+      assert.equals("ok", L.stackLast.imps.state)
+    end)
+
     it("its STATE is part of the ring's dedup key", function()
       -- ⚠ It was NOT, and a 13-row Demonology capture carried exactly TWO stack rows: the
       -- cue's transitions (`aura-down` -> `ok` -> `id-unreadable`) are invisible to the
