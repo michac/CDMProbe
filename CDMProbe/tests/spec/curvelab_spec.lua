@@ -377,6 +377,21 @@ describe("CurveLab — the curve / secret-display lab", function()
       assert.is_nil(row.stack and row.stack.imps and row.stack.imps.value)
     end)
 
+    it("its STATE is part of the ring's dedup key", function()
+      -- ⚠ It was NOT, and a 13-row Demonology capture carried exactly TWO stack rows: the
+      -- cue's transitions (`aura-down` -> `ok` -> `id-unreadable`) are invisible to the
+      -- matrix's verdicts, so the ring only sampled the cue when something unrelated moved.
+      -- A recorder that cannot see its own subject change is the AlertTape lesson restated.
+      installViewer(fakeItem(4242))
+      _G.C_UnitAuras.GetAuraApplicationDisplayCount = function() return "" end
+      ns.db.curvelab_stack = true
+      L.StackRefresh()
+      local withAura = L.VerdictKey(L.Probe())
+      installViewer(fakeItem(nil))          -- the aura drops
+      L.StackRefresh()
+      assert.are_not.equal(withAura, L.VerdictKey(L.Probe()))
+    end)
+
     it("the thresholds default to what Demonology actually needs", function()
       -- Wild Imps >6 (Implosion's gate is >=6, so 7 is the strict reading) and Demonic
       -- Core's CAP of 4 — different constants, and crossing them is a known trap

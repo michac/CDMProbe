@@ -89,6 +89,10 @@ local ERRCAP = 90     -- truncation for a stashed error string
 
 L.halted = false      -- set by the UIParent canary; refuses every further cell
 
+-- Forward-declared: the STACK CUE's target table is read by `L.VerdictKey` (its state is
+-- part of the dedup key) but declared with the rest of the cue much further down.
+local STACK_TARGETS
+
 -- Forward-declared: the STACK CUE's readout is rendered by `L.Lines` but defined with the
 -- rest of the cue much further down, so the reader meets the cue as one block rather than
 -- split across the file.
@@ -1188,6 +1192,17 @@ function L.VerdictKey(p)
     local n = (p.negatives or {})[k]
     parts[#parts + 1] = "!" .. k .. "=" .. tostring(n and n.verdict)
   end
+  -- ⚠ THE STACK CUE'S STATE IS PART OF THE KEY, and it was NOT until the 2026-08-04
+  -- Demonology pass — which is why a 13-row capture carried exactly TWO stack rows.  The
+  -- cue's whole transition sequence (`aura-down` -> `ok` -> `id-unreadable`) is invisible to
+  -- the matrix's verdicts, so without this the ring only sampled the cue on rows that
+  -- happened to change for some unrelated reason.  A recorder that cannot see its own
+  -- subject change is the AlertTape lesson restated.
+  for _, t in ipairs(STACK_TARGETS) do
+    local r = (L.stackLast or {})[t.key]
+    parts[#parts + 1] = "#" .. t.key .. "=" .. tostring(r and r.state)
+      .. "/" .. tostring(r and r.idClass)
+  end
   return table.concat(parts, "|")
 end
 
@@ -1531,7 +1546,7 @@ end
 -- So this anchors the FontString TO Blizzard's icon (making it the dependent, which is safe
 -- — the contagion flows away from the icon, not into it) and NOTHING is ever anchored to
 -- the FontString.  Do not hang a backdrop, a border or a second string off it.
-local STACK_TARGETS = {
+STACK_TARGETS = {
   -- `min` is the THRESHOLD, and it is the whole cue: text appears at `min` stacks and not
   -- before.  ⚠ 7 = "MORE THAN 6", which is what was asked for; the APL's own Implosion gate
   -- is `>= 6`, so `/cdmp curve stack imps 6` is the rotation-faithful setting.
