@@ -1355,6 +1355,9 @@ local function ringRow(p)
                  spellID = ns.Stash(r.spellID), err = ns.Stash(r.err) }
   end
   return {
+    -- ⚠ THE REFRESH ERROR GOES TO DISK.  Held only in memory it dies at the very /reload
+    -- needed to report it, which is how "the panel froze" stayed unexplained for two builds.
+    stackError = ns.Stash(L.stackError),
     t = p.at, key = L.VerdictKey(p), combat = p.combat, halted = p.halted and true or nil,
     build = ns.Stash(p.build), version = ns.version, spellID = ns.Stash(p.spellID),
     spellSource = ns.Stash(p.spellSource),
@@ -1589,11 +1592,23 @@ function L.FindAuraItems(spellID)
       local ok, frames = pcall(ns.GetItemFrames, viewer)
       if ok and type(frames) == "table" then
         for _, item in ipairs(frames) do
+          -- `ns.ItemBaseSpellID` is fully guarded (`readable(id)` filters secrets and
+          -- returns nil), so this compares nil-or-number and is safe.
           local hit = (ns.ItemBaseSpellID(item) == spellID)
           if not hit then
             -- The aura's own id can also sit on the frame's aura fields rather than its base.
+            --
+            -- ⚠⚠ AND IT MUST BE CLASS-CHECKED BEFORE IT IS COMPARED.  `item.auraSpellID` is
+            -- written from AURA DATA (`SetAuraInstanceInfo(auraInfo)` <- `auraInfo.spellId`,
+            -- CooldownViewerItemData.lua:243), and aura data is SEALED IN COMBAT — so this
+            -- field goes secret exactly when a pull starts.  `aid == spellID` then compares
+            -- a secret against a number, which §4.2's table says cannot be done, and it
+            -- THREW on the first item frame examined: `FindAuraItems` died, `StackRead`
+            -- died, `StackRefresh` died, and the panel froze on its last out-of-combat read
+            -- while looking exactly like "the threshold is never met".
             local aid
-            if pcall(function() aid = item.auraSpellID end) and aid == spellID then
+            local got = pcall(function() aid = item.auraSpellID end)
+            if got and not ns.IsSecret(aid) and aid == spellID then
               hit = true
             end
           end
@@ -1637,12 +1652,12 @@ function L.StackRead(t)
     return rec
   end
   rec.idClass = classOf(id)
-  -- ⚠ BRANCH ON THE **CLASS**, NEVER ON THE VALUE.  `id == nil` is a COMPARISON, and §4.2's
-  -- table says a secret cannot survive one — so the moment `item.auraInstanceID` reads
-  -- secret (which is precisely the case this cue exists to detect) the comparison THROWS,
-  -- the refresh dies, and the panel silently freezes displaying its last good state.  This
-  -- is the Assist banner's lesson exactly: `if spellID ~= self.last…` is the operation that
-  -- cannot be done.  `classOf` already asked `issecretvalue` FIRST, so the class is safe.
+  -- Branch on the CLASS rather than the value.  ⚠ NOTE THE LIMIT OF THIS CLAIM: `x == nil`
+  -- specifically appears to be PERMITTED on a secret — `RunCell`'s own `arg.value == nil`
+  -- guard runs on secrets every sample and the matrix has never thrown — so this particular
+  -- line was probably never the fault.  It is still the right shape (a comparison against a
+  -- NUMBER definitely does throw; see FindAuraItems above), and `classOf` asked
+  -- `issecretvalue` first, so nothing here depends on which comparisons are allowed.
   if rec.idClass == "nil" then rec.state = "aura-down"; return rec end
   if rec.idClass ~= "num" then
     -- A secret instance id cannot be passed on (AllowedWhenUntainted) — the technique is

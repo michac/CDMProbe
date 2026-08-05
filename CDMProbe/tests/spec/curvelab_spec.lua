@@ -360,6 +360,24 @@ describe("CurveLab — the curve / secret-display lab", function()
       assert.equals("SECRET", rec.idClass)
     end)
 
+    it("⚠ finds the frame without COMPARING a secret auraSpellID", function()
+      -- `item.auraSpellID` is written from AURA DATA, which is sealed in combat — so it goes
+      -- secret exactly when a pull starts.  Comparing it against a number is the operation
+      -- §4.2 forbids, and it threw on the FIRST item frame examined: FindAuraItems died,
+      -- StackRead died, StackRefresh died, and the panel froze on its last out-of-combat
+      -- read while looking exactly like "the threshold is never met".
+      local it = H.newStub()
+      it.auraSpellID = H.secretValue()          -- the combat shape
+      it.auraInstanceID, it.auraDataUnit = 4242, "player"
+      installViewer(it)
+      local ok, hits = pcall(L.FindAuraItems, IMPS)
+      assert.is_true(ok, "FindAuraItems must not raise on a secret auraSpellID")
+      assert.are.same({}, hits)                 -- …and it matches nothing, rather than guessing
+      -- The whole refresh therefore survives combat.
+      ns.db.curvelab_stack = true
+      assert.is_true((pcall(L.StackRefresh)))
+    end)
+
     it("a refresh that throws is REPORTED, never swallowed", function()
       -- A bare pcall in the ticker is how a frozen panel became unexplainable: the refresh
       -- threw every tick, the error went nowhere, and the labels sat on their last good read
