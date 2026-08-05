@@ -1584,9 +1584,21 @@ function L.StackTargets() return STACK_TARGETS end
 --
 -- ⚠ AND THE BAR NEEDS A TEXTURE.  A texture-less StatusBar cost a whole round earlier in
 -- this file's life (`SetStatusBarColor` answered "Object did not allow secret.").
+--
+-- ⚠⚠ AND `ignoreGCD` IS NOT A DETAIL — IT IS THE WHOLE READING.  `GetSpellCooldownDuration`
+-- answers "what cooldown is on this spell RIGHT NOW", and while you are pressing buttons the
+-- GLOBAL is a cooldown on this spell.  With `ignoreGCD = false` the object handed back in a
+-- pull is therefore the ~1.5 s global, refreshed every press — a bar that twitches full for
+-- the whole fight and only reveals the real 60 s Tyrant cooldown once you stop casting.
+-- ⚠ THAT IS EXACTLY THE SYMPTOM THIS ROW SHIPPED WITH: "the panel starts to show the tyrant
+-- cooldown when I leave combat."  It is not a secrecy failure, not a sink failure, and not a
+-- restricted read — the channel was working perfectly and answering a different question.
+-- `ignoreGCD = true` is the spell's OWN cooldown, and it is what a cooldown bar means.
 local DURATION_TARGETS = {
+  -- `ignoreGCD` is a per-target knob so both readings stay comparable in one flight; the
+  -- row reads BOTH every tick and reports the other one as `gcd=` (below).
   { key = "tyrant", spellID = 265187, label = "Summon Demonic Tyrant",
-    color = { 0.62, 0.40, 0.92 } },
+    ignoreGCD = true, color = { 0.62, 0.40, 0.92 } },
 }
 
 function L.DurationTargets() return DURATION_TARGETS end
@@ -1604,11 +1616,29 @@ end
 
 -- One target's read.  `hsv` is the free always-readable oracle: TRUE means the object is
 -- actually carrying secret timing, i.e. the cooldown is live and restricted.
+--
+-- ⚠ IT READS BOTH GCD MODES EVERY TICK and reports the unused one as `rec.gcdState`.  The
+-- comparison is the measurement: "the spell's own cooldown is readable but the GCD-inclusive
+-- read says something else" is precisely the confusion that cost this row its first two
+-- builds, and a knob you have to flip between two pulls cannot answer it — you would be
+-- comparing two different fights.  Two calls at 5 Hz is nothing.
 function L.DurationRead(t)
-  local rec = { key = t.key, spellID = t.spellID, label = t.label }
-  local dur, hsvOrErr = ns.ReadCooldownDuration(t.spellID, false)
+  local ignoreGCD = (t.ignoreGCD ~= false)
+  local rec = { key = t.key, spellID = t.spellID, label = t.label, ignoreGCD = ignoreGCD }
+  -- The OTHER mode, kept purely as the comparison. `nil` here is a real answer (nothing at
+  -- all is on cooldown), so it is reported as a state string and never as a failure.
+  local otherDur, otherWhy = ns.ReadCooldownDuration(t.spellID, not ignoreGCD)
+  rec.gcdState = (otherDur ~= nil) and "ok" or tostring(otherWhy)
+
+  local dur, hsvOrErr = ns.ReadCooldownDuration(t.spellID, ignoreGCD)
   if dur == nil then
-    rec.state, rec.err = "unreadable", tostring(hsvOrErr)
+    -- ⚠ ABSENT IS NEVER ZERO, AND IT IS ALSO NEVER A REFUSAL.  `GetSpellCooldownDuration` is
+    -- `MayReturnNothing = true` [T1 src: SpellDocumentation.lua:267], so a spell that is
+    -- simply OFF COOLDOWN hands back nothing — a complete, correct answer.  Filing that as
+    -- `unreadable` alongside a genuinely refused read is the same merge this file keeps
+    -- warning about, one level up: it makes "Tyrant is ready" look like "we could not ask".
+    rec.state = (hsvOrErr == "no duration object") and "idle" or "unreadable"
+    rec.err = tostring(hsvOrErr)
     return rec
   end
   rec.state, rec.hsv, rec.duration = "ok", hsvOrErr and true or false, dur
@@ -1823,21 +1853,69 @@ local function durationPanelRow(t, index)
   text:SetTextColor(1, 1, 1, 1)
   text:SetPoint("LEFT", bar, "RIGHT", 8, 0)
 
-  local binding
+  -- ⚠⚠ A BINDING WITH NO FORMATTER CAN NEVER PRODUCE TEXT, AND SAYS SO FOR FREE.
+  -- `CanFormatText()` is documented *"true if this binding has enough configuration to
+  -- produce formatted text"* [T1 src: DurationTextBindingObjectAPIDocumentation.lua:10-13],
+  -- and the only two things that supply that configuration are `SetFormatter(formatter)`
+  -- — `NumericFormatter`, `Nilable = false` [:234] — and `SetTextFormat`.  This row called
+  -- neither, so the FontString, the duration and the update interval were all correct and
+  -- the binding still had nothing to write.  `SetZeroDurationText` / `SetExpiredText` are
+  -- fallbacks for the two degenerate cases, not a format.
+  -- `C_StringUtil.CreateSecondsFormatter()` is the seconds-shaped one
+  -- [T1 src: StringUtilDocumentation.lua:29-37, returns a `SecondsFormatter`].
+  --
+  -- ⚠ THE SETUP IS STEPPED, NOT ONE `pcall` ROUND THE WHOLE BLOCK.  A single pcall over six
+  -- calls reports "something in here threw" and loses which one — the same swallowed-error
+  -- shape that cost three builds on the ticker.  Each step names itself on failure.
+  local binding, setupErr
+  local function step(name, fn)
+    if setupErr then return end                  -- first failure wins; the rest are noise
+    local okS, e = pcall(fn)
+    if not okS then setupErr = name .. ": " .. stashErr(e) end
+  end
   if type(C_DurationUtil) == "table"
     and type(C_DurationUtil.CreateDurationTextBinding) == "function" then
     local okB, b = pcall(C_DurationUtil.CreateDurationTextBinding)
-    if okB and b then
-      pcall(function()
-        b:SetFontString(text)
-        b:SetUpdateInterval(0.1)
-        b:SetZeroDurationText("")
-        b:SetExpiredText("")
+    if not okB then
+      setupErr = "CreateDurationTextBinding: " .. stashErr(b)
+    elseif b then
+      -- The formatter is a COLLABORATOR of the binding, not an optional garnish; if it
+      -- cannot be made, the binding is knowingly text-less and the row must say so rather
+      -- than sit blank.  Configured after Blizzard's own timeline formatter
+      -- (EncounterTimelineConstants.lua:216-220): two units, seconds floor, one-letter.
+      local fmt
+      step("CreateSecondsFormatter", function()
+        if type(C_StringUtil) ~= "table"
+          or type(C_StringUtil.CreateSecondsFormatter) ~= "function" then
+          error("C_StringUtil.CreateSecondsFormatter absent", 0)
+        end
+        fmt = C_StringUtil.CreateSecondsFormatter()
       end)
+      step("formatter config", function()
+        local E = Enum
+        if E and E.SecondsFormatterAbbreviation then
+          fmt:SetDefaultAbbreviation(E.SecondsFormatterAbbreviation.OneLetter)
+        end
+        if E and E.SecondsFormatterInterval then
+          fmt:SetMinInterval(E.SecondsFormatterInterval.Seconds)
+        end
+        fmt:SetDesiredUnitCount(2)
+      end)
+      step("SetFontString", function() b:SetFontString(text) end)
+      step("SetFormatter", function() b:SetFormatter(fmt) end)
+      step("SetUpdateInterval", function() b:SetUpdateInterval(0.1) end)
+      -- ⚠ NOT `""` FOR EITHER.  This cue's signal is the PRESENCE of text, so an empty
+      -- string makes "the duration is zero", "it expired" and "the formatter never worked"
+      -- render identically — the one confusion the whole panel exists to break.
+      step("SetZeroDurationText", function() b:SetZeroDurationText("—") end)
+      step("SetExpiredText", function() b:SetExpiredText("ready") end)
       binding = b
     end
+  else
+    setupErr = "C_DurationUtil.CreateDurationTextBinding absent"
   end
-  p.durRows[t.key] = { label = label, bar = bar, text = text, binding = binding }
+  p.durRows[t.key] = { label = label, bar = bar, text = text,
+                       binding = binding, setupErr = setupErr }
   return p.durRows[t.key]
 end
 
@@ -1997,14 +2075,15 @@ function L.StackRefresh()
     if L.stackAnchor == "screen" then
       local row = durationPanelRow(t, i)
       if row then
-        local hue = (rec.state == "ok") and "|cff88ff88" or "|cffff8080"
-        row.label:SetText(string.format("%s   %s%s|r%s%s", t.label, hue,
-          tostring(rec.state), rec.hsv and "  |cffffd100secret-borne|r" or "",
-          rec.err and ("  |cffff4040" .. tostring(rec.err):sub(1, 40) .. "|r") or ""))
+        rec.setupErr = row.setupErr
         if rec.state == "ok" then
           -- ⚠ THE TWO LINES THIS ROW EXISTS FOR.  A duration OBJECT into a C-side sink; the
           -- remaining time never enters Lua, so there is nothing for the client to refuse.
-          pcall(function()
+          --
+          -- ⚠ AND NEITHER SINK MAY SWALLOW ITS OWN FAILURE.  Both used to be bare `pcall`s
+          -- whose error went nowhere, so a refused sink and a working one rendered the same
+          -- blank bar — the ticker's lesson, repeated one layer down.
+          local okBar, barErr = pcall(function()
             -- ⚠ `interpolation` IS `Nilable = false` [SimpleStatusBarAPIDocumentation.lua:310]
             -- — it has a DEFAULT, which is not the same thing as accepting nil.  Passing nil
             -- for it while supplying a third argument is a bad-argument error, not a
@@ -2014,15 +2093,51 @@ function L.StackRefresh()
             row.bar:SetTimerDuration(rec.duration,
               I and I.Immediate or 0, D and D.RemainingTime or 1)
           end)
-          if row.binding then pcall(function()
-            row.binding:SetDuration(rec.duration)
-            row.binding:Enable()
-          end) end
+          rec.barErr = (not okBar) and stashErr(barErr) or nil
+          if row.binding then
+            local okBind, bindErr = pcall(function()
+              row.binding:SetDuration(rec.duration)
+              row.binding:Enable()
+            end)
+            rec.bindErr = (not okBind) and stashErr(bindErr) or nil
+          end
           row.bar:Show(); row.text:Show()
         else
           row.bar:Hide()
-          pcall(function() row.text:SetText("") end)
+          -- ⚠ DISABLE BEFORE WRITING.  An enabled binding owns this FontString and rewrites
+          -- it on its own interval, so a `SetText` here would be overwritten within 100 ms
+          -- and the row would appear to ignore its own state.
+          if row.binding then pcall(function() row.binding:Disable() end) end
+          -- `idle` earns a word; every other non-ok state clears, so a stale countdown can
+          -- never outlive its reading.
+          pcall(function() row.text:SetText(rec.state == "idle" and "ready" or "") end)
+          row.text:Show()
         end
+        -- ⚠⚠ THE ORACLES ARE READ AFTER THE SINKS, AND THE ORDER IS THE MEASUREMENT.
+        -- `CanUpdateFontString` is *"true if this binding has enough configuration to update
+        -- its font string"* [T1 src: DurationTextBindingObjectAPIDocumentation.lua:24-27],
+        -- and a duration is part of that configuration — so asked BEFORE `SetDuration` it
+        -- reports `false` on a perfectly healthy binding, every single tick, and the row
+        -- would accuse itself of the bug it is here to detect.  Both are plain `bool`,
+        -- `Nilable = false`, with no secrecy predicate of any kind [:10-35], so they are free
+        -- and answer in a pull.  Together they separate "the countdown is blank because the
+        -- duration says so" from "this binding could never write text at all" — the exact
+        -- pair an unformatted binding collapsed.
+        rec.canFormat = boolOf(callMethod(row.binding, "CanFormatText"))
+        rec.canUpdate = boolOf(callMethod(row.binding, "CanUpdateFontString"))
+        -- ⚠ THE CLASS OF THE TEXT, NEVER THE TEXT.  `GetFormattedText` is
+        -- `ConditionalSecret = true` [:97-101], and the FontString is written C-side from a
+        -- secret, so `GetText()` may hand one back — `ns.Describe` asks `issecretvalue`
+        -- before it does anything else, which `string.format` does not.
+        rec.textClass = ns.Describe(row.text:GetText())
+        -- The label lands LAST for the same reason: it reports the oracles above.
+        local hue = (rec.state == "ok") and "|cff88ff88"
+          or (rec.state == "idle") and "|cffffd100" or "|cffff8080"
+        row.label:SetText(string.format("%s   %s%s|r%s  gcd:%s  fmt=%s/%s%s%s", t.label, hue,
+          tostring(rec.state), rec.hsv and "  |cffffd100secret-borne|r" or "",
+          tostring(rec.gcdState), tostring(rec.canFormat), tostring(rec.canUpdate),
+          rec.setupErr and ("  |cffff4040" .. tostring(rec.setupErr):sub(1, 40) .. "|r") or "",
+          rec.err and ("  |cffff8080" .. tostring(rec.err):sub(1, 40) .. "|r") or ""))
       end
     end
     end)
@@ -2157,6 +2272,30 @@ function L.StackGeometry()
       t.key, tostring(t.label), tostring(t.spellID), tostring(r.state),
       tostring(r.hsv), tostring(r.zero), r.err and ("  |cffff4040" .. tostring(r.err)
         .. "|r") or "")
+    -- The second line is the DIAGNOSIS line, and it is what makes the first one actionable.
+    out[#out + 1] = string.format(
+      "      ignoreGCD=%s  (the other read: %s)  CanFormatText=%s  CanUpdateFontString=%s"
+      .. "  text=%s",
+      tostring(r.ignoreGCD), tostring(r.gcdState), tostring(r.canFormat),
+      tostring(r.canUpdate), tostring(r.textClass))
+    for _, fail in ipairs({ { "binding setup", r.setupErr }, { "SetTimerDuration", r.barErr },
+                            { "DurationTextBinding", r.bindErr } }) do
+      if fail[2] then
+        out[#out + 1] = string.format("      |cffff4040%s FAILED|r: %s", fail[1], fail[2])
+      end
+    end
+    if r.canFormat == false then
+      out[#out + 1] = "      |cffff4040the binding cannot produce text at all|r — it has no "
+        .. "formatter, so a blank countdown says NOTHING about the duration."
+    end
+    if r.state == "ok" and r.gcdState == "ok" and r.ignoreGCD then
+      out[#out + 1] = "      |cff808080both reads answered; in a pull the GCD-inclusive one "
+        .. "is the GLOBAL, not this spell's cooldown — that is why ignoreGCD is on.|r"
+    end
+    if r.state == "idle" then
+      out[#out + 1] = "      |cffffd100nothing is on cooldown|r — `MayReturnNothing`, a real "
+        .. "answer. Press it and the row must go `ok`."
+    end
   end
   for k, row in pairs(p.rows or {}) do
     out[#out + 1] = string.format("  row %-6s    label=%q value shown=%s",

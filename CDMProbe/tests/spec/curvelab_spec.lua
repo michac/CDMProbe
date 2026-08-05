@@ -71,16 +71,39 @@ describe("CurveLab — the curve / secret-display lab", function()
         function b:SetFontString(fs) self._fs = fs end
         function b:SetDuration(d) self._dur = d; self._secret = d and d:HasSecretValues() end
         function b:SetUpdateInterval() end
+        function b:SetFormatter(f) self._fmt = f end
+        function b:SetZeroDurationText(s) self._zero = s end
+        function b:SetExpiredText(s) self._expired = s end
         function b:Enable() self._on = true end
+        function b:Disable() self._on = false end
+        -- ⚠ CONDITIONAL ON THE FORMATTER, and that is the whole point of the fake.  The
+        -- client documents `CanFormatText` as "has enough configuration to produce
+        -- formatted text", and the defect this suite now pins is a binding that had every
+        -- OTHER piece of configuration and still could not write a character.  A fake that
+        -- answered `true` unconditionally would make that defect unreachable and leave a
+        -- green suite over a dead countdown — the harness_spec secret-aspect lesson.
+        function b:CanFormatText() return self._fmt ~= nil end
+        function b:CanUpdateFontString()
+          return self._fmt ~= nil and self._fs ~= nil and self._dur ~= nil
+        end
         function b:HasSecretValues() return self._secret and true or false end
         return b
       end,
       CreateManualClock = function() return {} end,
     }
+    _G.C_StringUtil = {
+      CreateSecondsFormatter = function()
+        local f = {}
+        function f:SetDefaultAbbreviation() end
+        function f:SetMinInterval() end
+        function f:SetDesiredUnitCount() end
+        return f
+      end,
+    }
   end
 
   local function clearClient()
-    _G.C_CurveUtil, _G.C_DurationUtil = nil, nil
+    _G.C_CurveUtil, _G.C_DurationUtil, _G.C_StringUtil = nil, nil, nil
     _G.UnitPowerPercent, _G.UnitHealthPercent, _G.UnitExists = nil, nil, nil
     _G.C_Spell.GetSpellCooldownDuration = nil
     _G.C_Spell.GetSpellChargeDuration   = nil
@@ -488,6 +511,94 @@ describe("CurveLab — the curve / secret-display lab", function()
       local rec = L.DurationRead(L.DurationTargets()[1])
       assert.equals("unreadable", rec.state)
       assert.is_nil(rec.duration)
+    end)
+
+    it("⚠ OFF COOLDOWN is `idle`, and that is NOT the same as unreadable", function()
+      -- `GetSpellCooldownDuration` is `MayReturnNothing = true`
+      -- [SpellDocumentation.lua:267], so a spell that simply is not on cooldown hands back
+      -- NOTHING — a complete, correct answer.  Filing it with a genuinely refused read is
+      -- the merge this whole file keeps warning about: it makes "Tyrant is ready" render
+      -- identically to "we could not ask", and the second is a bug while the first is the
+      -- happy path.  ⚠ The distinction lives one level ABOVE the reader, because
+      -- `ns.ReadCooldownDuration` honestly reports both as `nil` + a reason.
+      _G.C_Spell.GetSpellCooldownDuration = function() return nil end
+      local rec = L.DurationRead(L.DurationTargets()[1])
+      assert.equals("idle", rec.state)
+      assert.is_nil(rec.duration)
+      -- …and the reason survives, so `idle` is never a guess.
+      assert.equals("no duration object", rec.err)
+    end)
+
+    it("⚠⚠ asks about the SPELL's cooldown, not the GLOBAL — and reads BOTH", function()
+      -- THE DEFECT THIS ROW SHIPPED WITH.  `GetSpellCooldownDuration(id, false)` includes
+      -- the GCD, and while you are pressing buttons the GCD *is* a cooldown on this spell —
+      -- so in a pull the object handed back was the ~1.5 s global, refreshed every press,
+      -- and the real 60 s Tyrant cooldown only surfaced once casting stopped.  Reported
+      -- from the client as "the panel starts to show the tyrant cooldown when I leave
+      -- combat", which is the exact signature: the channel was working and answering a
+      -- different question.
+      local asked = {}
+      _G.C_Spell.GetSpellCooldownDuration = function(_, ignoreGCD)
+        asked[#asked + 1] = ignoreGCD
+        return fakeDuration(true)
+      end
+      local rec = L.DurationRead(L.DurationTargets()[1])
+      assert.is_true(rec.ignoreGCD)
+      -- BOTH modes are read every tick, because a knob you flip between two pulls compares
+      -- two different fights.  The comparison IS the measurement.
+      assert.equals(2, #asked)
+      assert.is_true(asked[1] ~= asked[2])
+      assert.equals("ok", rec.gcdState)
+    end)
+
+    it("⚠⚠ the countdown binding gets a FORMATTER — without one it can never write", function()
+      -- `CanFormatText()` is *"true if this binding has enough configuration to produce
+      -- formatted text"* [DurationTextBindingObjectAPIDocumentation.lua:10-13], and
+      -- `SetFormatter(formatter)` takes a `NumericFormatter` that is `Nilable = false`
+      -- [:234].  The row configured the FontString, the duration and the update interval
+      -- and called NEITHER `SetFormatter` NOR `SetTextFormat` — so every collaborator was
+      -- correct and the binding still had nothing to write.  A cue whose signal is the
+      -- PRESENCE of text cannot tell that apart from "the duration is zero", which is why
+      -- both oracles are now on the readout: they are free and never secret.
+      installClient()
+      _G.C_Spell.GetSpellCooldownDuration = function() return fakeDuration(true) end
+      ns.db.curvelab_stack = true
+      L.stackAnchor = "screen"
+      L.StackRefresh()
+      local rec = L.durationLast.tyrant
+      assert.equals("ok", rec.state)
+      assert.is_nil(rec.setupErr)
+      assert.is_true(rec.canFormat)
+      assert.is_true(rec.canUpdate)
+      -- …and no sink swallowed a failure on the way to the screen.
+      assert.is_nil(rec.barErr)
+      assert.is_nil(rec.bindErr)
+    end)
+
+    it("says so out loud when the binding cannot format", function()
+      -- The formatter is a COLLABORATOR, not a garnish: if it cannot be made, the row is
+      -- knowingly text-less and must SAY that rather than sit blank looking like a duration
+      -- of zero.  ⚠ MUTATION CHECK: drop the `SetFormatter` step from `durationPanelRow`
+      -- and this goes red while every other duration case stays green.
+      -- ⚠ The BINDING is present and healthy — only the formatter is missing.  That is the
+      -- shipped defect exactly, and a test that removed the whole namespace would prove
+      -- something much weaker.
+      installClient()
+      _G.C_StringUtil = nil
+      _G.C_Spell.GetSpellCooldownDuration = function() return fakeDuration(true) end
+      ns.db.curvelab_stack = true
+      L.stackAnchor = "screen"
+      L.StackRefresh()
+      local rec = L.durationLast.tyrant
+      assert.is_false(rec.canFormat)
+      assert.is_not_nil(rec.setupErr)
+      assert.is_not_nil(rec.setupErr:find("CreateSecondsFormatter", 1, true))
+      -- The panel readout carries the diagnosis, not just the symptom.
+      local found
+      for _, line in ipairs(L.StackGeometry()) do
+        if line:find("cannot produce text at all", 1, true) then found = true end
+      end
+      assert.is_true(found)
     end)
 
     it("tracks Summon Demonic Tyrant by default, and can be re-aimed", function()

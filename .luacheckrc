@@ -51,7 +51,9 @@ stds.wow = {
     -- ⚠ TEMPORARY, with CurveLab.lua: the curve + duration-object factories (§4.8, the
     -- sanctioned way to DISPLAY a secret without inspecting it).  Delete these two names
     -- with the file if the technique does not ship.
-    "C_CurveUtil", "C_DurationUtil",
+    -- `C_StringUtil` is the SecondsFormatter factory the DurationTextBinding needs: a
+    -- binding with no formatter cannot produce text at all (CurveLab.lua's duration row).
+    "C_CurveUtil", "C_DurationUtil", "C_StringUtil",
     -- Enums --------------------------------------------------------------------
     "Enum",
   },
