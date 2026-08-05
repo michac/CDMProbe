@@ -2189,13 +2189,30 @@ function L.StackRefresh()
           -- whose error went nowhere, so a refused sink and a working one rendered the same
           -- blank bar — the ticker's lesson, repeated one layer down.
           local okBar, barErr = pcall(function()
+            -- ⚠⚠ THE RANGE MUST BE SET FIRST, AND THIS IS THE WHOLE BUG.  A timer does not
+            -- BRING a range; it DRIVES the value within one.  With no range there is nothing
+            -- to fill, which is exactly what this row measured for four builds: a duration
+            -- object correctly installed (`GetTimerDuration` -> userdata), `IsZero` false,
+            -- and `FILL=0%` with `GetValue` answering a plain 0.
+            --
+            -- ⚠ AND I REFUTED THIS ONCE, WRONGLY.  Blizzard calls `SetMinMaxValues(0, 0)` in
+            -- `EncounterTimelineTimerEvent.lua:76-82` under the comment *"Ensure the timer
+            -- bar doesn't keep a reference to the timer object"*, and I read that as
+            -- "SetMinMaxValues releases the timer, so never call it".  The releasing part is
+            -- the DEGENERATE ZERO RANGE, not the call: `(0, 0)` is teardown, `(0, 1)` is
+            -- setup.  Read against a live implementation instead of inferred from a teardown
+            -- path: EllesmereUICooldownManager (`EllesmereUICdmBuffBars.lua:4499-4517`) does
+            -- `sb:SetMinMaxValues(0, 1)` and THEN `sb:SetTimerDuration(...)`, in that order.
+            row.bar:SetMinMaxValues(0, 1)
             -- ⚠ `interpolation` IS `Nilable = false` [SimpleStatusBarAPIDocumentation.lua
             -- :310] — it has a DEFAULT, which is not the same thing as accepting nil.
             -- Passing nil for it while supplying a third argument is a bad-argument error,
             -- not a fallback to the default.  Both enum members are passed explicitly.
             -- ⚠ AND THE FALLBACK LITERALS ARE CORRECT, checked rather than assumed:
             -- Immediate = 0, RemainingTime = 1 [SimpleStatusBarConstantsDocumentation.lua
-            -- :25-28, :38-41].
+            -- :25-28, :38-41].  (Ellesmere reaches for `StatusBarInterpolation.None`, which
+            -- is NOT in the generated enum — only `Immediate` and `ExponentialEaseOut` are —
+            -- so the documented member is used here rather than copying theirs.)
             local I = Enum and Enum.StatusBarInterpolation
             local D = Enum and Enum.StatusBarTimerDirection
             row.bar:SetTimerDuration(rec.duration,

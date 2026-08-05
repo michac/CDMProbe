@@ -606,11 +606,24 @@ describe("CurveLab — the curve / secret-display lab", function()
         return realSet(self, dur, ...)
       end
 
+      -- ⚠ THE RANGE IS SET BEFORE THE TIMER, EVERY TIME.  A timer drives the value WITHIN a
+      -- range; it does not bring one.  Without this the bar held a correct duration object
+      -- and rendered 0 % — measured for four builds.  Order verified against a working
+      -- implementation (EllesmereUICdmBuffBars.lua:4499-4517), not inferred.
+      local order = {}
+      local realMinMax = bar.SetMinMaxValues
+      bar.SetMinMaxValues = function(self, ...)
+        order[#order + 1] = "range"
+        return realMinMax and realMinMax(self, ...)
+      end
+
       L.StackRefresh()
       L.StackRefresh()
       L.StackRefresh()
       -- Three ticks, three arms — NOT one.
       assert.equals(3, #handed)
+      assert.equals("range", order[1])
+      assert.equals(3, #order)
       -- …and each one is the object read on THAT tick, never a stale handle.
       assert.are_not.equal(handed[1], handed[2])
       assert.are_not.equal(handed[2], handed[3])
