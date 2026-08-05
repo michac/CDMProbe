@@ -348,18 +348,52 @@ end
 -- spell <id>` overrides it, because the interesting answer may be on a specific button.
 local GCD_SPELLID = 61304
 
+-- Returns (spellID, source) where source is "override" | "roster" | "roster-any" | "gcd".
+--
+-- ⚠⚠ THE FIRST CUT READ `ns.ActiveSpec.abilities`, WHICH DOES NOT EXIST, so this silently
+-- returned the GCD on every spec and the DURATION COLUMN — the likeliest real win in the
+-- whole file — asked about spell 61304 for a whole capture and came back `clean` on every
+-- row.  THE ROSTER **IS** THE SPEC TABLE: `St.RosterEntries` walks `pairs(specTable)` over
+-- numeric keys (State.lua:218), and the live one is the legacy global `ns.Spec`
+-- (State.lua:2261 passes exactly that).  A silently-wrong spellID is the worst failure this
+-- file can have, because every duration cell then reads UNSOURCED — "we never had a secret
+-- to send" — which is indistinguishable from "the channel is dead".  Hence the second
+-- return, which the readout prints and shouts about when it lands on the fallback.
+--
+-- ⚠ AND `ns.Spec` IS NIL ON AN UNREGISTERED SPEC (Vengeance, every spec outside the four),
+-- where the GCD fallback is genuinely all there is — so on those, `/cdmp curve spell <id>`
+-- is not optional.
 function L.SpellID()
-  if type(L.spellOverride) == "number" then return L.spellOverride end
-  local spec = ns.ActiveSpec
-  local abilities = spec and spec.abilities
-  if type(abilities) == "table" then
-    local best
-    for id in pairs(abilities) do
-      if type(id) == "number" and id > 0 and (best == nil or id < best) then best = id end
+  if type(L.spellOverride) == "number" then return L.spellOverride, "override" end
+  local roster = ns.Spec
+  if type(roster) ~= "table" then return GCD_SPELLID, "gcd" end
+  -- SORTED, so the pick is deterministic: a `pairs()`-order choice would make the verdict
+  -- key differ between sessions for no reason anyone could see.
+  local ids = {}
+  for id, info in pairs(roster) do
+    if type(id) == "number" and id > 0 and type(info) == "table" and info.kind ~= "aura" then
+      ids[#ids + 1] = id
     end
-    if best then return best end
   end
-  return GCD_SPELLID
+  table.sort(ids)
+  local anyNonUtility, anyButton
+  for _, id in ipairs(ids) do
+    anyButton = anyButton or id
+    if roster[id].cadence ~= "utility" then
+      anyNonUtility = anyNonUtility or id
+      -- Prefer a rotational button whose cooldown the client will actually report, so the
+      -- duration object has something to carry.  ⚠ `ns.BaseCooldown` is a WEAK test on some
+      -- specs — Havoc has three rows that LIE and charge-category rows read 0 — which is
+      -- exactly why the override exists and why the source is reported rather than assumed.
+      if (ns.BaseCooldown(id) or 0) > 0 then return id, "roster" end
+    end
+  end
+  -- A UTILITY button is the last thing to aim this at: it is the least likely to be on
+  -- cooldown while you are looking, so it degrades to a clean duration and an UNSOURCED
+  -- column — the failure mode this whole function is now shaped around.
+  if anyNonUtility then return anyNonUtility, "roster-any" end
+  if anyButton then return anyButton, "roster-utility" end
+  return GCD_SPELLID, "gcd"
 end
 
 -- WHICH AURA THE AURA COLUMN ASKS ABOUT.  An `auraInstanceID` is required by three of the
@@ -471,14 +505,20 @@ function L.Sources(C)
   -- needs no curve at all, and `GetSpellCooldownDuration` carries no secrecy predicate. ───
   add({ key = "S2", label = "cooldown remaining (duration)", kind = "duration",
         get = function()
-          local dur, hsvOrErr = ns.ReadCooldownDuration(L.SpellID(), false)
+          local dur, hsvOrErr = ns.ReadCooldownDuration((L.SpellID()), false)
           if dur == nil then
             return { call = "threw", class = "absent", err = stashErr(hsvOrErr) }
           end
           return { call = "ok", class = classOf(dur), value = dur, hsv = hsvOrErr }
         end })
   add({ key = "S2c", label = "charge recharge (duration)", kind = "duration",
-        get = function() return callNS(C_Spell, "GetSpellChargeDuration", L.SpellID()) end })
+        get = function()
+          -- ⚠ A LOCAL, not an inline call: `L.SpellID()` returns TWO values and as the
+          -- LAST argument it would EXPAND, handing the client the source string as a
+          -- second argument.  Truncation is only automatic in non-final position.
+          local id = L.SpellID()
+          return callNS(C_Spell, "GetSpellChargeDuration", id)
+        end })
 
   -- ── S3 · health.  `SecretReturns` UNCONDITIONALLY, so this is the one source that cannot
   -- come back readable — the cleanest positive control for "a secret reached the sink". ───
@@ -520,7 +560,7 @@ function L.Sources(C)
   -- the object it is asked of is carrying secret timing).
   add({ key = "S6", label = "cooldown duration → IsActive()", kind = "bool",
         get = function()
-          local dur = ns.ReadCooldownDuration(L.SpellID(), false)
+          local dur = ns.ReadCooldownDuration((L.SpellID()), false)
           if dur == nil then return { call = "absent", class = "absent" } end
           return callMethod(dur, "IsActive")
         end })
@@ -1034,7 +1074,8 @@ end
 --------------------------------------------------------------------------------
 function L.Probe()
   local p = { at = GetTime(), combat = InCombatLockdown() and true or false,
-              halted = L.halted, spellID = L.SpellID(), build = buildTag() }
+              halted = L.halted, build = buildTag() }
+  p.spellID, p.spellSource = L.SpellID()
   local C = L.BuildCurves()
   p.curves       = C
   p.constructors = L.Constructors()
@@ -1134,7 +1175,23 @@ function L.Lines(p)
 
   add("  %-24s %s%s", "state", p.combat and "COMBAT" or "out of combat",
       p.halted and "  |cffff4040HALTED|r" or "")
-  add("  %-24s %s   (spellID %s)", "sandbox", tostring(p.sandbox), tostring(p.spellID))
+  add("  %-24s %s", "sandbox", tostring(p.sandbox))
+  -- ⚠ NAMED AND SOURCED, and LOUD on the fallback.  A silently-wrong spellID makes every
+  -- duration cell read UNSOURCED — "we never had a secret to send" — which is
+  -- indistinguishable from "the channel is dead", and that is exactly how the first live
+  -- capture spent its whole duration column on the global cooldown.
+  add("  %-24s %s %s  |cff808080[%s]|r", "duration column asks",
+      tostring(p.spellID), tostring(ns.SpellName(p.spellID) or "?"),
+      tostring(p.spellSource))
+  if p.spellSource == "gcd" then
+    add("    |cffff4040⚠ THAT IS THE GLOBAL COOLDOWN, not a rotation button.|r No registered "
+      .. "spec roster to pick from (passive spec?). The whole DURATION COLUMN will read "
+      .. "clean/UNSOURCED and prove nothing — set one: |cffffffff/cdmp curve spell <id>|r")
+  elseif p.spellSource == "roster-any" or p.spellSource == "roster-utility" then
+    add("    |cffffd100⚠ no roster button reported a base cooldown|r — this one may have "
+      .. "nothing to count down. If the duration column reads clean, aim it: "
+      .. "|cffffffff/cdmp curve spell <id>|r")
+  end
 
   add("  |cffffd100constructors|r")
   for _, key in ipairs({ "CreateCurve", "CreateColorCurve", "CreateDuration",
@@ -1228,6 +1285,7 @@ local function ringRow(p)
   return {
     t = p.at, key = L.VerdictKey(p), combat = p.combat, halted = p.halted and true or nil,
     build = ns.Stash(p.build), version = ns.version, spellID = ns.Stash(p.spellID),
+    spellSource = ns.Stash(p.spellSource),
     secretScalar = ns.Stash(p.secretScalar), sandbox = ns.Stash(p.sandbox),
     modelBroken = p.modelBroken and true or nil,
     constructors = ctors, negatives = negs, sources = srcs, cells = cells,

@@ -17,7 +17,7 @@ local dir = (debug.getinfo(1, "S").source:match("^@(.*[/\\])")) or "./"
 local H = dofile(dir .. "../mock_ns.lua")
 
 describe("CurveLab — the curve / secret-display lab", function()
-  local ns, L
+  local ns, fx, L
 
   ------------------------------------------------------------------------------
   -- A minimal client for the two namespaces the lab talks to.  Supplied by the SPEC rather
@@ -95,7 +95,7 @@ describe("CurveLab — the curve / secret-display lab", function()
   end
 
   before_each(function()
-    ns = H.fresh()
+    ns, fx = H.fresh()
     H.load("CurveLab.lua")
     L = ns.CurveLab
     ns.db = { curvelab = {} }
@@ -204,6 +204,72 @@ describe("CurveLab — the curve / secret-display lab", function()
                                   value = H.secretValue() }, cell)
     assert.equals("threw", rec.access)
     assert.equals("WORKED", rec.verdict)
+  end)
+
+  ------------------------------------------------------------------------------
+  -- WHICH SPELL THE DURATION COLUMN ASKS ABOUT.
+  ------------------------------------------------------------------------------
+  describe("L.SpellID", function()
+    -- ⚠ THE DEFECT THIS PINS, found by the first live capture: the first cut read
+    -- `ns.ActiveSpec.abilities`, which does not exist — the roster IS the spec table,
+    -- keyed by spellID (State.lua:218 walks `pairs(specTable)`; :2261 passes `ns.Spec`).
+    -- So it silently returned the GCD on every spec and the whole DURATION COLUMN, the
+    -- likeliest real win in the file, spent a capture asking about spell 61304 and came
+    -- back `clean` on every row. A wrong spellID here does not produce a wrong answer, it
+    -- produces UNSOURCED — "we never had a secret to send" — which reads exactly like "the
+    -- channel is dead". Hence the second return, and hence this case.
+    local ROSTER = {
+      [100] = { kind = "button", cadence = "utility" },   -- utility: skipped
+      [200] = { kind = "aura" },                          -- not a press: skipped
+      [300] = { kind = "button", cadence = "cooldown" },  -- no base CD: not preferred
+      [400] = { kind = "button", cadence = "cooldown" },  -- ← the pick
+    }
+
+    it("prefers a rotational button whose cooldown the client reports", function()
+      ns.Spec = ROSTER
+      fx.baseCD[400] = 30
+      local id, src = L.SpellID()
+      assert.equals(400, id)
+      assert.equals("roster", src)
+    end)
+
+    it("falls back to any button, and SAYS it fell back", function()
+      ns.Spec = ROSTER                       -- no baseCD registered for anything
+      local id, src = L.SpellID()
+      assert.equals(300, id)                 -- lowest non-aura, non-... first button
+      assert.equals("roster-any", src)
+    end)
+
+    it("reports `gcd` — never a bare id — when the spec is PASSIVE", function()
+      -- Every spec outside the registered four (Vengeance, for one) leaves `ns.Spec` nil,
+      -- and there the GCD really is all there is. It must be LOUD, not silent.
+      ns.Spec = nil
+      local id, src = L.SpellID()
+      assert.equals(61304, id)
+      assert.equals("gcd", src)
+      local p = L.Probe()
+      assert.equals("gcd", p.spellSource)
+      assert.is_not_nil(table.concat(L.Lines(p), "\n"):find("GLOBAL COOLDOWN", 1, true))
+    end)
+
+    it("honours the override above everything", function()
+      ns.Spec = ROSTER
+      fx.baseCD[400] = 30
+      L.spellOverride = 198013
+      local id, src = L.SpellID()
+      assert.equals(198013, id)
+      assert.equals("override", src)
+    end)
+
+    it("is DETERMINISTIC — never a pairs()-order pick", function()
+      -- An order-dependent choice would make the ring's verdict key differ between sessions
+      -- for a reason nobody could see from the capture.
+      ns.Spec = ROSTER
+      fx.baseCD[300], fx.baseCD[400] = 30, 30
+      local first = L.SpellID()
+      for _ = 1, 20 do assert.equals(first, (L.SpellID())) end
+      assert.equals(300, first)              -- the LOWEST qualifying id, by sort
+    end)
   end)
 
   ------------------------------------------------------------------------------
