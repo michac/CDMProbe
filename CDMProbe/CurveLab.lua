@@ -1566,29 +1566,50 @@ function L.SetStackThreshold(key, n)
   return nil
 end
 
--- Find the CDM item frame carrying a given aura spellID, across the BUFF viewers.  Returns
--- (item, viewerLabel) or nil.  Guarded end to end: a refused viewer read is not a finding
--- about the aura.
-function L.FindAuraItem(spellID)
-  if not ns.VIEWERS then return nil end
+-- L.FindAuraItems(spellID) -> { { item = , viewer = }, … }  — EVERY frame carrying the aura.
+--
+-- ⚠⚠ "EVERY", NOT "THE FIRST", AND THAT IS A CORRECTION.  The 2026-08-04 Demonology capture
+-- resolved Demonic Core to `Buff (bar)` on 5 samples and `Buff (icon)` on 4 — the SAME aura
+-- is tracked on TWO viewers, and a first-match-wins search therefore picked a different
+-- frame from tick to tick.  `stackFontString` re-creates its FontString whenever the item
+-- changes, so the core cue was being destroyed and rebuilt in a different place several
+-- times a second while the imps cue (one frame, stable) worked perfectly.  That is exactly
+-- the asymmetry the live pass reported and it was ours, not the client's.
+--
+-- Drawing on ALL of them is also simply better as a cue: whichever viewer you happen to be
+-- looking at, the number is on it.
+function L.FindAuraItems(spellID)
+  local out = {}
+  if not ns.VIEWERS then return out end
   for _, v in ipairs(ns.VIEWERS) do
     local viewer = ns.GetViewer(v.frame)
     if viewer then
       local ok, frames = pcall(ns.GetItemFrames, viewer)
       if ok and type(frames) == "table" then
         for _, item in ipairs(frames) do
-          local base = ns.ItemBaseSpellID(item)
-          if base == spellID then return item, v.label end
-          -- The aura's own id can also sit on the frame's aura fields rather than its base.
-          local aid
-          if pcall(function() aid = item.auraSpellID end) and aid == spellID then
-            return item, v.label
+          local hit = (ns.ItemBaseSpellID(item) == spellID)
+          if not hit then
+            -- The aura's own id can also sit on the frame's aura fields rather than its base.
+            local aid
+            if pcall(function() aid = item.auraSpellID end) and aid == spellID then
+              hit = true
+            end
           end
+          if hit then out[#out + 1] = { item = item, viewer = v.label } end
         end
       end
     end
   end
-  return nil
+  return out
+end
+
+-- Kept as the single-frame door for the READ (one aura, one instance id — every frame
+-- carrying it reports the same one).  The DRAW uses the full list above.
+function L.FindAuraItem(spellID)
+  local all = L.FindAuraItems(spellID)
+  local first = all[1]
+  if not first then return nil end
+  return first.item, first.viewer
 end
 
 -- One target's read, fully classified.  Returns a record; NEVER the value.
@@ -1627,12 +1648,16 @@ end
 
 -- The drawn cue: one FontString per target, parented to our own holder and ANCHORED to
 -- Blizzard's icon.
+-- ⚠ POOLED PER (target, ITEM FRAME), not per target.  Keyed only by target, a FontString was
+-- torn down and rebuilt every time the resolved frame changed — which for Demonic Core, on
+-- two viewers, was several times a second.  A frame is never destroyed in WoW, so pooling by
+-- item is also the only way to stop leaking one per flip.
 local stackFrames = {}
 
 local function stackFontString(t, item)
-  local fs = stackFrames[t.key]
-  if fs and fs._item == item then return fs end
-  if fs then fs:Hide() end
+  stackFrames[t.key] = stackFrames[t.key] or {}
+  local pool = stackFrames[t.key]
+  if pool[item] then return pool[item] end
   local holder = CreateFrame("Frame", nil, UIParent)
   -- ⚠ `SetAllPoints`, because the holder was created with NO SIZE AND NO ANCHOR.  A region
   -- whose parent has an undefined rect is a coin-flip to render, and "nothing appeared"
@@ -1641,7 +1666,11 @@ local function stackFontString(t, item)
   holder:SetAllPoints(UIParent)
   holder:SetFrameStrata("HIGH")
   holder:Show()
-  fs = holder:CreateFontString(nil, "OVERLAY")
+  -- ⚠ `local`.  Restructuring the pool removed the declaration this shadowed, which made it
+  -- a GLOBAL shared by both targets — the imps cue and the core cue would have overwritten
+  -- each other's handle. luacheck caught it; that is what the "curate the config, fix the
+  -- code" doctrine buys.
+  local fs = holder:CreateFontString(nil, "OVERLAY")
   -- Big, because the whole cue is "a number appeared".  A subtle one is a cue you miss.
   ns.SetFont(fs, 34, "OUTLINE")
   fs:SetTextColor(t.color[1], t.color[2], t.color[3], 1)
@@ -1657,8 +1686,32 @@ local function stackFontString(t, item)
     fs:ClearAllPoints()
     fs:SetPoint("BOTTOM", item, "TOP", 0, 2)
   end)
-  stackFrames[t.key] = fs
+  pool[item] = fs
   return fs
+end
+
+-- Every frame carrying the aura gets the same text, so it does not matter which viewer you
+-- happen to be looking at.
+local function paintStack(t, text)
+  -- ⚠⚠ BLANK EVERY POOLED STRING FIRST, AND THIS IS THE FIX FOR A CUE THAT GOT STUCK ON.
+  -- Painting only the frames the search CURRENTLY returns leaves the last number on screen
+  -- forever the moment a frame stops carrying the aura — the `no-frame` state, which Demonic
+  -- Core hit in the 2026-08-04 capture, runs the loop below ZERO times.  Measured in play: a
+  -- "4" appeared after a /reload and never went away.
+  --
+  -- A THRESHOLD CUE THAT STAYS LIT AFTER THE BUFF DROPS IS THE WORST LIE THIS CAN TELL.  Its
+  -- entire signal is the presence of text, so stale text is not a cosmetic bug — it is the
+  -- cue reporting a threshold that is not met, which is strictly worse than drawing nothing.
+  for _, fs in pairs(stackFrames[t.key] or {}) do pcall(fs.SetText, fs, "") end
+  for _, hit in ipairs(L.FindAuraItems(t.spellID)) do
+    local fs = stackFontString(t, hit.item)
+    if fs then
+      -- THE ONE LINE THE WHOLE THING IS FOR.  The string is EMPTY below the threshold and
+      -- the count at or above it, decided in C.  We never look at it.
+      pcall(fs.SetText, fs, text)
+      fs:Show()
+    end
+  end
 end
 
 function L.StackRefresh()
@@ -1667,18 +1720,10 @@ function L.StackRefresh()
   for _, t in ipairs(STACK_TARGETS) do
     local rec = L.StackRead(t)
     out[t.key] = rec
-    local fs = rec.state ~= "no-frame" and stackFontString(t, (L.FindAuraItem(t.spellID)))
-    if fs then
-      if rec.state == "ok" then
-        -- THE ONE LINE THE WHOLE THING IS FOR.  The string is EMPTY below the threshold and
-        -- the count at or above it, decided in C.  We never look at it.
-        pcall(fs.SetText, fs, rec.value)
-        fs:Show()
-      else
-        pcall(fs.SetText, fs, "")
-        fs:Show()
-      end
-    end
+    -- ⚠ `""` on every non-ok state, so a stale number can never outlive its reading.  An
+    -- `aura-down` that kept the last count on screen would be the worst lie this cue could
+    -- tell: a threshold cue that stays lit after the buff drops.
+    paintStack(t, (rec.state == "ok") and rec.value or "")
   end
   L.stackLast = out
   return out
@@ -1694,22 +1739,20 @@ end
 function L.StackLocate(seconds)
   local shown = {}
   for _, t in ipairs(STACK_TARGETS) do
-    local item, viewer = L.FindAuraItem(t.spellID)
-    if item then
-      local fs = stackFontString(t, item)
+    local hits = L.FindAuraItems(t.spellID)
+    if #hits > 0 then
       -- A placeholder that is NOT a digit, so it can never be mistaken for a real reading.
-      pcall(fs.SetText, fs, "▼" .. t.key)
-      fs:Show()
-      shown[#shown + 1] = string.format("%s -> %s", t.key, tostring(viewer))
+      paintStack(t, "▼" .. t.key)
+      local vs = {}
+      for _, h in ipairs(hits) do vs[#vs + 1] = tostring(h.viewer) end
+      shown[#shown + 1] = string.format("%s -> %d frame(s): %s",
+        t.key, #hits, table.concat(vs, ", "))
     else
       shown[#shown + 1] = t.key .. " -> |cffff4040no frame|r"
     end
   end
   C_Timer.After(seconds or 10, function()
-    for _, t in ipairs(STACK_TARGETS) do
-      local fs = stackFrames[t.key]
-      if fs then pcall(fs.SetText, fs, "") end
-    end
+    for _, t in ipairs(STACK_TARGETS) do paintStack(t, "") end
     pcall(L.StackRefresh)     -- hand the real cue straight back
   end)
   return shown
@@ -1724,7 +1767,9 @@ function L.StackCue(on)
     stackTicker = C_Timer.NewTicker(0.2, function() pcall(L.StackRefresh) end)
     L.StackRefresh()
   else
-    for _, fs in pairs(stackFrames) do pcall(fs.SetText, fs, ""); fs:Hide() end
+    for _, pool in pairs(stackFrames) do
+      for _, fs in pairs(pool) do pcall(fs.SetText, fs, ""); fs:Hide() end
+    end
   end
 end
 

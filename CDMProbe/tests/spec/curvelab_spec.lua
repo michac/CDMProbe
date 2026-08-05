@@ -377,6 +377,32 @@ describe("CurveLab — the curve / secret-display lab", function()
       assert.is_nil(row.stack and row.stack.imps and row.stack.imps.value)
     end)
 
+    it("⚠ CLEARS a stale number when the aura's frame goes away", function()
+      -- MEASURED IN PLAY 2026-08-04: a "4" appeared and never went away.  `paintStack`
+      -- painted only the frames the search CURRENTLY returned, so the `no-frame` state ran
+      -- the paint loop zero times and the last number stayed on screen forever.  A threshold
+      -- cue that stays lit after the buff drops is the worst lie it can tell — its entire
+      -- signal is the PRESENCE of text, so stale text reports a threshold that is not met,
+      -- which is strictly worse than drawing nothing.
+      local item = fakeItem(4242)
+      installViewer(item)
+      _G.C_UnitAuras.GetAuraApplicationDisplayCount = function() return "4" end
+      ns.db.curvelab_stack = true
+      L.StackRefresh()
+      local drawn
+      for _, h in ipairs(L.FindAuraItems(IMPS)) do drawn = h end
+      assert.is_not_nil(drawn)
+      -- The frame stops carrying the aura entirely — `no-frame`, the paint loop's zero case.
+      ns.GetItemFrames = function() return {} end
+      L.StackRefresh()
+      assert.equals("no-frame", L.stackLast.imps.state)
+      -- …and nothing anywhere is still showing a number.
+      for _, fs in ipairs(H.frames) do
+        local txt = fs.GetText and fs:GetText()
+        if type(txt) == "string" then assert.equals("", txt) end
+      end
+    end)
+
     it("its STATE is part of the ring's dedup key", function()
       -- ⚠ It was NOT, and a 13-row Demonology capture carried exactly TWO stack rows: the
       -- cue's transitions (`aura-down` -> `ok` -> `id-unreadable`) are invisible to the
