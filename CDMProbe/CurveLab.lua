@@ -1634,7 +1634,13 @@ local function stackFontString(t, item)
   if fs and fs._item == item then return fs end
   if fs then fs:Hide() end
   local holder = CreateFrame("Frame", nil, UIParent)
+  -- ⚠ `SetAllPoints`, because the holder was created with NO SIZE AND NO ANCHOR.  A region
+  -- whose parent has an undefined rect is a coin-flip to render, and "nothing appeared"
+  -- would then be indistinguishable from "the threshold was never met" — the one confusion
+  -- this cue cannot afford, since its entire signal IS the appearance of text.
+  holder:SetAllPoints(UIParent)
   holder:SetFrameStrata("HIGH")
+  holder:Show()
   fs = holder:CreateFontString(nil, "OVERLAY")
   -- Big, because the whole cue is "a number appeared".  A subtle one is a cue you miss.
   ns.SetFont(fs, 34, "OUTLINE")
@@ -1642,9 +1648,14 @@ local function stackFontString(t, item)
   fs._item, fs._holder = item, holder
   -- ⚠ ANCHORED TO the icon, so contagion flows AWAY from Blizzard's frame.  Nothing is ever
   -- anchored to `fs` — it is a leaf on purpose (see the banner).
+  --
+  -- ⚠ OFFSET ABOVE THE ICON, not centred on it: Blizzard ALREADY draws its own stack count
+  -- on these frames (`CooldownViewerBuffItemMixin:RefreshApplications`), so a centred number
+  -- lands on top of theirs and the two are impossible to tell apart — which would make the
+  -- cue read as "Blizzard's count just got bigger" rather than "the threshold was crossed".
   pcall(function()
     fs:ClearAllPoints()
-    fs:SetPoint("CENTER", item, "CENTER", 0, 0)
+    fs:SetPoint("BOTTOM", item, "TOP", 0, 2)
   end)
   stackFrames[t.key] = fs
   return fs
@@ -1671,6 +1682,37 @@ function L.StackRefresh()
   end
   L.stackLast = out
   return out
+end
+
+-- L.StackLocate(seconds) — SHOW ME WHERE IT DRAWS, without needing the aura or the
+-- threshold.  The cue's whole signal is "text appeared", so "I saw nothing" has three
+-- completely different causes — the threshold was never met, the aura was never up, or it is
+-- drawing somewhere I am not looking — and only the third is a bug.  This separates them:
+-- it puts a labelled marker on each target's item frame for a few seconds, live, using the
+-- same anchor the real cue uses.  Draws even when the aura is DOWN, since the frame exists
+-- either way.
+function L.StackLocate(seconds)
+  local shown = {}
+  for _, t in ipairs(STACK_TARGETS) do
+    local item, viewer = L.FindAuraItem(t.spellID)
+    if item then
+      local fs = stackFontString(t, item)
+      -- A placeholder that is NOT a digit, so it can never be mistaken for a real reading.
+      pcall(fs.SetText, fs, "▼" .. t.key)
+      fs:Show()
+      shown[#shown + 1] = string.format("%s -> %s", t.key, tostring(viewer))
+    else
+      shown[#shown + 1] = t.key .. " -> |cffff4040no frame|r"
+    end
+  end
+  C_Timer.After(seconds or 10, function()
+    for _, t in ipairs(STACK_TARGETS) do
+      local fs = stackFrames[t.key]
+      if fs then pcall(fs.SetText, fs, "") end
+    end
+    pcall(L.StackRefresh)     -- hand the real cue straight back
+  end)
+  return shown
 end
 
 function L.StackCue(on)
@@ -1756,6 +1798,14 @@ ns.RegisterCommand("curve",
         L.StackRefresh()
         return ns.Printf("stack cue: %s now fires at |cffffffff>= %d|r stacks", t.label, t.min)
       end
+      if stackArg:find("locate") then
+        L.StackCue(true)
+        ns.Heading("stack cue — WHERE IT DRAWS (10 s, a ▼marker, not a reading)")
+        for _, line in ipairs(L.StackLocate(10)) do ns.Printf("  %s", line) end
+        return ns.Print("  |cff808080above the CDM buff frame for each aura. If you see no "
+          .. "marker, it is not drawing where you are looking — which is a DIFFERENT problem "
+          .. "from the threshold never being met.|r")
+      end
       if stackArg:find("off") then
         L.StackCue(false)
         return ns.Print("stack cue |cffff8080OFF|r.")
@@ -1771,7 +1821,7 @@ ns.RegisterCommand("curve",
       end
       ns.Heading("stack cue — a threshold cue on a SECRET stack count")
       for _, line in ipairs(stackLines()) do ns.Print(line) end
-      return ns.Print("  |cffffd100/cdmp curve stack|r on | off | imps <n> | core <n>")
+      return ns.Print("  |cffffd100/cdmp curve stack|r on | off | locate | imps <n> | core <n>")
     end
     if rest:find("clear") then
       ns.db.curvelab = {}
