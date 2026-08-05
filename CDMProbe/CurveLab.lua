@@ -1878,6 +1878,30 @@ end
 -- threshold is met.  ⚠ BOTH ARE ANCHORED TO THE PANEL, never to each other — the value
 -- string takes a secret, which marks its anchoring secret and propagates DOWN to dependents
 -- (§4.8.1), so anything hung off it would be poisoned for no reason.  The value is a leaf.
+-- measureFill(bar) -> pct | nil, class — THE PIXEL MEASUREMENT, in one place.
+--
+-- A StatusBar's fill IS the width of its status-bar texture, so this is as close to "did a
+-- pixel move" as Lua can get on a sink that declares no aspect.
+--
+-- ⚠⚠ `GetRect()` FIRST, AND IT IS NOT SUPERSTITION.  Widget rects resolve at frame end, so a
+-- width read in the same frame as the write can come back 0 on a bar that is drawing
+-- perfectly — i.e. the measurement manufactures the very failure it is looking for.
+-- Blizzard hits this and uses exactly this idiom, with a comment saying so:
+-- *"Force-resolve rects before setting justification as sometimes the fontstrings get stuck
+-- with the old alignment"* (EncounterTimelineTimerEvent.lua:640-642).  The FILL=0 % readings
+-- taken before this line existed are therefore SUSPECT and must not be cited as evidence.
+local function measureFill(bar)
+  local texR = callMethod(bar, "GetStatusBarTexture")
+  local tex = (texR.call == "ok") and texR.value or nil
+  callMethod(tex, "GetRect")                 -- force-resolve; return deliberately ignored
+  local wR, fullR = callMethod(tex, "GetWidth"), callMethod(bar, "GetWidth")
+  if wR.call == "ok" and type(wR.value) == "number"
+    and fullR.call == "ok" and type(fullR.value) == "number" and fullR.value > 0 then
+    return math.floor((wR.value / fullR.value) * 100 + 0.5), wR.class
+  end
+  return nil, wR.class
+end
+
 -- A DURATION ROW: label, a real StatusBar driven by the duration OBJECT, and a
 -- `DurationTextBinding` countdown.  All three sinks at once, because all three measured
 -- WORKED and seeing them agree is itself the check.
@@ -1886,6 +1910,8 @@ local function durationPanelRow(t, index)
   p.durRows = p.durRows or {}
   if p.durRows[t.key] then return p.durRows[t.key] end
   local y = -(#STACK_TARGETS * 54) - (index - 1) * 40
+  -- (measureFill lives above; both the live readback and the self-test call it, so the
+  -- self-test cannot pass on a measurement the shipped path does not use.)
   local label = p:CreateFontString(nil, "OVERLAY")
   ns.SetFont(label, 12)
   label:SetTextColor(0.62, 0.62, 0.66, 1)
@@ -1894,7 +1920,14 @@ local function durationPanelRow(t, index)
   local bar = CreateFrame("StatusBar", nil, p)
   -- ⚠ A TEXTURE, ALWAYS.  A texture-less StatusBar refused a secret outright earlier in this
   -- file's life and read as a Tier-1 contradiction for a whole round.
-  bar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
+  -- ⚠⚠ AND `SetStatusBarTexture` RETURNS `success` [SimpleStatusBarAPIDocumentation.lua
+  -- :295-307] — a `bool`, `Nilable = false`, which this line has been DISCARDING since the
+  -- row was written.  A texture path that does not resolve fails here quietly and leaves a
+  -- bar that can never draw a pixel no matter what drives it.  That is the standing lesson
+  -- exactly: the break is on a value nobody thought of as data.  Kept for the readout.
+  local texSet = callMethod(bar, "SetStatusBarTexture", "Interface\\Buttons\\WHITE8X8")
+  bar.texSetOK = boolOf(texSet)
+  bar.texSetClass = texSet.class
   bar:SetStatusBarColor(t.color[1], t.color[2], t.color[3], 0.95)
   bar:SetSize(300, 14)
   bar:SetPoint("TOPLEFT", p, "TOPLEFT", 0, y - 15)
@@ -2134,29 +2167,20 @@ function L.StackRefresh()
       local row = durationPanelRow(t, i)
       if row then
         rec.setupErr = row.setupErr
-        -- ⚠⚠ SET ONCE PER EPISODE, NOT EVERY TICK — Blizzard's own contract.
-        -- `EncounterTimelineTimerEvent.lua:748-755` says it outright: *"the duration objects
-        -- … use a custom clock source internally … This means the timer only needs setting
-        -- once on initialization or when event frame settings change."*  A duration object
-        -- SELF-TICKS in C; re-handing the bar a freshly-minted one at 5 Hz is not a refresh,
-        -- it is a re-arm, and it is the one thing in this row that differs structurally from
-        -- the only working example of this API in the client.
-        -- ⚠ THE EDGE IS COMPUTED FROM NON-SECRET FACTS ONLY — the state string and `hsv`,
-        -- both free — never from a remaining time we are not allowed to read.  `hsv` is in
-        -- the key on purpose: it flips exactly at the combat boundary, which is the
-        -- transition this row keeps failing across, so the bar re-arms there rather than
-        -- carrying an out-of-combat object into a pull.
-        -- ⚠ RESIDUAL HOLE, stated rather than hidden: a cooldown that ENDS and is re-cast
-        -- inside one 200 ms tick never shows an `idle` sample, so the edge is missed and the
-        -- bar keeps the old object.  Tyrant is 60 s; this is a real gap, not a live one.
-        -- ⚠ `control` IS IN THE KEY.  Out of combat a control and a real read are both
-        -- `ok/false`, so without it the control would be pinned but never armed — a bisect
-        -- that silently measures the thing it was supposed to replace.
-        local epoch = tostring(rec.state) .. "/" .. tostring(rec.hsv)
-          .. "/" .. tostring(rec.control)
-        local rearm = (row.epoch ~= epoch)
-        row.epoch = epoch
-        rec.rearmed = rearm
+        -- ⚠⚠ RE-SET EVERY TICK.  DO NOT "OPTIMISE" THIS TO SET-ONCE — IT WAS TRIED, IT
+        -- REGRESSED THE ONE CASE THAT WORKED, AND THE REASONING THAT JUSTIFIED IT WAS A
+        -- MISREADING.
+        -- `EncounterTimelineTimerEvent.lua:748-755` does say *"the timer only needs setting
+        -- once on initialization"* — but the sentence IMMEDIATELY BEFORE IT is the
+        -- precondition: *"the duration objects yielded by THE TIMELINE API use a CUSTOM
+        -- CLOCK SOURCE internally that means they'll automatically account for pausing."*
+        -- That is a property of Blizzard's timeline objects, not of `LuaDurationObject` in
+        -- general.  Ours come fresh from `C_Spell.GetSpellCooldownDuration` on every call,
+        -- and re-handing the bar a new one at 5 Hz is exactly what made this bar drain out
+        -- of combat for the whole of its working life.  Setting once froze it.
+        -- ⚠ If a set-once version is ever wanted, the precondition to establish FIRST is
+        -- whether `GetSpellCooldownDuration`'s object advances on its own — `GetClock()`
+        -- exists [LuaDurationObjectAPIDocumentation.lua:180] and nobody has asked it.
         if rec.state == "ok" then
           -- ⚠ THE TWO LINES THIS ROW EXISTS FOR.  A duration OBJECT into a C-side sink; the
           -- remaining time never enters Lua, so there is nothing for the client to refuse.
@@ -2164,34 +2188,26 @@ function L.StackRefresh()
           -- ⚠ AND NEITHER SINK MAY SWALLOW ITS OWN FAILURE.  Both used to be bare `pcall`s
           -- whose error went nowhere, so a refused sink and a working one rendered the same
           -- blank bar — the ticker's lesson, repeated one layer down.
-          if rearm then
-            local okBar, barErr = pcall(function()
-              -- ⚠ `interpolation` IS `Nilable = false` [SimpleStatusBarAPIDocumentation.lua
-              -- :310] — it has a DEFAULT, which is not the same thing as accepting nil.
-              -- Passing nil for it while supplying a third argument is a bad-argument error,
-              -- not a fallback to the default.  Both enum members are passed explicitly.
-              -- ⚠ AND THE FALLBACK LITERALS ARE CORRECT, checked rather than assumed:
-              -- Immediate = 0, RemainingTime = 1 [SimpleStatusBarConstantsDocumentation.lua
-              -- :25-28, :38-41].
-              local I = Enum and Enum.StatusBarInterpolation
-              local D = Enum and Enum.StatusBarTimerDirection
-              row.bar:SetTimerDuration(rec.duration,
-                I and I.Immediate or 0, D and D.RemainingTime or 1)
+          local okBar, barErr = pcall(function()
+            -- ⚠ `interpolation` IS `Nilable = false` [SimpleStatusBarAPIDocumentation.lua
+            -- :310] — it has a DEFAULT, which is not the same thing as accepting nil.
+            -- Passing nil for it while supplying a third argument is a bad-argument error,
+            -- not a fallback to the default.  Both enum members are passed explicitly.
+            -- ⚠ AND THE FALLBACK LITERALS ARE CORRECT, checked rather than assumed:
+            -- Immediate = 0, RemainingTime = 1 [SimpleStatusBarConstantsDocumentation.lua
+            -- :25-28, :38-41].
+            local I = Enum and Enum.StatusBarInterpolation
+            local D = Enum and Enum.StatusBarTimerDirection
+            row.bar:SetTimerDuration(rec.duration,
+              I and I.Immediate or 0, D and D.RemainingTime or 1)
+          end)
+          rec.barErr = (not okBar) and stashErr(barErr) or nil
+          if row.binding then
+            local okBind, bindErr = pcall(function()
+              row.binding:SetDuration(rec.duration)
+              row.binding:Enable()
             end)
-            rec.barErr = (not okBar) and stashErr(barErr) or nil
-            if row.binding then
-              local okBind, bindErr = pcall(function()
-                row.binding:SetDuration(rec.duration)
-                row.binding:Enable()
-              end)
-              rec.bindErr = (not okBind) and stashErr(bindErr) or nil
-            end
-            row.lastBarErr, row.lastBindErr = rec.barErr, rec.bindErr
-          else
-            -- A tick that re-armed nothing still has to REPORT the last arming's outcome, or
-            -- the readout would show a clean row 4 ticks out of 5 and the error only on the
-            -- edge — a diagnostic that lies most of the time.
-            rec.barErr, rec.bindErr = row.lastBarErr, row.lastBindErr
+            rec.bindErr = (not okBind) and stashErr(bindErr) or nil
           end
           row.bar:Show(); row.text:Show()
         else
@@ -2248,15 +2264,8 @@ function L.StackRefresh()
         -- A BLANK BAR THAT BLANKED THE BAR.  That is this file's standing lesson twice over:
         -- the break was on a value nobody thought of as data, and a diagnostic may never be
         -- the thing that fails.
-        local texR = callMethod(row.bar, "GetStatusBarTexture")
-        local tex = (texR.call == "ok") and texR.value or nil
-        local wR = callMethod(tex, "GetWidth")
-        local fullR = callMethod(row.bar, "GetWidth")
-        rec.fillClass = wR.class
-        if wR.call == "ok" and type(wR.value) == "number"
-          and fullR.call == "ok" and type(fullR.value) == "number" and fullR.value > 0 then
-          rec.fillPct = math.floor((wR.value / fullR.value) * 100 + 0.5)
-        end
+        rec.fillPct, rec.fillClass = measureFill(row.bar)
+        rec.texSetOK = row.bar.texSetOK
         rec.barValueClass = callMethod(row.bar, "GetValue").class
         local E = Enum and Enum.SecretAspect
         if E and E.BarValue ~= nil then
@@ -2295,6 +2304,159 @@ function L.StackRefresh()
   L.durationLast = durOut
 
   L.stackLast = out
+  return out
+end
+
+--------------------------------------------------------------------------------
+-- THE SIMPLEST POSSIBLE TEST: put the cooldown number on the screen.
+--------------------------------------------------------------------------------
+-- ⚠⚠ NO CURVE, NO STATUS BAR, NO TEXT BINDING, NO CLOCK.  Two calls and a FontString.
+--
+-- The bar row above grew four features chasing one blank rectangle, and every one of them
+-- added a way to fail.  This asks the actual question — CAN THE COOLDOWN NUMBER BE PUT IN
+-- FRONT OF A HUMAN — by the shortest route in the API, and it is a route this file already
+-- has the evidence for:
+--
+--   1. `LuaDurationObject:FormatRemainingDuration(formatter, modifier)` returns a **string**
+--      [T1 src: LuaDurationObjectAPIDocumentation.lua:144-158].  Not a curve result, not an
+--      object — a string.  It is `SecretWhenNumericFormatterSecret`, and our formatter is
+--      ours and not secret, but the DURATION carries secret timing, so expect the string
+--      itself to come back SECRET in combat.  That is fine and expected.
+--   2. `FontString:SetText(secret)` was MEASURED to WORK (§4.8.1 finding 4): it applies the
+--      `{Text}` aspect and the characters render.  The secret goes to the screen without
+--      ever being readable by us.
+--
+-- So the display half was ALREADY PROVEN and we were not using it.  The only cost is finding
+-- 4's other half — ⚠ `SetText` with a secret ALSO MARKS ANCHORING SECRET — which is why this
+-- FontString is a LEAF: it hangs off its own holder and NOTHING is ever anchored to it.
+--
+-- What a run tells you, with no ambiguity left in it:
+--   a number ticking down on screen  -> the technique WORKS. Ship it; the bar is optional.
+--   `state=SECRET` and nothing drawn -> the string arrived and SetText did not render it,
+--                                       which contradicts §4.8.1 finding 4.
+--   `state=threw`                    -> FormatRemainingDuration refused; the route is closed
+--                                       and the reason is on screen.
+--   `state=idle`                     -> nothing is on cooldown. Press the spell.
+local textProbe, textTicker
+
+local function ensureTextProbe()
+  if textProbe then return textProbe end
+  local holder = CreateFrame("Frame", nil, UIParent)
+  holder:SetAllPoints(UIParent)          -- a rect, always (the holder-with-no-rect lesson)
+  holder:SetFrameStrata("TOOLTIP")
+  holder:SetFrameLevel(1000)
+  holder:Show()
+  local fs = holder:CreateFontString(nil, "OVERLAY")
+  ns.SetFont(fs, 48, "OUTLINE")
+  fs:SetTextColor(0.62, 0.40, 0.92, 1)
+  -- ⚠ ANCHORED TO ITS OWN HOLDER AND NOTHING ANCHORED TO IT.  A FontString fed a secret has
+  -- secret ANCHORING (§4.8.1 finding 4), and contagion travels DOWN — so this is a leaf on
+  -- purpose.  Centre-screen, big, because the whole signal is "a number appeared".
+  fs:SetPoint("CENTER", holder, "CENTER", 0, 160)
+  local caption = holder:CreateFontString(nil, "OVERLAY")
+  ns.SetFont(caption, 13)
+  caption:SetTextColor(0.62, 0.62, 0.66, 1)
+  -- ⚠ THE CAPTION IS ANCHORED TO THE HOLDER, NOT TO `fs` — see above.  It is also the only
+  -- thing that can distinguish "no number because the cooldown is up" from "no number
+  -- because the route is closed", which is the confusion that cost the bar three builds.
+  caption:SetPoint("CENTER", holder, "CENTER", 0, 130)
+  textProbe = { holder = holder, fs = fs, caption = caption }
+  return textProbe
+end
+
+-- One sample.  Returns a record; NEVER the string.
+function L.TextProbeRead(spellID)
+  local rec = { spellID = spellID }
+  local dur, hsv = ns.ReadCooldownDuration(spellID, true)
+  if dur == nil then
+    rec.state = (hsv == "no duration object") and "idle" or "unreadable"
+    rec.err = tostring(hsv)
+    return rec
+  end
+  rec.hsv = hsv and true or false
+  if type(C_StringUtil) ~= "table"
+    or type(C_StringUtil.CreateSecondsFormatter) ~= "function" then
+    rec.state, rec.err = "unreadable", "C_StringUtil.CreateSecondsFormatter absent"
+    return rec
+  end
+  local okF, fmt = pcall(C_StringUtil.CreateSecondsFormatter)
+  if not okF or fmt == nil then
+    rec.state, rec.err = "unreadable", "CreateSecondsFormatter failed"
+    return rec
+  end
+  pcall(function() fmt:SetDesiredUnitCount(2) end)
+  local M = Enum and Enum.DurationTimeModifier
+  -- ⚠ `modifier` is `Nilable = false` with a DEFAULT [:154] — passed explicitly, the same
+  -- trap `SetTimerDuration`'s interpolation argument sprang earlier in this file.
+  -- RealTime = 0 [LuaDurationObjectSharedDocumentation.lua:13].
+  local r = callMethod(dur, "FormatRemainingDuration", fmt, M and M.RealTime or 0)
+  rec.state = (r.call == "ok") and r.class or r.call
+  rec.err = r.err
+  rec.text = (r.call == "ok") and r.value or nil     -- held, never printed or compared
+  return rec
+end
+
+function L.TextProbe(on, spellID)
+  ns.db = ns.db or {}
+  if spellID then ns.db.curvelab_textSpell = spellID end
+  ns.db.curvelab_text = on and true or false
+  if textTicker then textTicker:Cancel(); textTicker = nil end
+  local p = ensureTextProbe()
+  if not on then
+    pcall(function() p.fs:SetText(""); p.caption:SetText("") end)
+    p.holder:Hide()
+    return
+  end
+  p.holder:Show()
+  local id = ns.db.curvelab_textSpell or 265187
+  -- ⚠ THE TICKER REPORTS ITS OWN FAILURE.  A pcall that discards its error is how a frozen
+  -- panel became unexplainable earlier in this file; the last error goes on the caption.
+  local function tick()
+    local ok, recOrErr = pcall(L.TextProbeRead, id)
+    if not ok then
+      pcall(function() p.fs:SetText("") end)
+      pcall(p.caption.SetText, p.caption,
+        "|cffff4040probe threw|r  " .. stashErr(recOrErr))
+      return
+    end
+    local rec = recOrErr
+    L.textLast = rec
+    -- THE ONE LINE THIS EXISTS FOR.  A (secret) string straight into SetText.
+    local drew = false
+    if rec.text ~= nil then
+      drew = pcall(function() p.fs:SetText(rec.text) end)
+    else
+      pcall(function() p.fs:SetText("") end)
+    end
+    rec.drew = drew
+    pcall(p.caption.SetText, p.caption, string.format(
+      "%s  state=%s  hsv=%s  SetText=%s%s", tostring(ns.SpellName(id) or id),
+      tostring(rec.state), tostring(rec.hsv), tostring(drew),
+      rec.err and ("  |cffff4040" .. tostring(rec.err):sub(1, 60) .. "|r") or ""))
+  end
+  tick()
+  textTicker = C_Timer.NewTicker(0.1, tick)
+end
+
+function L.TextProbeLines()
+  local r = L.textLast or {}
+  local out = {}
+  out[#out + 1] = string.format("  spell         %s", tostring(r.spellID))
+  -- ⚠ THE CLASS, NEVER THE VALUE.  `state` IS the class of the returned string, which is the
+  -- whole finding: `string` out of combat, `SECRET` in it.
+  out[#out + 1] = string.format("  string class  %s   (carries a secret: %s)",
+    tostring(r.state), tostring(r.hsv))
+  out[#out + 1] = string.format("  SetText       %s", tostring(r.drew))
+  if r.err then out[#out + 1] = "  error         |cffff4040" .. tostring(r.err) .. "|r" end
+  if r.state == "SECRET" and r.drew then
+    out[#out + 1] = "  |cff88ff88a SECRET string went into SetText and did not raise|r — if "
+      .. "you can SEE the number, the technique works and needs no bar, curve or binding."
+  elseif r.state == "idle" then
+    out[#out + 1] = "  |cffffd100nothing is on cooldown|r — press the spell."
+  elseif r.state == "threw" then
+    out[#out + 1] = "  |cffff4040FormatRemainingDuration REFUSED|r — this route is closed, "
+      .. "and the reason above is the finding."
+  end
   return out
 end
 
@@ -2426,10 +2588,10 @@ function L.StackGeometry()
       tostring(r.canUpdate), tostring(r.textClass))
     -- THE PIXEL LINE — the one the aspect-less duration sink never had.
     out[#out + 1] = string.format(
-      "      FILL=%s (%s)  GetValue=%s  BarValue-aspect=%s  GetTimerDuration=%s  rearmed=%s",
+      "      FILL=%s (%s)  GetValue=%s  BarValue-aspect=%s  GetTimerDuration=%s  texSet=%s",
       r.fillPct and (r.fillPct .. "%") or "?", tostring(r.fillClass),
       tostring(r.barValueClass), tostring(r.barAspect), tostring(r.timerClass),
-      tostring(r.rearmed))
+      tostring(r.texSetOK))
     if r.state == "ok" and r.fillPct == 0 and r.control then
       out[#out + 1] = "      |cffff4040THE CONTROL IS ALSO 0 %|r — a duration WE built, with "
         .. "no secret in it, through this same path. Secrecy is not involved: this bar has "
@@ -2504,7 +2666,9 @@ ns.RegisterCommand("curve",
   .. "bare = the one-shot matrix readout; 'card' covers the screen with live cells, "
   .. "'watch' arms a 1 Hz verdict-change sampler, 'off' stops it, 'dump' reads the ring, "
   .. "'clear' wipes it, 'spell <id>' aims the duration column, 'stack' arms the "
-  .. "THRESHOLD CUE on a secret stack count (Wild Imps / Demonic Core).",
+  .. "THRESHOLD CUE on a secret stack count (Wild Imps / Demonic Core), and 'text' is the "
+  .. "SIMPLEST TEST — a cooldown number straight onto the screen via "
+  .. "FormatRemainingDuration + SetText, no curve/bar/binding.",
   function(rest)
     rest = (rest or ""):lower()
     local id = rest:match("^%s*spell%s+(%d+)")
@@ -2512,6 +2676,22 @@ ns.RegisterCommand("curve",
       L.spellOverride = tonumber(id)
       return ns.Printf("curve lab: duration column now asks about spellID %d (%s)",
         L.spellOverride, tostring(ns.SpellName(L.spellOverride) or "?"))
+    end
+    -- `text` BEFORE `stack`, and before the bare `off` branch for the same reason.
+    local textArg = rest:match("^%s*text%s*(.*)$")
+    if textArg then
+      if textArg:find("off") then
+        L.TextProbe(false)
+        return ns.Print("curve lab text probe |cffff8080OFF|r.")
+      end
+      local sid = tonumber(textArg:match("(%d+)"))
+      L.TextProbe(true, sid)
+      ns.Heading("text probe |cff88ff88ON|r — the SIMPLEST route: a string into SetText")
+      ns.Print("  |cff808080FormatRemainingDuration() -> a (secret) string -> "
+        .. "FontString:SetText(). No curve, no bar, no binding. Big number, centre screen.|r")
+      for _, line in ipairs(L.TextProbeLines()) do ns.Print(line) end
+      return ns.Print("  |cffffd100/cdmp curve text off|r to stop · "
+        .. "|cffffd100/cdmp curve text <spellID>|r to aim it elsewhere")
     end
     -- `stack` FIRST, because "stack off" must not be swallowed by the bare `off` branch.
     local stackArg = rest:match("^%s*stack%s*(.*)$")

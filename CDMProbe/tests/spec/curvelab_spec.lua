@@ -575,44 +575,45 @@ describe("CurveLab — the curve / secret-display lab", function()
       assert.is_nil(rec.bindErr)
     end)
 
-    it("⚠⚠ arms the timer ONCE PER EPISODE, not once per tick", function()
-      -- Blizzard's only in-client caller of `SetTimerDuration` says it outright:
-      -- *"the duration objects … use a custom clock source internally … the timer only needs
-      -- setting once on initialization"* (EncounterTimelineTimerEvent.lua:748-755).  A
-      -- duration object SELF-TICKS in C, so re-handing the bar a freshly-minted one at 5 Hz
-      -- is a RE-ARM, not a refresh — and it was the one structural difference between this
-      -- row and the only working example of the API in the client.
-      -- ⚠ THE EDGE IS COMPUTED FROM NON-SECRET FACTS ONLY (the state string and `hsv`), so
-      -- this cannot regress into reading a remaining time to decide.
+    it("⚠⚠ RE-SETS the timer EVERY TICK — a set-once version regressed the bar", function()
+      -- ⚠ THIS TEST EXISTS BECAUSE THE OPPOSITE WAS SHIPPED AND BROKE THE ONE CASE THAT
+      -- WORKED.  The bar drained correctly out of combat for its whole life by handing
+      -- `SetTimerDuration` a freshly-read object on every 5 Hz tick.  It was then "optimised"
+      -- to arm once per episode on the strength of Blizzard's comment *"the timer only needs
+      -- setting once on initialization"* (EncounterTimelineTimerEvent.lua:748-755) — and the
+      -- bar froze in BOTH states.
+      -- The misreading is one sentence earlier: *"the duration objects yielded by THE
+      -- TIMELINE API use a CUSTOM CLOCK SOURCE internally"*. That is a property of Blizzard's
+      -- timeline objects, NOT of `LuaDurationObject` generally, and ours come fresh from
+      -- `C_Spell.GetSpellCooldownDuration` on every call.
+      -- So: every tick, and this pins it. A future set-once attempt must first establish that
+      -- our object self-advances (`GetClock()` exists and nobody has asked it).
       installClient()
-      local secret = false
-      _G.C_Spell.GetSpellCooldownDuration = function() return fakeDuration(secret) end
+      local handed = {}
+      _G.C_Spell.GetSpellCooldownDuration = function() return fakeDuration(true) end
       ns.db.curvelab_stack = true
       L.stackAnchor = "screen"
+      L.StackRefresh()
+      -- Spy on the SHIPPED bar, after the row has been built by the real path.
+      local bar = ns.CurveLab.durationLast and H.frames and nil
+      for _, f in ipairs(H.frames) do
+        if f.SetTimerDuration and f._timerDuration ~= nil then bar = f end
+      end
+      assert.is_not_nil(bar)
+      local realSet = bar.SetTimerDuration
+      bar.SetTimerDuration = function(self, dur, ...)
+        handed[#handed + 1] = dur
+        return realSet(self, dur, ...)
+      end
 
       L.StackRefresh()
-      assert.is_true(L.durationLast.tyrant.rearmed)      -- first sight of the cooldown
       L.StackRefresh()
-      assert.is_false(L.durationLast.tyrant.rearmed)     -- …and then it is left alone
       L.StackRefresh()
-      assert.is_false(L.durationLast.tyrant.rearmed)
-
-      -- Entering combat flips `hsv`, and the bar MUST re-arm there — that is the exact
-      -- transition this row kept failing across, so an out-of-combat object must never be
-      -- carried into a pull.
-      secret = true
-      L.StackRefresh()
-      assert.is_true(L.durationLast.tyrant.rearmed)
-      L.StackRefresh()
-      assert.is_false(L.durationLast.tyrant.rearmed)
-
-      -- The cooldown ends (nothing returned) and is cast again: a new episode, re-armed.
-      _G.C_Spell.GetSpellCooldownDuration = function() return nil end
-      L.StackRefresh()
-      assert.equals("idle", L.durationLast.tyrant.state)
-      _G.C_Spell.GetSpellCooldownDuration = function() return fakeDuration(true) end
-      L.StackRefresh()
-      assert.is_true(L.durationLast.tyrant.rearmed)
+      -- Three ticks, three arms — NOT one.
+      assert.equals(3, #handed)
+      -- …and each one is the object read on THAT tick, never a stale handle.
+      assert.are_not.equal(handed[1], handed[2])
+      assert.are_not.equal(handed[2], handed[3])
     end)
 
     it("⚠⚠ the CONTROL runs through the shipped draw path, not a private copy", function()
@@ -641,21 +642,62 @@ describe("CurveLab — the curve / secret-display lab", function()
       assert.equals("ok", rec.state)         -- …the same row, now driven by our own duration
       assert.is_true(rec.control)
       assert.is_false(rec.hsv)
-      assert.is_true(rec.rearmed)            -- and `control` is in the epoch key, so it armed
       -- ⚠ THE ROW STILL RENDERS.  `row-error` here would mean the diagnostic broke the thing
       -- it was added to diagnose — which is how the FILL readback first shipped: a bare
       -- `GetWidth` on our own bar threw and blanked the row it was added to explain.
       assert.is_nil(rec.err)
       assert.is_nil(rec.barErr)
-      -- …and the control is left alone from then on, exactly like a real cooldown.
+      -- …and it keeps being re-handed to the sink, exactly like a real cooldown.
       L.StackRefresh()
-      assert.is_false(L.durationLast.tyrant.rearmed)
+      assert.is_true(L.durationLast.tyrant.control)
 
       -- It expires on its own rather than pinning the row forever.
       H.advance(31)
       L.StackRefresh()
       assert.is_nil(L.durationLast.tyrant.control)
       assert.equals("unreadable", L.durationLast.tyrant.state)
+    end)
+
+    it("⚠ THE SIMPLE TEXT ROUTE — a formatted string, straight into SetText", function()
+      -- The shortest route in the API to "put the cooldown number in front of a human":
+      -- `FormatRemainingDuration` returns a STRING [LuaDurationObjectAPIDocumentation.lua
+      -- :144-158], and §4.8.1 finding 4 already MEASURED that `FontString:SetText(secret)`
+      -- renders.  No curve, no status bar, no text binding, no clock — two calls.
+      installClient()
+      local secretString = H.secretValue()
+      local dur = fakeDuration(true)
+      function dur:FormatRemainingDuration() return secretString end
+      _G.C_Spell.GetSpellCooldownDuration = function() return dur end
+
+      local rec = L.TextProbeRead(265187)
+      -- The CLASS is the finding; the string itself is held and never rendered to chat.
+      assert.equals("SECRET", rec.state)
+      assert.is_true(rec.hsv)
+      -- ⚠ AND IT MUST NEVER REACH A FORMAT.  `tostring` on a real Secret Value taints the
+      -- string it lands in, so the readout has to survive a secret without printing it.
+      L.textLast = rec
+      for _, line in ipairs(L.TextProbeLines()) do
+        assert.is_string(line)
+        assert.is_nil(line:find("table:", 1, true))
+      end
+    end)
+
+    it("the text route reports a REFUSAL as a refusal, not as an empty screen", function()
+      -- A blank FontString means "off cooldown", "the call refused" and "the string would
+      -- not render" all at once unless the probe distinguishes them — the same collapse the
+      -- bar spent three builds inside.
+      installClient()
+      local dur = fakeDuration(true)
+      function dur:FormatRemainingDuration() error("AllowedWhenUntainted", 0) end
+      _G.C_Spell.GetSpellCooldownDuration = function() return dur end
+      local rec = L.TextProbeRead(265187)
+      assert.equals("threw", rec.state)
+      assert.is_not_nil(rec.err)
+      assert.is_nil(rec.text)
+
+      -- …and OFF COOLDOWN is `idle`, which is a real answer and not a failure.
+      _G.C_Spell.GetSpellCooldownDuration = function() return nil end
+      assert.equals("idle", L.TextProbeRead(265187).state)
     end)
 
     it("says so out loud when the binding cannot format", function()
