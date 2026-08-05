@@ -290,6 +290,108 @@ describe("CurveLab — the curve / secret-display lab", function()
   end)
 
   ------------------------------------------------------------------------------
+  -- THE STACK CUE — a threshold cue on a count nothing here is allowed to read.
+  ------------------------------------------------------------------------------
+  describe("the stack cue", function()
+    -- The technique: `GetAuraApplicationDisplayCount(unit, id, min, max)` returns an EMPTY
+    -- STRING below `min` [UnitAuraDocumentation.lua:112-128], so a FontString fed it is
+    -- invisible below the threshold and shows the count at or above it — the comparison
+    -- happens in C and we consume only the visual difference.  What must be true for that
+    -- to be honest rather than merely pretty is what this block asserts.
+    local IMPS = 296553
+
+    local function fakeItem(id)
+      local it = H.newStub()
+      it.auraSpellID, it.auraInstanceID, it.auraDataUnit = IMPS, id, "player"
+      return it
+    end
+
+    local function installViewer(item)
+      ns.VIEWERS = { { key = "bufficon", frame = "BuffIconCooldownViewer", label = "Buff (icon)" } }
+      ns.GetViewer     = function() return { n = 1 } end
+      ns.GetItemFrames = function() return { item } end
+      ns.ItemBaseSpellID = function() return nil end
+    end
+
+    it("passes the THRESHOLD to the client and never compares anything itself", function()
+      local seen
+      installViewer(fakeItem(4242))
+      _G.C_UnitAuras.GetAuraApplicationDisplayCount = function(unit, id, min, max)
+        seen = { unit = unit, id = id, min = min, max = max }
+        return ""                              -- below the threshold: the empty string
+      end
+      L.SetStackThreshold("imps", 7)
+      local rec = L.StackRead(L.StackTargets()[1])
+      assert.equals("ok", rec.state)
+      assert.are.same({ unit = "player", id = 4242, min = 7, max = nil }, seen)
+    end)
+
+    it("⚠ reports `id-unreadable` when item.auraInstanceID reads SECRET", function()
+      -- THE MEASUREMENT THIS CUE EXISTS TO TAKE.  `GetAuraApplicationDisplayCount` is
+      -- `SecretArguments = "AllowedWhenUntainted"`, so a secret instance id cannot be passed
+      -- on at all — the technique is CLOSED for that aura.  It must say so loudly, because
+      -- the alternative ("no text appeared") is indistinguishable from "you had 3 imps".
+      local it = fakeItem(H.secretValue())
+      installViewer(it)
+      local called = false
+      _G.C_UnitAuras.GetAuraApplicationDisplayCount = function() called = true; return "" end
+      local rec = L.StackRead(L.StackTargets()[1])
+      assert.equals("id-unreadable", rec.state)
+      assert.equals("SECRET", rec.idClass)
+      assert.is_false(called)                  -- and it must not even try
+      assert.is_not_nil(table.concat(L.StackLines({ imps = rec }), "\n")
+        :find("CLOSED", 1, true))
+    end)
+
+    it("keeps `aura-down` and `id-unreadable` as different findings", function()
+      -- Both draw nothing.  One means "you do not have the buff", the other means "we are
+      -- not allowed to ask" — opposite implications for whether the cue works at all.
+      installViewer(fakeItem(nil))
+      assert.equals("aura-down", L.StackRead(L.StackTargets()[1]).state)
+      installViewer(fakeItem(4242))
+      _G.C_UnitAuras.GetAuraApplicationDisplayCount = function() return "" end
+      assert.equals("ok", L.StackRead(L.StackTargets()[1]).state)
+    end)
+
+    it("reports `no-frame` rather than silently drawing nothing", function()
+      ns.VIEWERS = { { key = "bufficon", frame = "BuffIconCooldownViewer", label = "B" } }
+      ns.GetViewer     = function() return { n = 1 } end
+      ns.GetItemFrames = function() return {} end
+      assert.equals("no-frame", L.StackRead(L.StackTargets()[1]).state)
+    end)
+
+    it("never formats the count — it goes to SetText and nowhere else", function()
+      -- The count is a SECRET STRING by design.  It must reach the FontString and never a
+      -- format, a comparison or SavedVariables.
+      local s = H.secretValue()
+      installViewer(fakeItem(4242))
+      _G.C_UnitAuras.GetAuraApplicationDisplayCount = function() return s end
+      local rec = L.StackRead(L.StackTargets()[1])
+      assert.equals("SECRET", rec.textClass)
+      for _, line in ipairs(L.StackLines({ imps = rec })) do
+        assert.is_nil(line:find("table:", 1, true))
+      end
+      -- …and the ring records the CLASS, never the value.
+      local row = L.RingRow({ at = 1, combat = true, cells = {}, sources = {},
+                              negatives = {}, constructors = {} })
+      assert.is_nil(row.stack and row.stack.imps and row.stack.imps.value)
+    end)
+
+    it("the thresholds default to what Demonology actually needs", function()
+      -- Wild Imps >6 (Implosion's gate is >=6, so 7 is the strict reading) and Demonic
+      -- Core's CAP of 4 — different constants, and crossing them is a known trap
+      -- (docs/notes.md:149).
+      local byKey = {}
+      for _, t in ipairs(L.StackTargets()) do byKey[t.key] = t end
+      assert.equals(296553, byKey.imps.spellID)
+      assert.equals(264173, byKey.core.spellID)
+      assert.equals(4, byKey.core.min)
+      assert.equals(7, L.SetStackThreshold("imps", 7).min)
+      assert.is_nil(L.SetStackThreshold("nope", 3))
+    end)
+  end)
+
+  ------------------------------------------------------------------------------
   -- POISONED, and — the part that bit — that it STAYS poisoned.
   ------------------------------------------------------------------------------
   describe("anchor contagion", function()

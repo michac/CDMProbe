@@ -89,6 +89,11 @@ local ERRCAP = 90     -- truncation for a stashed error string
 
 L.halted = false      -- set by the UIParent canary; refuses every further cell
 
+-- Forward-declared: the STACK CUE's readout is rendered by `L.Lines` but defined with the
+-- rest of the cue much further down, so the reader meets the cue as one block rather than
+-- split across the file.
+local stackLines
+
 --------------------------------------------------------------------------------
 -- Small guarded helpers.  ns.ClassOf is the shipping readability classifier.
 --------------------------------------------------------------------------------
@@ -1250,6 +1255,11 @@ function L.Lines(p)
         s.err and ("  " .. tostring(s.err)) or "")
   end
 
+  if ns.db and ns.db.curvelab_stack then
+    add("  |cffffd100stack cue|r  (the threshold is compared IN C — we never read the count)")
+    for _, line in ipairs(stackLines()) do add("%s", line) end
+  end
+
   add("  |cffffd100matrix|r  (arg · call · landed · read · hsv · anchor)")
   for _, sink in ipairs(L.Sinks()) do
     local rows = {}
@@ -1282,6 +1292,7 @@ end
 -- The watch ring — opt-in, OFF by default, recording only on a VERDICT change.
 --------------------------------------------------------------------------------
 local ticker
+local stackTicker
 
 local function ringRow(p)
   local cells = {}
@@ -1305,19 +1316,32 @@ local function ringRow(p)
   end
   local ctors = {}
   for k, r in pairs(p.constructors or {}) do ctors[k] = ns.Stash(r.class) end
+  -- THE STACK CUE's reads ride the same ring, because the question it answers — is
+  -- `item.auraInstanceID` readable in combat — is settled by a CLASS, not by whether any
+  -- text appeared on screen.  ⚠ `value` is deliberately NOT recorded even through Stash:
+  -- it is the one field that is a secret STRING by design, and the finding is its CLASS.
+  local stack = {}
+  for k, r in pairs(L.stackLast or {}) do
+    stack[k] = { state = ns.Stash(r.state), idClass = ns.Stash(r.idClass),
+                 textClass = ns.Stash(r.textClass), viewer = ns.Stash(r.viewer),
+                 unit = ns.Stash(r.unit), min = ns.Stash(r.min),
+                 spellID = ns.Stash(r.spellID), err = ns.Stash(r.err) }
+  end
   return {
     t = p.at, key = L.VerdictKey(p), combat = p.combat, halted = p.halted and true or nil,
     build = ns.Stash(p.build), version = ns.version, spellID = ns.Stash(p.spellID),
     spellSource = ns.Stash(p.spellSource),
     secretScalar = ns.Stash(p.secretScalar), sandbox = ns.Stash(p.sandbox),
     modelBroken = p.modelBroken and true or nil,
-    constructors = ctors, negatives = negs, sources = srcs, cells = cells,
+    constructors = ctors, negatives = negs, sources = srcs, cells = cells, stack = stack,
   }
 end
 L.RingRow = ringRow
 
 function L.Sample()
   if not (ns.db and ns.db.curvelab_on) then return end
+  -- Refresh the stack cue's reads first so the row records the SAME instant it drew.
+  pcall(L.StackRefresh)
   local p = L.Probe()
   local key = L.VerdictKey(p)
   local ring = ns.db.curvelab
@@ -1457,6 +1481,212 @@ function L.Card(on)
 end
 
 --------------------------------------------------------------------------------
+-- THE STACK CUE — the first APPLIED use of the technique this file exists to measure.
+--------------------------------------------------------------------------------
+-- ⚠ STILL A PROBE.  It draws its own FontStrings anchored to Blizzard's icons and touches
+-- NOTHING in State/Coach/Binder/Renderer.  It ships here, in the file already scheduled for
+-- deletion, so that if the technique does not hold up there is exactly one thing to delete.
+--
+-- THE PROBLEM IT SOLVES.  An aura's STACK COUNT is secret in combat — `applications` on the
+-- AuraData record and the `GetAuraApplicationDisplayCount` string alike — so no Lua can
+-- branch on it, and §4.8.1 measured that a stack count has NO curve sink either, so it can
+-- never reach alpha / colour / a bar.  Two Demonology gates live exactly there: **Wild Imps
+-- (296553) >= 6** is Implosion's real gate (SpecDemonology.lua's `judgeable = false` case),
+-- and **Demonic Core (264173) caps at 4**.
+--
+-- ⚠⚠ THE TRICK IS THAT THE THRESHOLD COMPARISON HAPPENS IN C, AND WE CONSUME ONLY THE
+-- VISUAL DIFFERENCE.  `GetAuraApplicationDisplayCount(unit, id, minDisplayCount,
+-- maxDisplayCount)` documents [UnitAuraDocumentation.lua:112-128]:
+--   * below `min` -> an EMPTY STRING
+--   * above `max` -> the string "*"
+-- An empty string renders nothing; a count renders.  So a FontString fed
+-- `(unit, id, 7, nil)` is INVISIBLE below 7 stacks and shows the number at 7+, and we never
+-- read, compare or even see the value.  The cue IS the appearance of the text.
+--
+-- ⚠ WHAT MAKES IT WORK IN COMBAT IS `item.auraInstanceID`.  The call is
+-- `RequiresValidUnitAuraInstance`, and the enumeration that hands out instance IDs is sealed
+-- in a pull — but Blizzard's own CDM item frame CARRIES one and keeps it fresh
+-- (`CooldownViewerItemDataMixin:SetAuraInstanceInfo`, `CooldownViewerItemData.lua:243`,
+-- called from `RefreshAuraInstance` on every aura change).  We read the frame field, exactly
+-- as State already reads `auraDataUnit` (roster-state-plan §3.10).
+--
+-- ⚠⚠ AND THAT READ IS THE UNMEASURED PART — IT IS THE POINT OF THIS PASS.  If
+-- `item.auraInstanceID` reads SECRET in combat we cannot use it at all: the API is
+-- `SecretArguments = "AllowedWhenUntainted"`, so a secret instance id is REFUSED, not
+-- silently wrong.  The class of that read is recorded on every sample and reported by
+-- `wowkb.cdmp curvelab`, so the flight answers it whether or not any text appears.
+--
+-- ⚠ THE FONTSTRING IS A LEAF, DELIBERATELY.  §4.8.1 measured that `SetText` with a secret
+-- applies the `{Text}` aspect AND marks anchoring secret, propagating DOWN to dependents.
+-- So this anchors the FontString TO Blizzard's icon (making it the dependent, which is safe
+-- — the contagion flows away from the icon, not into it) and NOTHING is ever anchored to
+-- the FontString.  Do not hang a backdrop, a border or a second string off it.
+local STACK_TARGETS = {
+  -- `min` is the THRESHOLD, and it is the whole cue: text appears at `min` stacks and not
+  -- before.  ⚠ 7 = "MORE THAN 6", which is what was asked for; the APL's own Implosion gate
+  -- is `>= 6`, so `/cdmp curve stack imps 6` is the rotation-faithful setting.
+  { key = "imps", spellID = 296553, min = 7,
+    label = "Wild Imps", color = { 0.741, 0.953, 0.227 } },   -- SpecDemonology's fel lime
+  -- Demonic Core caps at 4, so `min = 4` fires only at cap — exactly "4 stacks".
+  { key = "core", spellID = 264173, min = 4,
+    label = "Demonic Core", color = { 0.51, 0.78, 1.0 } },
+}
+
+function L.StackTargets() return STACK_TARGETS end
+
+function L.SetStackThreshold(key, n)
+  for _, t in ipairs(STACK_TARGETS) do
+    if t.key == key then t.min = n; return t end
+  end
+  return nil
+end
+
+-- Find the CDM item frame carrying a given aura spellID, across the BUFF viewers.  Returns
+-- (item, viewerLabel) or nil.  Guarded end to end: a refused viewer read is not a finding
+-- about the aura.
+function L.FindAuraItem(spellID)
+  if not ns.VIEWERS then return nil end
+  for _, v in ipairs(ns.VIEWERS) do
+    local viewer = ns.GetViewer(v.frame)
+    if viewer then
+      local ok, frames = pcall(ns.GetItemFrames, viewer)
+      if ok and type(frames) == "table" then
+        for _, item in ipairs(frames) do
+          local base = ns.ItemBaseSpellID(item)
+          if base == spellID then return item, v.label end
+          -- The aura's own id can also sit on the frame's aura fields rather than its base.
+          local aid
+          if pcall(function() aid = item.auraSpellID end) and aid == spellID then
+            return item, v.label
+          end
+        end
+      end
+    end
+  end
+  return nil
+end
+
+-- One target's read, fully classified.  Returns a record; NEVER the value.
+function L.StackRead(t)
+  local rec = { key = t.key, spellID = t.spellID, min = t.min, label = t.label }
+  local item, viewer = L.FindAuraItem(t.spellID)
+  rec.viewer = viewer
+  if not item then rec.state = "no-frame"; return rec end
+  -- ⚠ THE MEASUREMENT.  `item.auraInstanceID` is read through a pcall AND classified, and
+  -- both halves matter: absent (the aura is not up) and SECRET (we may not have it) are
+  -- completely different findings, and only one of them closes the technique.
+  local id
+  if not pcall(function() id = item.auraInstanceID end) then
+    rec.state, rec.idClass = "threw", "threw"
+    return rec
+  end
+  rec.idClass = classOf(id)
+  if id == nil then rec.state = "aura-down"; return rec end
+  if rec.idClass ~= "num" then
+    -- A secret instance id cannot be passed on (AllowedWhenUntainted) — the technique is
+    -- closed for this aura and the report must say so rather than draw nothing quietly.
+    rec.state = "id-unreadable"
+    return rec
+  end
+  local unit
+  pcall(function() unit = item.auraDataUnit end)
+  if ns.IsSecret(unit) or type(unit) ~= "string" then unit = "player" end
+  rec.unit = unit
+  local r = callNS(C_UnitAuras, "GetAuraApplicationDisplayCount", unit, id, t.min, nil)
+  rec.state = (r.call == "ok") and "ok" or r.call
+  rec.textClass = r.class
+  rec.value = r.value           -- ⚠ possibly SECRET — never formatted, only handed to SetText
+  rec.err = r.err
+  return rec
+end
+
+-- The drawn cue: one FontString per target, parented to our own holder and ANCHORED to
+-- Blizzard's icon.
+local stackFrames = {}
+
+local function stackFontString(t, item)
+  local fs = stackFrames[t.key]
+  if fs and fs._item == item then return fs end
+  if fs then fs:Hide() end
+  local holder = CreateFrame("Frame", nil, UIParent)
+  holder:SetFrameStrata("HIGH")
+  fs = holder:CreateFontString(nil, "OVERLAY")
+  -- Big, because the whole cue is "a number appeared".  A subtle one is a cue you miss.
+  ns.SetFont(fs, 34, "OUTLINE")
+  fs:SetTextColor(t.color[1], t.color[2], t.color[3], 1)
+  fs._item, fs._holder = item, holder
+  -- ⚠ ANCHORED TO the icon, so contagion flows AWAY from Blizzard's frame.  Nothing is ever
+  -- anchored to `fs` — it is a leaf on purpose (see the banner).
+  pcall(function()
+    fs:ClearAllPoints()
+    fs:SetPoint("CENTER", item, "CENTER", 0, 0)
+  end)
+  stackFrames[t.key] = fs
+  return fs
+end
+
+function L.StackRefresh()
+  if not (ns.db and ns.db.curvelab_stack) then return end
+  local out = {}
+  for _, t in ipairs(STACK_TARGETS) do
+    local rec = L.StackRead(t)
+    out[t.key] = rec
+    local fs = rec.state ~= "no-frame" and stackFontString(t, (L.FindAuraItem(t.spellID)))
+    if fs then
+      if rec.state == "ok" then
+        -- THE ONE LINE THE WHOLE THING IS FOR.  The string is EMPTY below the threshold and
+        -- the count at or above it, decided in C.  We never look at it.
+        pcall(fs.SetText, fs, rec.value)
+        fs:Show()
+      else
+        pcall(fs.SetText, fs, "")
+        fs:Show()
+      end
+    end
+  end
+  L.stackLast = out
+  return out
+end
+
+function L.StackCue(on)
+  ns.db = ns.db or {}
+  ns.db.curvelab_stack = on and true or false
+  if stackTicker then stackTicker:Cancel(); stackTicker = nil end
+  if on then
+    -- 5 Hz: stacks move fast on Demonology and the cue is the only signal.
+    stackTicker = C_Timer.NewTicker(0.2, function() pcall(L.StackRefresh) end)
+    L.StackRefresh()
+  else
+    for _, fs in pairs(stackFrames) do pcall(fs.SetText, fs, ""); fs:Hide() end
+  end
+end
+
+-- `records` defaults to the last refresh, but is injectable so busted can read the readout
+-- without driving a ticker — the `A.Lines` precedent.
+function stackLines(records)
+  local out = {}
+  local last = records or L.stackLast or {}
+  for _, t in ipairs(STACK_TARGETS) do
+    local r = last[t.key] or {}
+    out[#out + 1] = string.format("  %-14s %-16s >=%d   frame=%s  id=%s  text=%s  %s",
+      t.key, t.label, t.min, tostring(r.viewer or "-"),
+      tostring(r.idClass or "-"), tostring(r.textClass or "-"),
+      tostring(r.state or "not sampled"))
+    if r.state == "id-unreadable" then
+      out[#out + 1] = "      |cffff4040item.auraInstanceID reads SECRET|r — the API is "
+        .. "AllowedWhenUntainted, so it cannot be passed on. THE TECHNIQUE IS CLOSED for "
+        .. "this aura, and that is a real finding, not a bug."
+    elseif r.state == "no-frame" then
+      out[#out + 1] = "      |cffffd100no CDM item frame carries this aura|r — is it tracked "
+        .. "in the buff viewers on this spec/loadout?"
+    end
+  end
+  return out
+end
+
+L.StackLines = stackLines
+
+--------------------------------------------------------------------------------
 -- The command.  Registered HERE rather than in Core.lua — CurveLab needs no later-loading
 -- symbol at registration time (the AlertTape / Assist mould), and keeping the registration
 -- inside the file being deleted is what makes the deletion diff ONE BLOCK.
@@ -1481,7 +1711,8 @@ ns.RegisterCommand("curve",
   "⚠ TEMPORARY curve / secret-display lab — which visual channels can carry a SECRET? "
   .. "bare = the one-shot matrix readout; 'card' covers the screen with live cells, "
   .. "'watch' arms a 1 Hz verdict-change sampler, 'off' stops it, 'dump' reads the ring, "
-  .. "'clear' wipes it, 'spell <id>' aims the duration column.",
+  .. "'clear' wipes it, 'spell <id>' aims the duration column, 'stack' arms the "
+  .. "THRESHOLD CUE on a secret stack count (Wild Imps / Demonic Core).",
   function(rest)
     rest = (rest or ""):lower()
     local id = rest:match("^%s*spell%s+(%d+)")
@@ -1489,6 +1720,33 @@ ns.RegisterCommand("curve",
       L.spellOverride = tonumber(id)
       return ns.Printf("curve lab: duration column now asks about spellID %d (%s)",
         L.spellOverride, tostring(ns.SpellName(L.spellOverride) or "?"))
+    end
+    -- `stack` FIRST, because "stack off" must not be swallowed by the bare `off` branch.
+    local stackArg = rest:match("^%s*stack%s*(.*)$")
+    if stackArg then
+      local key, n = stackArg:match("^(%a+)%s+(%d+)$")
+      if key and n then
+        local t = L.SetStackThreshold(key, tonumber(n))
+        if not t then return ns.Printf("no stack target '%s' — try imps | core", key) end
+        L.StackRefresh()
+        return ns.Printf("stack cue: %s now fires at |cffffffff>= %d|r stacks", t.label, t.min)
+      end
+      if stackArg:find("off") then
+        L.StackCue(false)
+        return ns.Print("stack cue |cffff8080OFF|r.")
+      end
+      if stackArg == "" or stackArg:find("on") then
+        L.StackCue(true)
+        ns.Heading("stack cue |cff88ff88ON|r — the threshold is compared IN C; we never read it")
+        for _, line in ipairs(stackLines()) do ns.Print(line) end
+        ns.Print("  |cff808080a NUMBER APPEARS on the icon at/above the threshold and "
+          .. "NOTHING below it. That appearance IS the cue — the count is secret and no Lua "
+          .. "here ever sees it.|r")
+        return
+      end
+      ns.Heading("stack cue — a threshold cue on a SECRET stack count")
+      for _, line in ipairs(stackLines()) do ns.Print(line) end
+      return ns.Print("  |cffffd100/cdmp curve stack|r on | off | imps <n> | core <n>")
     end
     if rest:find("clear") then
       ns.db.curvelab = {}
@@ -1529,4 +1787,5 @@ local prevOnLogin = ns.OnLogin
 function ns.OnLogin()
   if prevOnLogin then prevOnLogin() end
   if ns.db and ns.db.curvelab_on then L.Watch(true) end
+  if ns.db and ns.db.curvelab_stack then L.StackCue(true) end
 end
