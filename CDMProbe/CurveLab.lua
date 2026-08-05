@@ -1115,9 +1115,19 @@ function L.Probe()
   local secret
   if type(UnitPowerPercent) == "function" then
     secret = callNS(_G, "UnitPowerPercent", "player", powerType("Fury", FURY), false)
-  else
-    secret = { call = "absent", class = "absent" }
   end
+  -- ⚠ FALL BACK TO HEALTH, because Fury is only secret ON A DEMON HUNTER — the predicate
+  -- reads "…unless the subject unit does not have a power of this type", so a Warlock's Fury
+  -- reads a plain `num` and the FOUR NEGATIVE CONTROLS all degrade to UNSOURCED.  The
+  -- 2026-08-04 Demonology capture recorded exactly that (`secretScalar=num`), which means
+  -- the run could not confirm the Tier-1 model on that character at all.  `UnitHealthPercent`
+  -- is `SecretReturns` UNCONDITIONALLY [UnitDocumentation.lua:1426] — every character has
+  -- one, so the controls now run everywhere.
+  if (secret == nil or secret.class ~= "SECRET") and type(UnitHealthPercent) == "function" then
+    local h = callNS(_G, "UnitHealthPercent", "player", false)
+    if h.class == "SECRET" then secret = h end
+  end
+  secret = secret or { call = "absent", class = "absent" }
   p.secretScalar = secret.class
 
   local sb = L.Sandbox()
@@ -1770,9 +1780,19 @@ ns.RegisterCommand("curve",
     end
     if rest:find("watch") then
       L.Watch(true)
-      return ns.Print("curve lab watch |cff88ff88ON|r — 1 Hz, recording only on a VERDICT "
+      ns.Print("curve lab watch |cff88ff88ON|r — 1 Hz, recording only on a VERDICT "
         .. "change. Pull a dummy, then |cffffffff/reload|r and "
         .. "|cffffffffuv run python -m wowkb.cdmp curvelab|r.")
+      -- ⚠ THE TWO TOGGLES ARE ORTHOGONAL, and the 2026-08-04 Demonology pass was lost to
+      -- exactly that: `watch` was armed, `stack` was not, and the capture carried no STK
+      -- rows at all.  A recorder that silently records nothing about the thing you went in
+      -- to measure is the failure this whole project keeps re-learning.
+      if not ns.db.curvelab_stack then
+        ns.Print("  |cffffd100⚠ the STACK CUE is separate and currently OFF|r — if you came "
+          .. "for the imp / Demonic Core threshold cue, also run "
+          .. "|cffffffff/cdmp curve stack|r or the capture will carry no stack rows.")
+      end
+      return
     end
     local p = L.Probe()
     ns.Heading("curve / secret-display lab — verdicts, never values")
