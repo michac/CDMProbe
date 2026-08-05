@@ -2076,6 +2076,25 @@ function L.StackRefresh()
       local row = durationPanelRow(t, i)
       if row then
         rec.setupErr = row.setupErr
+        -- ⚠⚠ SET ONCE PER EPISODE, NOT EVERY TICK — Blizzard's own contract.
+        -- `EncounterTimelineTimerEvent.lua:748-755` says it outright: *"the duration objects
+        -- … use a custom clock source internally … This means the timer only needs setting
+        -- once on initialization or when event frame settings change."*  A duration object
+        -- SELF-TICKS in C; re-handing the bar a freshly-minted one at 5 Hz is not a refresh,
+        -- it is a re-arm, and it is the one thing in this row that differs structurally from
+        -- the only working example of this API in the client.
+        -- ⚠ THE EDGE IS COMPUTED FROM NON-SECRET FACTS ONLY — the state string and `hsv`,
+        -- both free — never from a remaining time we are not allowed to read.  `hsv` is in
+        -- the key on purpose: it flips exactly at the combat boundary, which is the
+        -- transition this row keeps failing across, so the bar re-arms there rather than
+        -- carrying an out-of-combat object into a pull.
+        -- ⚠ RESIDUAL HOLE, stated rather than hidden: a cooldown that ENDS and is re-cast
+        -- inside one 200 ms tick never shows an `idle` sample, so the edge is missed and the
+        -- bar keeps the old object.  Tyrant is 60 s; this is a real gap, not a live one.
+        local epoch = tostring(rec.state) .. "/" .. tostring(rec.hsv)
+        local rearm = (row.epoch ~= epoch)
+        row.epoch = epoch
+        rec.rearmed = rearm
         if rec.state == "ok" then
           -- ⚠ THE TWO LINES THIS ROW EXISTS FOR.  A duration OBJECT into a C-side sink; the
           -- remaining time never enters Lua, so there is nothing for the client to refuse.
@@ -2083,23 +2102,34 @@ function L.StackRefresh()
           -- ⚠ AND NEITHER SINK MAY SWALLOW ITS OWN FAILURE.  Both used to be bare `pcall`s
           -- whose error went nowhere, so a refused sink and a working one rendered the same
           -- blank bar — the ticker's lesson, repeated one layer down.
-          local okBar, barErr = pcall(function()
-            -- ⚠ `interpolation` IS `Nilable = false` [SimpleStatusBarAPIDocumentation.lua:310]
-            -- — it has a DEFAULT, which is not the same thing as accepting nil.  Passing nil
-            -- for it while supplying a third argument is a bad-argument error, not a
-            -- fallback to the default.  Both enum members are passed explicitly.
-            local I = Enum and Enum.StatusBarInterpolation
-            local D = Enum and Enum.StatusBarTimerDirection
-            row.bar:SetTimerDuration(rec.duration,
-              I and I.Immediate or 0, D and D.RemainingTime or 1)
-          end)
-          rec.barErr = (not okBar) and stashErr(barErr) or nil
-          if row.binding then
-            local okBind, bindErr = pcall(function()
-              row.binding:SetDuration(rec.duration)
-              row.binding:Enable()
+          if rearm then
+            local okBar, barErr = pcall(function()
+              -- ⚠ `interpolation` IS `Nilable = false` [SimpleStatusBarAPIDocumentation.lua
+              -- :310] — it has a DEFAULT, which is not the same thing as accepting nil.
+              -- Passing nil for it while supplying a third argument is a bad-argument error,
+              -- not a fallback to the default.  Both enum members are passed explicitly.
+              -- ⚠ AND THE FALLBACK LITERALS ARE CORRECT, checked rather than assumed:
+              -- Immediate = 0, RemainingTime = 1 [SimpleStatusBarConstantsDocumentation.lua
+              -- :25-28, :38-41].
+              local I = Enum and Enum.StatusBarInterpolation
+              local D = Enum and Enum.StatusBarTimerDirection
+              row.bar:SetTimerDuration(rec.duration,
+                I and I.Immediate or 0, D and D.RemainingTime or 1)
             end)
-            rec.bindErr = (not okBind) and stashErr(bindErr) or nil
+            rec.barErr = (not okBar) and stashErr(barErr) or nil
+            if row.binding then
+              local okBind, bindErr = pcall(function()
+                row.binding:SetDuration(rec.duration)
+                row.binding:Enable()
+              end)
+              rec.bindErr = (not okBind) and stashErr(bindErr) or nil
+            end
+            row.lastBarErr, row.lastBindErr = rec.barErr, rec.bindErr
+          else
+            -- A tick that re-armed nothing still has to REPORT the last arming's outcome, or
+            -- the readout would show a clean row 4 ticks out of 5 and the error only on the
+            -- edge — a diagnostic that lies most of the time.
+            rec.barErr, rec.bindErr = row.lastBarErr, row.lastBindErr
           end
           row.bar:Show(); row.text:Show()
         else
@@ -2125,6 +2155,45 @@ function L.StackRefresh()
         -- pair an unformatted binding collapsed.
         rec.canFormat = boolOf(callMethod(row.binding, "CanFormatText"))
         rec.canUpdate = boolOf(callMethod(row.binding, "CanUpdateFontString"))
+
+        -- ⚠⚠ DID A PIXEL ACTUALLY MOVE?  THIS ROW HAS NEVER BEEN ABLE TO ANSWER THAT, AND
+        -- NEITHER COULD THE MATRIX.  `SetTimerDuration` declares NO `SecretArgumentsAddAspect`
+        -- [SimpleStatusBarAPIDocumentation.lua:308-320], so it is one of the aspect-less
+        -- sinks — the class this file's own banner calls the DANGEROUS one, with "no readback
+        -- of any kind", settled by `/cdmp curve card` and an eye.  §4.8.1 grades the duration
+        -- route WORKED on `hsv=?>1` + `anchor=0>0`, but those two facts say the OBJECT
+        -- carried a secret and the chain stayed clean — NOT that the bar filled.  On this
+        -- evidence a bar that renders nothing in combat is fully consistent with the
+        -- recorded finding, which is exactly why "it works" and "it is inert" have been
+        -- indistinguishable here for three builds.
+        --
+        -- These four turn it into a real verdict, and none of them reads a forbidden number:
+        --   fill    the STATUS BAR TEXTURE's width — the fill IS its width, so this is the
+        --           direct pixel measurement.  Reported as a CLASS + a coarse bucket, never
+        --           as a time.
+        --   value   `GetValue` is `SecretReturnsForAspect = {BarValue}` [:149-161], so a
+        --           SECRET or a THROW here is the POSITIVE result: proof the secret reached
+        --           the bar's value.  A plain number means the bar is NOT secret-driven.
+        --   aspect  `HasSecretAspect(BarValue)` asked directly of the bar.
+        --   timer   `GetTimerDuration()` [:136-147] — is a duration still installed at all,
+        --           or did something release it?  ⚠ `SetMinMaxValues(0, 0)` is how Blizzard
+        --           DELIBERATELY drops the reference (EncounterTimelineTimerEvent.lua:76-82,
+        --           *"Ensure the timer bar doesn't keep a reference to the timer object"*) —
+        --           which is also why this row must never call it to "fix" the fill.
+        local texR = callMethod(row.bar, "GetStatusBarTexture")
+        local tex = (texR.call == "ok") and texR.value or nil
+        local wR = callMethod(tex, "GetWidth")
+        rec.fillClass = wR.class
+        if wR.call == "ok" and type(wR.value) == "number" then
+          local full = row.bar:GetWidth() or 0
+          rec.fillPct = (full > 0) and math.floor((wR.value / full) * 100 + 0.5) or nil
+        end
+        rec.barValueClass = callMethod(row.bar, "GetValue").class
+        local E = Enum and Enum.SecretAspect
+        if E and E.BarValue ~= nil then
+          rec.barAspect = boolOf(callMethod(row.bar, "HasSecretAspect", E.BarValue))
+        end
+        rec.timerClass = callMethod(row.bar, "GetTimerDuration").class
         -- ⚠ THE CLASS OF THE TEXT, NEVER THE TEXT.  `GetFormattedText` is
         -- `ConditionalSecret = true` [:97-101], and the FontString is written C-side from a
         -- secret, so `GetText()` may hand one back — `ns.Describe` asks `issecretvalue`
@@ -2133,8 +2202,14 @@ function L.StackRefresh()
         -- The label lands LAST for the same reason: it reports the oracles above.
         local hue = (rec.state == "ok") and "|cff88ff88"
           or (rec.state == "idle") and "|cffffd100" or "|cffff8080"
-        row.label:SetText(string.format("%s   %s%s|r%s  gcd:%s  fmt=%s/%s%s%s", t.label, hue,
-          tostring(rec.state), rec.hsv and "  |cffffd100secret-borne|r" or "",
+        -- FILL IS FIRST after the state, because it is the only field that answers the
+        -- question the row exists for: is there a bar on the screen or not.
+        row.label:SetText(string.format(
+          "%s  %s%s|r%s  |cffffffffFILL=%s|r val=%s tmr=%s  gcd:%s fmt=%s/%s%s%s",
+          t.label, hue, tostring(rec.state),
+          rec.hsv and "  |cffffd100secret-borne|r" or "",
+          rec.fillPct and (rec.fillPct .. "%") or tostring(rec.fillClass),
+          tostring(rec.barValueClass), tostring(rec.timerClass),
           tostring(rec.gcdState), tostring(rec.canFormat), tostring(rec.canUpdate),
           rec.setupErr and ("  |cffff4040" .. tostring(rec.setupErr):sub(1, 40) .. "|r") or "",
           rec.err and ("  |cffff8080" .. tostring(rec.err):sub(1, 40) .. "|r") or ""))
@@ -2278,6 +2353,23 @@ function L.StackGeometry()
       .. "  text=%s",
       tostring(r.ignoreGCD), tostring(r.gcdState), tostring(r.canFormat),
       tostring(r.canUpdate), tostring(r.textClass))
+    -- THE PIXEL LINE — the one the aspect-less duration sink never had.
+    out[#out + 1] = string.format(
+      "      FILL=%s (%s)  GetValue=%s  BarValue-aspect=%s  GetTimerDuration=%s  rearmed=%s",
+      r.fillPct and (r.fillPct .. "%") or "?", tostring(r.fillClass),
+      tostring(r.barValueClass), tostring(r.barAspect), tostring(r.timerClass),
+      tostring(r.rearmed))
+    if r.state == "ok" and r.fillPct == 0 then
+      out[#out + 1] = "      |cffff4040the timer is installed and the bar is drawing NOTHING|r"
+        .. " — that is an INERT sink, not a working one, and it CONTRADICTS §4.8.1's "
+        .. "`duration route works` grade (which only ever proved the OBJECT carries a "
+        .. "secret, never that the bar filled)."
+    end
+    if r.state == "ok" and r.barValueClass == "num" and r.hsv then
+      out[#out + 1] = "      |cffffd100the duration carries a secret but GetValue answered a "
+        .. "PLAIN NUMBER|r — `SecretReturnsForAspect = {BarValue}`, so the bar's value is "
+        .. "NOT secret-driven and the secret never reached this channel."
+    end
     for _, fail in ipairs({ { "binding setup", r.setupErr }, { "SetTimerDuration", r.barErr },
                             { "DurationTextBinding", r.bindErr } }) do
       if fail[2] then

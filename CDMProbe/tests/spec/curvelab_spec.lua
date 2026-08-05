@@ -575,6 +575,46 @@ describe("CurveLab — the curve / secret-display lab", function()
       assert.is_nil(rec.bindErr)
     end)
 
+    it("⚠⚠ arms the timer ONCE PER EPISODE, not once per tick", function()
+      -- Blizzard's only in-client caller of `SetTimerDuration` says it outright:
+      -- *"the duration objects … use a custom clock source internally … the timer only needs
+      -- setting once on initialization"* (EncounterTimelineTimerEvent.lua:748-755).  A
+      -- duration object SELF-TICKS in C, so re-handing the bar a freshly-minted one at 5 Hz
+      -- is a RE-ARM, not a refresh — and it was the one structural difference between this
+      -- row and the only working example of the API in the client.
+      -- ⚠ THE EDGE IS COMPUTED FROM NON-SECRET FACTS ONLY (the state string and `hsv`), so
+      -- this cannot regress into reading a remaining time to decide.
+      installClient()
+      local secret = false
+      _G.C_Spell.GetSpellCooldownDuration = function() return fakeDuration(secret) end
+      ns.db.curvelab_stack = true
+      L.stackAnchor = "screen"
+
+      L.StackRefresh()
+      assert.is_true(L.durationLast.tyrant.rearmed)      -- first sight of the cooldown
+      L.StackRefresh()
+      assert.is_false(L.durationLast.tyrant.rearmed)     -- …and then it is left alone
+      L.StackRefresh()
+      assert.is_false(L.durationLast.tyrant.rearmed)
+
+      -- Entering combat flips `hsv`, and the bar MUST re-arm there — that is the exact
+      -- transition this row kept failing across, so an out-of-combat object must never be
+      -- carried into a pull.
+      secret = true
+      L.StackRefresh()
+      assert.is_true(L.durationLast.tyrant.rearmed)
+      L.StackRefresh()
+      assert.is_false(L.durationLast.tyrant.rearmed)
+
+      -- The cooldown ends (nothing returned) and is cast again: a new episode, re-armed.
+      _G.C_Spell.GetSpellCooldownDuration = function() return nil end
+      L.StackRefresh()
+      assert.equals("idle", L.durationLast.tyrant.state)
+      _G.C_Spell.GetSpellCooldownDuration = function() return fakeDuration(true) end
+      L.StackRefresh()
+      assert.is_true(L.durationLast.tyrant.rearmed)
+    end)
+
     it("says so out loud when the binding cannot format", function()
       -- The formatter is a COLLABORATOR, not a garnish: if it cannot be made, the row is
       -- knowingly text-less and must SAY that rather than sit blank looking like a duration
