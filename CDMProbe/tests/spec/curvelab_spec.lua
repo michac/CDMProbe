@@ -615,6 +615,49 @@ describe("CurveLab — the curve / secret-display lab", function()
       assert.is_true(L.durationLast.tyrant.rearmed)
     end)
 
+    it("⚠⚠ the CONTROL runs through the shipped draw path, not a private copy", function()
+      -- THE BISECT.  `FILL=0%` on a secret-bearing cooldown has two causes that look
+      -- identical — the sink will not render a secret, or this bar was never wired right —
+      -- and only a KNOWN, NON-SECRET duration through the SAME path separates them.  It is
+      -- the `stack test` lesson applied to the bar, and the `rt fx` rule says it must ride
+      -- the shipped path: a rig with its own draw routine could pass while the real one
+      -- fails, which is exactly the failure it exists to catch.
+      installClient()
+      -- The client read is left DELIBERATELY BROKEN, so anything the row reports can only
+      -- have come from the control.
+      _G.C_Spell.GetSpellCooldownDuration = nil
+      ns.db.curvelab_stack = true
+      L.stackAnchor = "screen"
+      L.StackRefresh()
+      assert.equals("unreadable", L.durationLast.tyrant.state)
+
+      local r = assert(L.DurationControl(30))
+      assert.equals(30, r.span)
+      assert.is_false(r.hsv)                 -- a control that carries a secret is no control
+      -- ⚠ NO EXPLICIT REFRESH HERE.  `DurationControl` arms the cue, which refreshes — so
+      -- this reads the tick the control itself produced.  A refresh added on top would make
+      -- this the SECOND tick and the re-arm assertion below would silently invert.
+      local rec = L.durationLast.tyrant
+      assert.equals("ok", rec.state)         -- …the same row, now driven by our own duration
+      assert.is_true(rec.control)
+      assert.is_false(rec.hsv)
+      assert.is_true(rec.rearmed)            -- and `control` is in the epoch key, so it armed
+      -- ⚠ THE ROW STILL RENDERS.  `row-error` here would mean the diagnostic broke the thing
+      -- it was added to diagnose — which is how the FILL readback first shipped: a bare
+      -- `GetWidth` on our own bar threw and blanked the row it was added to explain.
+      assert.is_nil(rec.err)
+      assert.is_nil(rec.barErr)
+      -- …and the control is left alone from then on, exactly like a real cooldown.
+      L.StackRefresh()
+      assert.is_false(L.durationLast.tyrant.rearmed)
+
+      -- It expires on its own rather than pinning the row forever.
+      H.advance(31)
+      L.StackRefresh()
+      assert.is_nil(L.durationLast.tyrant.control)
+      assert.equals("unreadable", L.durationLast.tyrant.state)
+    end)
+
     it("says so out loud when the binding cannot format", function()
       -- The formatter is a COLLABORATOR, not a garnish: if it cannot be made, the row is
       -- knowingly text-less and must SAY that rather than sit blank looking like a duration

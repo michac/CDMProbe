@@ -1622,9 +1622,67 @@ end
 -- read says something else" is precisely the confusion that cost this row its first two
 -- builds, and a knob you have to flip between two pulls cannot answer it — you would be
 -- comparing two different fights.  Two calls at 5 Hz is nothing.
+-- L.DurationControl(seconds) — ⚠⚠ THE BISECT, and it is the `stack test` lesson applied to
+-- the bar instead of the text.
+--
+-- `FILL=0%` on a secret-bearing cooldown has TWO completely different causes and they look
+-- identical: (a) the duration sink genuinely will not render a secret — a real §4.8 finding
+-- and a correction to §4.8.1's `WORKED` grade — or (b) this bar is wired wrong and secrecy
+-- was never involved at all.  Guessing between those is what the `stack test` command was
+-- built to stop doing for the text cue; the bar had no equivalent.
+--
+-- This pins a duration WE CONSTRUCT — a plain 30 s span from `C_DurationUtil.CreateDuration`
+-- + `SetTimeFromStart`, carrying no secret by construction (`HasSecretValues` must read
+-- false) — onto the target, and lets the ENTIRE NORMAL PATH consume it: same re-arm edge,
+-- same `SetTimerDuration`, same binding, same readbacks.
+--
+-- ⚠ THROUGH THE SHIPPED PATH, NOT A PRIVATE COPY — the `rt fx` rule (addon/CLAUDE.md): a
+-- rig that draws its own control could pass while the real path fails, which is precisely
+-- the failure it exists to catch.  Hence an override ON THE TARGET rather than a second
+-- draw routine.
+--
+--   control fills and drains  -> the bar, the sink and our wiring are all fine, and a
+--                                secret-bearing duration renders NOTHING.  That is the
+--                                finding, and §4.8.1 needs correcting.
+--   control also reads 0 %    -> secrecy is not involved; this bar has never worked, and
+--                                every "it fails in combat" reading was a coincidence.
+function L.DurationControl(seconds)
+  local t = DURATION_TARGETS[1]
+  if not t then return nil, "no duration target" end
+  if type(C_DurationUtil) ~= "table" or type(C_DurationUtil.CreateDuration) ~= "function" then
+    return nil, "C_DurationUtil.CreateDuration absent"
+  end
+  local okC, dur = pcall(C_DurationUtil.CreateDuration)
+  if not okC or dur == nil then return nil, "CreateDuration failed" end
+  local span = seconds or 30
+  local okS, err = pcall(function()
+    -- `FrameTime` is the game clock; `modRate` defaults to 1 and is passed explicitly for
+    -- the `Default ~= Nilable` reason this file has already been bitten by once.
+    dur:SetTimeFromStart(GetTime(), span, 1)
+  end)
+  if not okS then return nil, "SetTimeFromStart: " .. stashErr(err) end
+  -- The control's OWN honesty check: if this reads true the control is not a control.
+  local hsv = boolOf(callMethod(dur, "HasSecretValues"))
+  t.control, t.controlUntil, t.controlSpan = dur, GetTime() + span, span
+  L.StackCue(true)
+  return { span = span, hsv = hsv, zero = boolOf(callMethod(dur, "IsZero")) }
+end
+
 function L.DurationRead(t)
   local ignoreGCD = (t.ignoreGCD ~= false)
   local rec = { key = t.key, spellID = t.spellID, label = t.label, ignoreGCD = ignoreGCD }
+  -- The control short-circuits the client read entirely — everything downstream is unchanged.
+  if t.control then
+    if GetTime() >= (t.controlUntil or 0) then
+      t.control, t.controlUntil = nil, nil
+    else
+      rec.state, rec.duration, rec.control = "ok", t.control, true
+      rec.hsv = boolOf(callMethod(t.control, "HasSecretValues"))
+      rec.zero = boolOf(callMethod(t.control, "IsZero"))
+      rec.gcdState = "control"
+      return rec
+    end
+  end
   -- The OTHER mode, kept purely as the comparison. `nil` here is a real answer (nothing at
   -- all is on cooldown), so it is reported as a state string and never as a failure.
   local otherDur, otherWhy = ns.ReadCooldownDuration(t.spellID, not ignoreGCD)
@@ -2091,7 +2149,11 @@ function L.StackRefresh()
         -- ⚠ RESIDUAL HOLE, stated rather than hidden: a cooldown that ENDS and is re-cast
         -- inside one 200 ms tick never shows an `idle` sample, so the edge is missed and the
         -- bar keeps the old object.  Tyrant is 60 s; this is a real gap, not a live one.
+        -- ⚠ `control` IS IN THE KEY.  Out of combat a control and a real read are both
+        -- `ok/false`, so without it the control would be pinned but never armed — a bisect
+        -- that silently measures the thing it was supposed to replace.
         local epoch = tostring(rec.state) .. "/" .. tostring(rec.hsv)
+          .. "/" .. tostring(rec.control)
         local rearm = (row.epoch ~= epoch)
         row.epoch = epoch
         rec.rearmed = rearm
@@ -2180,13 +2242,20 @@ function L.StackRefresh()
         --           DELIBERATELY drops the reference (EncounterTimelineTimerEvent.lua:76-82,
         --           *"Ensure the timer bar doesn't keep a reference to the timer object"*) —
         --           which is also why this row must never call it to "fix" the fill.
+        -- ⚠ EVERY ONE OF THESE GOES THROUGH `callMethod`, INCLUDING `GetWidth` ON OUR OWN
+        -- BAR.  A bare `row.bar:GetWidth()` here threw under a widget that does not
+        -- implement it and took the whole row to `row-error` — a READBACK ADDED TO DIAGNOSE
+        -- A BLANK BAR THAT BLANKED THE BAR.  That is this file's standing lesson twice over:
+        -- the break was on a value nobody thought of as data, and a diagnostic may never be
+        -- the thing that fails.
         local texR = callMethod(row.bar, "GetStatusBarTexture")
         local tex = (texR.call == "ok") and texR.value or nil
         local wR = callMethod(tex, "GetWidth")
+        local fullR = callMethod(row.bar, "GetWidth")
         rec.fillClass = wR.class
-        if wR.call == "ok" and type(wR.value) == "number" then
-          local full = row.bar:GetWidth() or 0
-          rec.fillPct = (full > 0) and math.floor((wR.value / full) * 100 + 0.5) or nil
+        if wR.call == "ok" and type(wR.value) == "number"
+          and fullR.call == "ok" and type(fullR.value) == "number" and fullR.value > 0 then
+          rec.fillPct = math.floor((wR.value / fullR.value) * 100 + 0.5)
         end
         rec.barValueClass = callMethod(row.bar, "GetValue").class
         local E = Enum and Enum.SecretAspect
@@ -2205,11 +2274,13 @@ function L.StackRefresh()
         -- FILL IS FIRST after the state, because it is the only field that answers the
         -- question the row exists for: is there a bar on the screen or not.
         row.label:SetText(string.format(
-          "%s  %s%s|r%s  |cffffffffFILL=%s|r val=%s tmr=%s  gcd:%s fmt=%s/%s%s%s",
-          t.label, hue, tostring(rec.state),
+          "%s  %s%s|r%s  |cffffffffFILL=%s|r val=%s tmr=%s zero=%s  gcd:%s fmt=%s/%s%s%s",
+          rec.control and ("|cff66ccffCONTROL " .. tostring(t.controlSpan) .. "s|r")
+            or t.label,
+          hue, tostring(rec.state),
           rec.hsv and "  |cffffd100secret-borne|r" or "",
           rec.fillPct and (rec.fillPct .. "%") or tostring(rec.fillClass),
-          tostring(rec.barValueClass), tostring(rec.timerClass),
+          tostring(rec.barValueClass), tostring(rec.timerClass), tostring(rec.zero),
           tostring(rec.gcdState), tostring(rec.canFormat), tostring(rec.canUpdate),
           rec.setupErr and ("  |cffff4040" .. tostring(rec.setupErr):sub(1, 40) .. "|r") or "",
           rec.err and ("  |cffff8080" .. tostring(rec.err):sub(1, 40) .. "|r") or ""))
@@ -2359,11 +2430,20 @@ function L.StackGeometry()
       r.fillPct and (r.fillPct .. "%") or "?", tostring(r.fillClass),
       tostring(r.barValueClass), tostring(r.barAspect), tostring(r.timerClass),
       tostring(r.rearmed))
-    if r.state == "ok" and r.fillPct == 0 then
+    if r.state == "ok" and r.fillPct == 0 and r.control then
+      out[#out + 1] = "      |cffff4040THE CONTROL IS ALSO 0 %|r — a duration WE built, with "
+        .. "no secret in it, through this same path. Secrecy is not involved: this bar has "
+        .. "never worked, and every `it fails in combat` reading was a coincidence."
+    elseif r.state == "ok" and r.fillPct == 0 then
       out[#out + 1] = "      |cffff4040the timer is installed and the bar is drawing NOTHING|r"
-        .. " — that is an INERT sink, not a working one, and it CONTRADICTS §4.8.1's "
-        .. "`duration route works` grade (which only ever proved the OBJECT carries a "
-        .. "secret, never that the bar filled)."
+        .. " — run |cffffffff/cdmp curve stack dur test|r before believing this is about "
+        .. "secrecy. If the control drains, this CONTRADICTS §4.8.1's `duration route works` "
+        .. "grade (which only ever proved the OBJECT carries a secret, never that the bar "
+        .. "filled)."
+    elseif r.control and (r.fillPct or 0) > 0 then
+      out[#out + 1] = "      |cff88ff88the control DRAWS|r — the bar, the sink and the wiring "
+        .. "are all fine. If the real read then reads 0 %, the secret-bearing duration is "
+        .. "what renders nothing, and that is a §4.8.1 correction."
     end
     if r.state == "ok" and r.barValueClass == "num" and r.hsv then
       out[#out + 1] = "      |cffffd100the duration carries a secret but GetValue answered a "
@@ -2449,6 +2529,25 @@ ns.RegisterCommand("curve",
         return ns.Printf("stack cue: %s now fires at |cffffffff>= %d|r stacks%s",
           t.label, t.min, wasOff and "  (and the cue is now |cff88ff88ON|r)" or "")
       end
+      -- ⚠ BEFORE the `dur <key> <id>` match, so `dur test` can never be read as a spellID.
+      local durTest = stackArg:match("^dur%s+test%s*(%d*)$")
+      if durTest then
+        local secs = tonumber(durTest)
+        local r, why = L.DurationControl(secs)
+        ns.Heading("duration bar SELF-TEST — a KNOWN, NON-SECRET duration, same draw path")
+        if not r then return ns.Printf("  |cffff4040could not build a control|r: %s",
+          tostring(why)) end
+        ns.Printf("  a %ds span is now pinned on the bar. HasSecretValues=%s  IsZero=%s",
+          r.span, tostring(r.hsv), tostring(r.zero))
+        if r.hsv then
+          ns.Print("  |cffff4040the control reports SECRET|r — it is not a control; this "
+            .. "result proves nothing.")
+        end
+        return ns.Print("  |cff808080watch FILL on the row. It DRAINS 100%->0% ⇒ the bar, "
+          .. "the sink and the wiring all work, and a SECRET-bearing duration renders "
+          .. "nothing — that is the finding. It sits at 0% ⇒ secrecy was never involved "
+          .. "and this bar has never worked. Clears itself when the span ends.|r")
+      end
       local dkey, did = stackArg:match("^dur%s+(%a+)%s+(%d+)$")
       if dkey and did then
         local t = L.SetDurationSpell(dkey, tonumber(did))
@@ -2504,7 +2603,8 @@ ns.RegisterCommand("curve",
       for _, line in ipairs(stackLines()) do ns.Print(line) end
       for _, line in ipairs(L.StackGeometry()) do ns.Print(line) end
       return ns.Print("  |cffffd100/cdmp curve stack|r on | off | locate | where screen|item "
-        .. "| imps <n> | core <n> | dur tyrant <spellID>")
+        .. "| imps <n> | core <n> | dur tyrant <spellID> | |cff66ccffdur test [secs]|r "
+        .. "(the bar bisect: a known NON-SECRET duration through the same draw path)")
     end
     if rest:find("clear") then
       ns.db.curvelab = {}
