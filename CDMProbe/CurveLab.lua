@@ -1966,6 +1966,7 @@ function L.StackRefresh()
   if not (ns.db and ns.db.curvelab_stack) then return end
   local out = {}
   for _, t in ipairs(STACK_TARGETS) do
+    local okRow, rowErr = pcall(function()
     local rec = L.StackRead(t)
     out[t.key] = rec
     -- ⚠ `""` on every non-ok state, so a stale number can never outlive its reading.  An
@@ -1975,26 +1976,43 @@ function L.StackRefresh()
     -- `painted = 0` means the read worked and NOTHING reached the screen, which is a
     -- completely different problem from the threshold not being met.
     rec.painted = paintStack(t, (rec.state == "ok") and rec.value or "", rec)
+    end)
+    if not okRow then
+      out[t.key] = { key = t.key, label = t.label, state = "row-error",
+                     err = stashErr(rowErr) }
+    end
   end
   -- THE DURATION ROWS ride the same refresh, because they answer the same shape of question
   -- and share the panel.
   local durOut = {}
   for i, t in ipairs(DURATION_TARGETS) do
+    -- ⚠⚠ EACH ROW IN ITS OWN pcall.  The stack cue and the duration bar are INDEPENDENT
+    -- instruments answering different questions, and sharing one refresh loop meant a throw
+    -- in either killed BOTH — which is what "immediately hit a refresh error" looked like:
+    -- a brand-new duration row taking the working stack cue down with it.  A diagnostic
+    -- panel must degrade per row, and say WHICH row degraded.
+    local okRow, rowErr = pcall(function()
     local rec = L.DurationRead(t)
     durOut[t.key] = rec
     if L.stackAnchor == "screen" then
       local row = durationPanelRow(t, i)
       if row then
         local hue = (rec.state == "ok") and "|cff88ff88" or "|cffff8080"
-        row.label:SetText(string.format("%s   %s%s|r%s", t.label, hue,
-          tostring(rec.state), rec.hsv and "  |cffffd100secret-borne|r" or ""))
+        row.label:SetText(string.format("%s   %s%s|r%s%s", t.label, hue,
+          tostring(rec.state), rec.hsv and "  |cffffd100secret-borne|r" or "",
+          rec.err and ("  |cffff4040" .. tostring(rec.err):sub(1, 40) .. "|r") or ""))
         if rec.state == "ok" then
           -- ⚠ THE TWO LINES THIS ROW EXISTS FOR.  A duration OBJECT into a C-side sink; the
           -- remaining time never enters Lua, so there is nothing for the client to refuse.
           pcall(function()
-            row.bar:SetTimerDuration(rec.duration, nil,
-              Enum and Enum.StatusBarTimerDirection
-                and Enum.StatusBarTimerDirection.RemainingTime)
+            -- ⚠ `interpolation` IS `Nilable = false` [SimpleStatusBarAPIDocumentation.lua:310]
+            -- — it has a DEFAULT, which is not the same thing as accepting nil.  Passing nil
+            -- for it while supplying a third argument is a bad-argument error, not a
+            -- fallback to the default.  Both enum members are passed explicitly.
+            local I = Enum and Enum.StatusBarInterpolation
+            local D = Enum and Enum.StatusBarTimerDirection
+            row.bar:SetTimerDuration(rec.duration,
+              I and I.Immediate or 0, D and D.RemainingTime or 1)
           end)
           if row.binding then pcall(function()
             row.binding:SetDuration(rec.duration)
@@ -2006,6 +2024,11 @@ function L.StackRefresh()
           pcall(function() row.text:SetText("") end)
         end
       end
+    end
+    end)
+    if not okRow then
+      durOut[t.key] = { key = t.key, label = t.label, state = "row-error",
+                        err = stashErr(rowErr) }
     end
   end
   L.durationLast = durOut
@@ -2132,7 +2155,8 @@ function L.StackGeometry()
     local r = (L.durationLast or {})[t.key] or {}
     out[#out + 1] = string.format("  dur %-6s    %s (%s)  state=%s hsv=%s zero=%s%s",
       t.key, tostring(t.label), tostring(t.spellID), tostring(r.state),
-      tostring(r.hsv), tostring(r.zero), r.err and ("  " .. tostring(r.err)) or "")
+      tostring(r.hsv), tostring(r.zero), r.err and ("  |cffff4040" .. tostring(r.err)
+        .. "|r") or "")
   end
   for k, row in pairs(p.rows or {}) do
     out[#out + 1] = string.format("  row %-6s    label=%q value shown=%s",
