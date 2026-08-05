@@ -1685,7 +1685,7 @@ local stackPanel
 local function ensureStackPanel()
   if stackPanel then return stackPanel end
   local f = CreateFrame("Frame", nil, UIParent)
-  f:SetSize(340, 100)
+  f:SetSize(340, 118)
   -- Above centre: clear of the action bars, inside the eye's rotation-scanning arc.
   f:SetPoint("CENTER", UIParent, "CENTER", 0, 220)
   f:SetFrameStrata("TOOLTIP")
@@ -1717,7 +1717,7 @@ end
 local function stackPanelRow(t, index)
   local p = ensureStackPanel()
   if p.rows[t.key] then return p.rows[t.key] end
-  local y = -(index - 1) * 46
+  local y = -(index - 1) * 54
   local label = p:CreateFontString(nil, "OVERLAY")
   ns.SetFont(label, 12)
   label:SetTextColor(0.62, 0.62, 0.66, 1)
@@ -1779,7 +1779,17 @@ end
 
 -- Every frame carrying the aura gets the same text, so it does not matter which viewer you
 -- happen to be looking at.
-local function paintStack(t, text)
+-- `rec` is the READ that produced `text`, and the label reports its STATE.
+--
+-- ⚠⚠ THIS IS THE FIX FOR "IT NEVER UNDIMS".  A dim label beside a permanently empty value
+-- is indistinguishable from a broken cue, and the reason the value is empty is the single
+-- most useful thing on screen: `ok` means the read worked and the threshold genuinely is not
+-- met (the cue is CORRECT and you are simply below it), `aura-down` means you do not have
+-- the buff, `id-unreadable` means the technique is closed, `no-frame` means the CDM is not
+-- tracking it at all.  Four completely different answers that all render as no number.
+-- Putting the state in the label makes the panel self-explanatory instead of something you
+-- have to go and ask a slash command about.
+local function paintStack(t, text, rec)
   -- ⚠⚠ BLANK EVERY POOLED STRING FIRST, AND THIS IS THE FIX FOR A CUE THAT GOT STUCK ON.
   -- Painting only the frames the search CURRENTLY returns leaves the last number on screen
   -- forever the moment a frame stops carrying the aura — the `no-frame` state, which Demonic
@@ -1798,7 +1808,11 @@ local function paintStack(t, text)
     for i, tt in ipairs(STACK_TARGETS) do if tt.key == t.key then index = i end end
     local row = stackPanelRow(t, index)
     if row then
-      row.label:SetText(string.format("%s  >=%d", t.label, t.min))
+      local st = rec and rec.state or "?"
+      -- Colour-coded so the healthy case reads as healthy at a glance: `ok` is the cue
+      -- working and simply below threshold; anything else is a reason it CANNOT fire.
+      local hue = (st == "ok") and "|cff88ff88" or "|cffff8080"
+      row.label:SetText(string.format("%s  >=%d   %s%s|r", t.label, t.min, hue, st))
       row.label:Show()
       pcall(row.value.SetText, row.value, text)
       row.value:Show()
@@ -1832,7 +1846,7 @@ function L.StackRefresh()
     -- `painted` is the honest answer to "is it drawing at all": a state of `ok` with
     -- `painted = 0` means the read worked and NOTHING reached the screen, which is a
     -- completely different problem from the threshold not being met.
-    rec.painted = paintStack(t, (rec.state == "ok") and rec.value or "")
+    rec.painted = paintStack(t, (rec.state == "ok") and rec.value or "", rec)
   end
   L.stackLast = out
   return out
