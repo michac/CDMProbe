@@ -1350,6 +1350,8 @@ local function ringRow(p)
     stack[k] = { state = ns.Stash(r.state), idClass = ns.Stash(r.idClass),
                  textClass = ns.Stash(r.textClass), viewer = ns.Stash(r.viewer),
                  unit = ns.Stash(r.unit), min = ns.Stash(r.min),
+                 frames = ns.Stash(r.frames), viewers = ns.Stash(r.viewers),
+                 painted = ns.Stash(r.painted),
                  spellID = ns.Stash(r.spellID), err = ns.Stash(r.err) }
   end
   return {
@@ -1615,6 +1617,14 @@ end
 -- One target's read, fully classified.  Returns a record; NEVER the value.
 function L.StackRead(t)
   local rec = { key = t.key, spellID = t.spellID, min = t.min, label = t.label }
+  -- ⚠ HOW MANY FRAMES, AND WHICH — not just the first.  "I am not seeing it" has to be
+  -- answerable without another pull, and the same aura on two viewers is a thing that
+  -- actually happened (Demonic Core, 2026-08-04).
+  local hits = L.FindAuraItems(t.spellID)
+  rec.frames = #hits
+  local vs = {}
+  for _, h in ipairs(hits) do vs[#vs + 1] = tostring(h.viewer) end
+  rec.viewers = table.concat(vs, ",")
   local item, viewer = L.FindAuraItem(t.spellID)
   rec.viewer = viewer
   if not item then rec.state = "no-frame"; return rec end
@@ -1664,7 +1674,12 @@ local function stackFontString(t, item)
   -- would then be indistinguishable from "the threshold was never met" — the one confusion
   -- this cue cannot afford, since its entire signal IS the appearance of text.
   holder:SetAllPoints(UIParent)
-  holder:SetFrameStrata("HIGH")
+  -- ⚠ `TOOLTIP`, NOT `HIGH`.  The buff-BAR item template puts its own children at
+  -- `frameLevel="512"` (CooldownViewer.xml, CooldownViewerBuffBarItemTemplate), and a cue
+  -- competing on strata with the thing it annotates is a cue that sometimes loses.  For a
+  -- DIAGNOSTIC the right answer is "always on top" — this is not shipping chrome.
+  holder:SetFrameStrata("TOOLTIP")
+  holder:SetFrameLevel(1000)
   holder:Show()
   -- ⚠ `local`.  Restructuring the pool removed the declaration this shadowed, which made it
   -- a GLOBAL shared by both targets — the imps cue and the core cue would have overwritten
@@ -1703,6 +1718,7 @@ local function paintStack(t, text)
   -- entire signal is the presence of text, so stale text is not a cosmetic bug — it is the
   -- cue reporting a threshold that is not met, which is strictly worse than drawing nothing.
   for _, fs in pairs(stackFrames[t.key] or {}) do pcall(fs.SetText, fs, "") end
+  local painted = 0
   for _, hit in ipairs(L.FindAuraItems(t.spellID)) do
     local fs = stackFontString(t, hit.item)
     if fs then
@@ -1710,8 +1726,10 @@ local function paintStack(t, text)
       -- the count at or above it, decided in C.  We never look at it.
       pcall(fs.SetText, fs, text)
       fs:Show()
+      painted = painted + 1
     end
   end
+  return painted
 end
 
 function L.StackRefresh()
@@ -1723,7 +1741,10 @@ function L.StackRefresh()
     -- ⚠ `""` on every non-ok state, so a stale number can never outlive its reading.  An
     -- `aura-down` that kept the last count on screen would be the worst lie this cue could
     -- tell: a threshold cue that stays lit after the buff drops.
-    paintStack(t, (rec.state == "ok") and rec.value or "")
+    -- `painted` is the honest answer to "is it drawing at all": a state of `ok` with
+    -- `painted = 0` means the read worked and NOTHING reached the screen, which is a
+    -- completely different problem from the threshold not being met.
+    rec.painted = paintStack(t, (rec.state == "ok") and rec.value or "")
   end
   L.stackLast = out
   return out
@@ -1780,10 +1801,15 @@ function stackLines(records)
   local last = records or L.stackLast or {}
   for _, t in ipairs(STACK_TARGETS) do
     local r = last[t.key] or {}
-    out[#out + 1] = string.format("  %-14s %-16s >=%d   frame=%s  id=%s  text=%s  %s",
-      t.key, t.label, t.min, tostring(r.viewer or "-"),
+    out[#out + 1] = string.format(
+      "  %-6s %-15s >=%-3d %-14s id=%-7s text=%-7s frames=%s [%s] painted=%s",
+      t.key, t.label, t.min, tostring(r.state or "not sampled"),
       tostring(r.idClass or "-"), tostring(r.textClass or "-"),
-      tostring(r.state or "not sampled"))
+      tostring(r.frames or "-"), tostring(r.viewers or "-"), tostring(r.painted or "-"))
+    if r.state == "ok" and (r.painted or 0) == 0 then
+      out[#out + 1] = "      |cffff4040the read WORKED and nothing reached the screen|r — "
+        .. "that is a drawing bug, NOT the threshold going unmet."
+    end
     if r.state == "id-unreadable" then
       out[#out + 1] = "      |cffff4040item.auraInstanceID reads SECRET|r — the API is "
         .. "AllowedWhenUntainted, so it cannot be passed on. THE TECHNIQUE IS CLOSED for "
