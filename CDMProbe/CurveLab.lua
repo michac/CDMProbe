@@ -1795,8 +1795,14 @@ ns.RegisterCommand("curve",
       if key and n then
         local t = L.SetStackThreshold(key, tonumber(n))
         if not t then return ns.Printf("no stack target '%s' — try imps | core", key) end
-        L.StackRefresh()
-        return ns.Printf("stack cue: %s now fires at |cffffffff>= %d|r stacks", t.label, t.min)
+        -- ⚠ SETTING A THRESHOLD ARMS THE CUE.  `StackRefresh` no-ops while disarmed, so
+        -- `stack imps 1` on a cold cue used to change a number nobody was drawing and report
+        -- success — a silent no-op in the one command you would reach for to prove the cue
+        -- works at all.  Nobody sets a threshold on a cue they do not want on.
+        local wasOff = not (ns.db and ns.db.curvelab_stack)
+        if wasOff then L.StackCue(true) else L.StackRefresh() end
+        return ns.Printf("stack cue: %s now fires at |cffffffff>= %d|r stacks%s",
+          t.label, t.min, wasOff and "  (and the cue is now |cff88ff88ON|r)" or "")
       end
       if stackArg:find("locate") then
         L.StackCue(true)
