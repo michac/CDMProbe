@@ -351,6 +351,17 @@ local function newStub()
     if anySecret(r, g, b, a) then addAspects(self, "VertexColor", "Alpha") end
     return self
   end
+  -- ⚠ `GetStatusBarColor` [SimpleStatusBarAPIDocumentation.lua:92], NOT `GetVertexColor`:
+  -- a StatusBar is a Frame, not a Region, so the Region getter is genuinely absent on it.
+  -- The first live capture recorded `read=threw>threw` on every barColor cell because
+  -- CurveLab asked the wrong one, and the stub answering BOTH would have hidden that.
+  function t:GetStatusBarColor()
+    local c = self._color
+    if not c then return nil end
+    return c[1], c[2], c[3], c[4]
+  end
+  function t:SetStatusBarTexture(a) self._barTexture = a; return self end
+  function t:GetStatusBarTexture() return self._barTexture end
   -- THE DURATION SINKS.  These take an OBJECT, never a secret argument, so they add NO
   -- aspect and mark nothing — the readback is the object's own `HasSecretValues`.
   function t:SetTimerDuration(dur) self._timerDuration = dur; return self end

@@ -193,6 +193,23 @@ describe("CurveLab — the curve / secret-display lab", function()
     assert.equals("aspect+", d.landed)
   end)
 
+  it("never drives a nil value into a sink — that REFUSED would be OUR error", function()
+    -- ⚠ Found by the first live capture: aimed at Eye Beam, which has NO CHARGES,
+    -- `GetSpellChargeDuration` returned nothing and all three duration sinks recorded
+    -- REFUSED, carrying a Lua *usage* error raised by our own nil argument.  REFUSED means
+    -- "the channel rejected a secret"; here it meant "we asked about a spell with no
+    -- charges" — our mistake wearing the client's clothes, in the one column whose result
+    -- we most wanted to believe.
+    installClient()
+    local sink = sinkByKey("cdDur")
+    local rec = L.RunCell(sink, { key = "S2c", kind = "duration", call = "ok",
+                                  class = "nil", value = nil },
+                          L.Cell("cdDur", "S2c", sink))
+    assert.equals("UNSOURCED", rec.verdict)
+    assert.equals("ok", rec.call)
+    assert.not_equal("REFUSED", rec.verdict)
+  end)
+
   it("a THROW from the access-getter is a POSITIVE result, not a failure", function()
     -- `GetEffectiveAlpha` / `IsDesaturated` carry an access precondition, so once the aspect
     -- is on the object they REFUSE — and that refusal IS the proof the aspect landed.  An

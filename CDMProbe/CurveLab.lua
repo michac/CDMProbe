@@ -681,7 +681,10 @@ function L.Sinks()
           w:SetStatusBarColor(v, v, v, 1)
         end
       end,
-      read = function(w) return callMethod(w, "GetVertexColor").class end },
+      -- ⚠ `GetStatusBarColor` [SimpleStatusBarAPIDocumentation.lua:92], NOT `GetVertexColor`
+      -- — a StatusBar is a Frame, not a Region, so the Region getter is simply absent there
+      -- and the first capture recorded `read=threw>threw` on every single barColor cell.
+      read = function(w) return callMethod(w, "GetStatusBarColor").class end },
 
     ----------------------------------------------------------------------------
     -- rotation.  ⚠ The 0..1 curve output is fed as RADIANS UNSCALED — `v * 6.28` on a
@@ -820,6 +823,15 @@ local function widgetFor(root, kind)
     return f
   elseif kind == "statusbar" then
     local b = CreateFrame("StatusBar", nil, root)
+    -- ⚠ THE TEXTURE IS NOT DECORATION — it is what makes the `barColor` cell measurable.
+    -- The first live capture had a texture-LESS bar and `SetStatusBarColor(secret,…)` came
+    -- back *"Object did not allow secret."*, which reads exactly like a Tier-1
+    -- contradiction (the docs declare it `AllowedWhenTainted` + `{VertexColor, Alpha}`).
+    -- It is far more likely OUR bug: SetStatusBarColor tints the bar's TEXTURE, and with no
+    -- texture there is no object to carry the aspect.  Publishing that as a client finding
+    -- would have been a confident wrong answer, so the instrument is fixed and the cell
+    -- re-measured instead.
+    b:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
     b:SetMinMaxValues(0, 1)
     b:SetValue(1)
     b:SetStatusBarColor(0.4, 0.9, 0.5, 1)
@@ -985,6 +997,17 @@ function L.RunCell(sink, arg, cell)
   if arg.call ~= "ok" then
     rec.call, rec.verdict = arg.call, "UNSOURCED"
     rec.detail = arg.err or "the source produced nothing this sample"
+    return rec
+  end
+  -- ⚠ A `nil` VALUE IS THE SOURCE SAYING NOTHING, and it must not be driven into the sink.
+  -- The first capture aimed the duration column at Eye Beam, which has NO CHARGES, so
+  -- `GetSpellChargeDuration` returned nothing (`MayReturnNothing`) — and every S2c cell then
+  -- recorded `REFUSED` with a Lua *usage* error from our own nil argument. That is our
+  -- mistake wearing the client's clothes: REFUSED means "the channel rejected a secret",
+  -- and three rows of it here meant "we asked about a spell with no charges".
+  if arg.value == nil then
+    rec.call, rec.verdict = "ok", "UNSOURCED"
+    rec.detail = "the source returned nil — nothing to send"
     return rec
   end
 
