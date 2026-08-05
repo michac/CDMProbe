@@ -33,7 +33,11 @@ stds.wow = {
     "STANDARD_TEXT_FONT", "SOUNDKIT", "PlaySound", "PlaySoundFile", "date",
     "IsInInstance", "IsPlayerSpell", "IsSpellKnown", "GetBuildInfo",
     -- Power / unit reads -------------------------------------------------------
-    "UnitPower", "UnitPowerMax", "UnitExists", "UnitGUID", "UnitClass",
+    -- ⚠ `UnitPowerPercent` / `UnitHealthPercent` are the CURVE SINKS (CurveLab.lua): they
+    -- take a LuaCurveObject and evaluate it in C over a value we are not allowed to see.
+    -- Curated here rather than inline-suppressed, per this file's doctrine.
+    "UnitPower", "UnitPowerMax", "UnitPowerPercent", "UnitHealthPercent",
+    "UnitExists", "UnitGUID", "UnitClass",
     "GetSpecialization", "GetSpecializationInfo",
     -- Action-bar scan (HudBinds) ----------------------------------------------
     "HasAction", "GetActionInfo", "GetActionText",
@@ -44,6 +48,10 @@ stds.wow = {
     "C_AddOns", "C_AssistedCombat", "C_ClassTalents", "C_CooldownViewer", "C_NamePlate", "C_Secrets",
     "C_Spell", "C_SpellActivationOverlay", "C_SpellBook", "C_Texture", "C_Timer",
     "C_UnitAuras", "AuraUtil",
+    -- ⚠ TEMPORARY, with CurveLab.lua: the curve + duration-object factories (§4.8, the
+    -- sanctioned way to DISPLAY a secret without inspecting it).  Delete these two names
+    -- with the file if the technique does not ship.
+    "C_CurveUtil", "C_DurationUtil",
     -- Enums --------------------------------------------------------------------
     "Enum",
   },

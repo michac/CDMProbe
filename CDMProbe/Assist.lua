@@ -50,15 +50,10 @@ local PERIOD = 1.0    -- watch sample cadence
 -- ⚠ `issecretvalue` IS ASKED BEFORE `type`, because `type()` returns the TRUE type of a
 -- secret and therefore passes every subsequent test (security-taint-and-restricted-data.md
 -- rule 13).  Getting this order wrong is how a secret reaches string.format.
-local function classOf(v)
-  if ns.IsSecret(v) then return "SECRET" end
-  local t = type(v)
-  if t == "table" then return ns.IsSecretTable(v) and "SECRET-table" or "table" end
-  if t == "number" then return "num" end
-  if t == "boolean" then return "bool" end
-  if t == "nil" then return "nil" end
-  return t
-end
+-- PROMOTED to `ns.ClassOf` (Util.lua) alongside CurveLab.lua — this file, AlertTape.lua and
+-- CurveLab.lua each held a private copy of it, and three copies is the trigger.  The local
+-- alias keeps every call site below unchanged while there is exactly ONE implementation.
+local classOf = function(v) return ns.ClassOf(v) end
 
 -- The guarded call, in Util.lua's house style: capability check, then pcall, then the
 -- class.  An ABSENT namespace and a THROWING call are different findings and stay so.

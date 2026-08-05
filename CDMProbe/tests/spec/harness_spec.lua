@@ -227,6 +227,102 @@ describe("mock_ns harness", function()
   end)
 
   ------------------------------------------------------------------------------
+  -- THE SECRET-ASPECT SETTERS.  ⚠ This block exists for exactly the `issecrettable`-
+  -- hardcoded-`false` reason the file header names: a collaborator that always answers the
+  -- same thing makes real branches unreachable while every suite stays green.  An
+  -- unconditional aspect flip would make CurveLab's `INERT` verdict unreachable; a stubbed-
+  -- out one would make `WORKED` unreachable.  Both leave a green suite and a dead
+  -- instrument, so the conditional itself is proved here before curvelab_spec leans on it.
+  describe("aspect modelling — the CONDITIONAL flip", function()
+    local w
+    before_each(function() w = H.newStub() end)
+
+    it("SetAlpha adds {Alpha} ONLY when the value it received is secret", function()
+      local A = _G.Enum.SecretAspect.Alpha
+      w:SetAlpha(0.5)
+      assert.is_false(w:HasSecretAspect(A))     -- the negative half — the load-bearing one
+      assert.is_false(w:HasAnySecretAspect())
+      w:SetAlpha(H.secretValue())
+      assert.is_true(w:HasSecretAspect(A))
+      assert.is_true(w:HasAnySecretAspect())
+    end)
+
+    it("aspects do not share state — Alpha does not imply VertexColor", function()
+      -- Blizzard's aspects are independent (§4.6(a)); a harness that set them together would
+      -- make every sink's cell read WORKED for a channel it never touched.
+      w:SetAlpha(H.secretValue())
+      assert.is_true(w:HasSecretAspect(_G.Enum.SecretAspect.Alpha))
+      assert.is_false(w:HasSecretAspect(_G.Enum.SecretAspect.VertexColor))
+      assert.is_false(w:HasSecretAspect(_G.Enum.SecretAspect.BarValue))
+    end)
+
+    it("the access-getters REFUSE once their aspect is on, and answer before", function()
+      -- `GetEffectiveAlpha` / `IsDesaturated` carry an access precondition, so the THROW is
+      -- the positive result.  A getter that always answers makes that branch unreachable.
+      assert.equals(1, w:GetEffectiveAlpha())
+      w:SetAlpha(H.secretValue())
+      assert.is_false((pcall(function() return w:GetEffectiveAlpha() end)))
+      local t = H.newStub()
+      assert.is_false(t:IsDesaturated())
+      t:SetDesaturation(H.secretValue())
+      assert.is_false((pcall(function() return t:IsDesaturated() end)))
+    end)
+
+    it("the five ASPECT-LESS setters mark the object instead, and never an aspect", function()
+      -- SetTexture / SetAtlas / SetColorTexture / SetStartColor / SetEndColor accept a
+      -- secret and declare NO aspect, so they mark whole-object secrecy.  Modelling one of
+      -- them as aspect-adding (the easy copy-paste) would make the contagion column
+      -- unfalsifiable.
+      for _, m in ipairs({ "SetTexture", "SetAtlas", "SetStartColor", "SetEndColor" }) do
+        local o = H.newStub()
+        o[m](o, H.secretValue())
+        assert.is_false(o:HasAnySecretAspect(), m .. " must add NO aspect")
+        assert.is_true(o:HasSecretValues(), m .. " must mark whole-object secrecy")
+      end
+      local o = H.newStub()
+      o:SetColorTexture(H.secretValue(), 0, 0, 1)
+      assert.is_false(o:HasAnySecretAspect())
+      assert.is_true(o:HasSecretValues())
+    end)
+
+    it("contagion propagates DOWN the anchor chain and not up", function()
+      -- The Tier-2 rule CurveLab's UIParent canary exists to falsify.  Modelled by direction
+      -- so a test can tell "the sandbox poisoned its own child" from "the sandbox poisoned
+      -- the UI", which are the safe and the catastrophic outcome respectively.
+      local anchor, dependent = H.newStub(), H.newStub()
+      dependent:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 0, 0)
+      assert.is_false(anchor:IsAnchoringSecret())
+      assert.is_false(dependent:IsAnchoringSecret())
+      anchor:SetTexture(H.secretValue())
+      assert.is_true(anchor:IsAnchoringSecret())
+      assert.is_true(dependent:IsAnchoringSecret())
+      -- …and the reverse direction stays clean.
+      local up, down = H.newStub(), H.newStub()
+      down:SetPoint("TOPLEFT", up, "BOTTOMLEFT", 0, 0)
+      down:SetTexture(H.secretValue())
+      assert.is_false(up:IsAnchoringSecret())
+    end)
+
+    it("Cooldown:SetCooldown REFUSES a secret — the forbidden route", function()
+      -- The sharpest negative control in the corpus: same widget, same fact, one route
+      -- forbidden (`AllowedWhenUntainted`) and one sanctioned (an object, never a number).
+      assert.is_true((pcall(function() w:SetCooldown(1, 2) end)))
+      assert.is_false((pcall(function() w:SetCooldown(H.secretValue(), 2) end)))
+      -- …while the duration-object route takes it without complaint.
+      assert.is_true((pcall(function() w:SetCooldownFromDurationObject({}) end)))
+    end)
+
+    it("_G.UIParent's secret state RESETS on H.fresh(), though the object does not", function()
+      -- UIParent is deliberately kept across fresh() (the Renderer holds references), so a
+      -- test that poisons it would leak a permanently HALTED curve lab into every later
+      -- spec file — the exact leak installGlobals exists to close.
+      _G.UIParent._anchoringSecret = true
+      H.fresh()
+      assert.is_false(_G.UIParent:IsAnchoringSecret())
+    end)
+  end)
+
+  ------------------------------------------------------------------------------
   describe("H.secretValue — a sentinel, because H.secret is keyed BY VALUE", function()
     it("marks one object, not every occurrence of a number", function()
       local v = H.secretValue()

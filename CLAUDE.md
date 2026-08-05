@@ -97,6 +97,28 @@ Design context + status live in the parent workspace at
   (off by default) into `CDMProbeDB.assist`, `off` stops it, `dump` reads the ring, `clear`
   wipes it. Delete the file, its `.toc` line and the saved-vars once the answer lands in
   `knowledge/addon-dev/api-events-and-discovery.md` §2.
+- `curve` — ⚠ **TEMPORARY** curve / secret-display lab (`CurveLab.lua`): **which visual
+  channels can actually carry a Secret Value to the screen?** Midnight seals Fury, in-combat
+  cooldown remaining, aura duration and stacks, and target health, and Blizzard shipped
+  **curves** + **duration objects** as the sanctioned way to *display* a secret without
+  inspecting it — a technique nothing here had ever called. Bare = the one-shot matrix
+  readout (15 sources × 20 sinks, five-valued verdicts, **never values**); `curve card`
+  covers the screen with live cells; `curve watch` arms a 1 Hz VERDICT-change sampler into
+  `CDMProbeDB.curvelab`; `off` / `dump` / `clear`; `curve spell <id>` aims the duration
+  column. Read by `wowkb.cdmp curvelab`.
+  ⚠ **Probe only** — no `State`/`Coach`/`Binder`/`Renderer` change and **not** the Phase-2
+  Fury cascade (`docs/multi-class-rollout.md` recommended that against; that verdict is
+  about *Fury*, not about curves).
+  ⚠ **`INERT` is the dangerous verdict, not the boring one** (the setter took a secret and
+  nothing flipped — the pixel may or may not have moved), **`UNSOURCED` never reads as a
+  pass**, and **a THROW from the access-getters is a POSITIVE result**.
+  ⚠ **The negative controls run FIRST and a REFUSAL is the pass** — if
+  `curve:Evaluate(secret)` succeeds, the Tier-1 model is wrong and the matrix is not run.
+  ⚠ **The `UIParent:IsAnchoringSecret()` canary halts the run**: "contagion propagates down
+  only" is Tier 2, so if it is wrong the sandbox poisons the whole UI.
+  Delete the file, its `.toc` line, the `curvelab`/`curvelab_on` saved-vars, its spec and
+  `wowkb.cdmp curvelab` once the answers land in `knowledge/addon-dev/
+  security-taint-and-restricted-data.md` §4.8.
 - `single` / `multi` / `aoe` — the target-mode toggle (`Mode.lua`): idempotent
   macro-friendly setters + a bare toggle. Forwarded by State as its `mode` field;
   the Coach reads it but does not branch yet (scaffolding for a 2nd spec / AoE rule).
@@ -141,7 +163,29 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
     CDMProbe.toc
     Core.lua                      namespace, saved vars, slash cmds, registry
     Util.lua                      color, spell-name, Secret-Values-aware describe, and the
-                                  GUARDED-READ LADDER every game read goes through:
+                                  GUARDED-READ LADDER every game read goes through.
+                                  ⚠ Three PROMOTIONS landed with CurveLab (2026-08-04), the
+                                  ReadValidAlertTypes precedent each time — a read a
+                                  PERMANENT consumer will want does not live in a file
+                                  scheduled for deletion:
+                                  ns.ClassOf (the readability class; AlertTape and Assist
+                                  each held a private copy and CurveLab would have been the
+                                  third — three copies is the trigger.  ⚠ issecretvalue is
+                                  asked BEFORE type, because type() returns the TRUE type of
+                                  a secret);
+                                  ns.SecretAspectName (the value->name map, the
+                                  ns.AlertEventName shape — ⚠ SEVEN NAMES ARE ALIASED TO 0x1
+                                  in the shipped file, so the map is many-to-one there and
+                                  every CALLER must key on the MEMBER, never a literal);
+                                  ns.ReadCooldownDuration (the OTHER route to a cooldown:
+                                  GetSpellCooldownDuration returns a LuaDurationObject and
+                                  carries NO secrecy predicate, unlike GetSpellCooldown's
+                                  SecretWhenCooldownsRestricted table — so it has NO COMBAT
+                                  GATE, deliberately, and its second return
+                                  `HasSecretValues` is ReturnsNeverSecret, i.e. a FREE
+                                  always-readable oracle and the only readback this channel
+                                  has).
+                                  The ladder proper:
                                   ns.ReadCooldown / ReadCharges / ReadGCD /
                                   ns.ReadValidAlertTypes (promoted out of AlertTape.lua in
                                   Phase 3 — ⚠ that API UNDER-REPORTS, so a consumer says
@@ -203,6 +247,68 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   answer. Delete this file, its .toc line and the
                                   `assist`/`assist_on` saved-vars once the answer lands in
                                   knowledge/addon-dev/api-events-and-discovery.md §2.
+    CurveLab.lua                  ⚠ TEMPORARY discovery instrument, MEANT TO BE DELETED —
+                                  the AlertTape/Assist mould, NOT in the pipeline.  ONE
+                                  question: WHICH VISUAL CHANNELS CAN CARRY A SECRET to the
+                                  screen?  Midnight seals Fury / in-combat cooldown remaining
+                                  / aura duration + stacks / target health, and Blizzard
+                                  shipped CURVES and DURATION OBJECTS as the sanctioned way
+                                  to DISPLAY a secret without inspecting it — a technique
+                                  this workspace had never called once.
+                                  ⚠ THE ADDON CANNOT EVALUATE A CURVE OVER A SECRET ITSELF
+                                  (`LuaCurveObject:Evaluate` is AllowedWhenUntainted), so
+                                  only C-side sinks can drive one — that single fact defines
+                                  the whole source list.  `SecretWhenCurveSecret` appears
+                                  EXACTLY 8x in the corpus.
+                                  ⚠ ASPECTS ARE THE READBACK, and that is what makes a
+                                  channel whose VALUE we can never read measurable at all:
+                                  a setter carrying `SecretArgumentsAddAspect` marks the
+                                  object and `HasSecretAspect` reports it.  We read the
+                                  ASPECT, not the value.
+                                  ⚠ FIVE SECRET-ACCEPTING SETTERS DECLARE NO ASPECT —
+                                  SetTexture / SetAtlas / SetColorTexture / AnimVertexColor
+                                  SetStartColor + SetEndColor.  They are the ONLY
+                                  anchor-contagion candidates and the ONLY cells with NO
+                                  READBACK AT ALL (the card's eyeball or nothing).  The
+                                  earlier worry that SetAlpha poisons the anchor chain is
+                                  WRONG — it declares {Alpha}.
+                                  ⚠ FIVE-VALUED VERDICTS: WORKED / INERT / REFUSED /
+                                  UNSOURCED / POISONED.  INERT is the DANGEROUS cell (the
+                                  setter took a secret and nothing flipped — the pixel may or
+                                  may not have moved); UNSOURCED must NEVER read as a pass;
+                                  and a THROW from GetEffectiveAlpha / IsDesaturated is a
+                                  POSITIVE result, because those carry an access precondition
+                                  and the refusal IS the proof.
+                                  ⚠ "DID IT LAND" IS A STATE TEST, NOT AN EDGE TEST.  Aspects
+                                  are STICKY and SetToDefaults is IsProtectedFunction, and
+                                  the widgets are memoised per cell (minting fresh ones at
+                                  1 Hz would leak ~60 widgets a second with no way to free
+                                  them), so an edge test scored the FIRST sample differently
+                                  from every identical sample after it.  Same correction for
+                                  POISONED — contagion cannot be cleared, so a cell that
+                                  poisons its anchor chain is poisoned FOREVER.
+                                  ⚠ THE NEGATIVE CONTROLS RUN FIRST AND A REFUSAL IS THE
+                                  PASS.  If `curve:Evaluate(secret)` succeeds the Tier-1
+                                  model is wrong, every other verdict is suspect, and the
+                                  matrix is NOT RUN.  `Cooldown:SetCooldown(secret, secret)`
+                                  is the sharpest pairing in the corpus: same widget, same
+                                  fact, one route forbidden and one sanctioned.
+                                  ⚠ THE SANDBOX IS ROOTED AT UIParent, never at HudVirtual's
+                                  panel or anything ns.GetItemFrames can return, and it
+                                  REFUSES TO CREATE IN COMBAT.  Its UIParent:IsAnchoringSecret
+                                  CANARY is the most important safety property in the file:
+                                  the down-only propagation rule is TIER 2, and if it is
+                                  wrong this poisons the whole UI.  A flip halts the run.
+                                  `/cdmp curve [card|watch|off|dump|clear|spell <id>]`, read
+                                  by `wowkb.cdmp curvelab` (exit 1 on a POISONED cell or a
+                                  negative control that passed; exit 2 when no cell ever ran
+                                  on a real secret).  ⚠ It is NOT the Phase-2 Fury cascade —
+                                  docs/multi-class-rollout.md recommended that against and
+                                  that verdict stands; it is a verdict about FURY, not about
+                                  curves.  Delete this file, its .toc line, the
+                                  `curvelab`/`curvelab_on` saved-vars, its spec and the
+                                  extractor once the answers land in knowledge/addon-dev/
+                                  security-taint-and-restricted-data.md §4.8.
     Flight.lua                    THE ACCEPTANCE RECORDER (`/cdmp flight`). Every phase
                                   of this project ends with an in-game pass, and the pass
                                   kept being written down as a CHECKLIST OF SLASH COMMANDS —
@@ -883,6 +989,27 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   coverage answer INVARIANT (cached + stale, never a
                                   rescan) and that a cold in-combat arm refuses rather than
                                   reading the roster through secret-shortened enumeration
+      spec/curvelab_spec.lua      the temporary curve / secret-display lab, cheap by design
+                                  and for the assist_spec reason: it asserts only what would
+                                  make the instrument WORSE THAN NOT EXISTING, i.e.
+                                  dishonest.  ⚠ WHAT IS IRREDUCIBLY IN-CLIENT is WHETHER A
+                                  PIXEL MOVED — the five aspect-less setters have no readback
+                                  of any kind and every INERT cell is by definition one where
+                                  nothing observable changed, so those are settled by
+                                  `/cdmp curve card` and an eye.  What IS settled here: the
+                                  three-way `absent` / `threw` / INERT split (the test the
+                                  file exists for), a throw from an access-getter counting as
+                                  a POSITIVE, UNSOURCED never being a pass (MUTATION-CHECKED,
+                                  three cases), the canary halting the run (MUTATION-CHECKED,
+                                  two cases), contagion STAYING poisoned across samples, and
+                                  THE SINK DESCRIPTOR TABLE against a HAND-TRANSCRIPTION of
+                                  the generated docs — never against `L.Sinks()`, since a
+                                  table copied out of the code under test is a
+                                  change-detector wearing a contract's clothes.
+                                  ⚠ Its client fakes (C_CurveUtil / C_DurationUtil) live in
+                                  the SPEC, not in mock_ns: nothing in this workspace has
+                                  ever called those APIs, so a harness-wide fake would be a
+                                  model of an API nobody has validated.
       spec/assist_spec.lua        the temporary C_AssistedCombat probe, cheap by design: the
                                   readout degrades honestly when the namespace is absent
                                   (ABSENT and nil are different findings), when the call
@@ -932,7 +1059,21 @@ projects/cooldown-hud/addon/      <- THIS repo root (michac/CDMProbe)
                                   H.installGlobals / the default-inert client fakes.
                                   `issecrettable` sat hardcoded `false` for the life of the
                                   addon, making six real refusal branches unreachable while
-                                  every suite stayed green — the v0.32.25 shape exactly
+                                  every suite stayed green — the v0.32.25 shape exactly.
+                                  ⚠ Plus (2026-08-04) THE SECRET-ASPECT SETTERS, for exactly
+                                  that reason: the stub's SetAlpha adds {Alpha} ONLY when the
+                                  value it RECEIVED is secret.  An unconditional flip makes
+                                  CurveLab's INERT verdict unreachable and a stubbed-out one
+                                  makes WORKED unreachable — both leave a green suite and a
+                                  dead instrument.  Also covered: aspects not sharing state,
+                                  the access-getters REFUSING once their aspect is on, the
+                                  five aspect-less setters marking whole-object secrecy
+                                  instead, contagion travelling DOWN the anchor chain and not
+                                  up, Cooldown:SetCooldown refusing a secret, and
+                                  _G.UIParent's secret state resetting on H.fresh() (the
+                                  object is deliberately kept, so without the reset one test
+                                  would leak a permanently HALTED curve lab into every later
+                                  spec file)
       spec/decisionlog_spec.lua   the decision-log Record/Render split — including the `DR:`
                                   field RE-SOURCED off the rows' three-valued `known`
                                   (Phase 5 §C6): `<abbr>:unlearned`, `<abbr>:unknown`, `-`

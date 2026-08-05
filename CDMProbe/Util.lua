@@ -79,6 +79,117 @@ function ns.IsSecretTable(t)
   return ok and s or false
 end
 
+-- ns.ClassOf(v) -> "SECRET" | "SECRET-table" | "table" | "num" | "bool" | "nil" | <type>
+--
+-- THE READABILITY CLASS of a value, never the value itself.  This is the one read every
+-- discovery instrument in this addon opens with, and it existed as a PRIVATE COPY in
+-- AlertTape.lua:69-77 and Assist.lua:53-61 before CurveLab.lua would have made it a third.
+-- Three copies is the trigger; all three now alias this (the `ns.ReadValidAlertTypes` /
+-- `ns.AlertEventName` precedent — a read a permanent consumer will want lives in Util, even
+-- when the file that discovered it is scheduled for deletion).
+--
+-- ⚠ `issecretvalue` IS ASKED BEFORE `type`, and the order is load-bearing: `type()` returns
+-- the TRUE type of a secret and therefore passes every subsequent test
+-- (security-taint-and-restricted-data.md rule 13).  Getting it backwards is how a secret
+-- reaches string.format.
+--
+-- ⚠ A SECRET TABLE IS A DISTINCT VERDICT from a secret scalar and both are asked, because
+-- they mean different things to a caller: a secret table cannot be indexed AT ALL, while a
+-- readable table can still hand back secret members (see ns.IsSecretTable above).
+function ns.ClassOf(v)
+  if ns.IsSecret(v) then return "SECRET" end
+  local t = type(v)
+  if t == "table" then return ns.IsSecretTable(v) and "SECRET-table" or "table" end
+  if t == "number" then return "num" end
+  if t == "boolean" then return "bool" end
+  if t == "nil" then return "nil" end
+  return t
+end
+
+-- ns.SecretAspectName(v) -> "Alpha" | "VertexColor" | … | "?<v>"
+--
+-- The `Enum.SecretAspect` value -> name map, built LAZILY on first use and cached — the
+-- `ns.AlertEventName` shape verbatim, and for the same reason: a readout that says "128"
+-- instead of "Alpha" is a readout nobody can act on.
+--
+-- ⚠⚠ SEVEN NAMES ARE ALIASED TO 0x1 IN THE SHIPPED FILE ITSELF — ObjectDebug, ObjectName,
+-- ObjectType, ObjectSecrets, ObjectSecurity, Attributes and Hierarchy all report
+-- `EnumValue = 1` [T1 src: SecretAspectConstantsDocumentation.lua:13-19 @ 12.0.7.68887].
+-- That is not a tooling artefact, so this map is genuinely MANY-TO-ONE at value 1 and
+-- renders it as "<first>+6" rather than pretending one name owns it.  The rule for every
+-- CALLER is the other half: KEY ON THE MEMBER (`Enum.SecretAspect.Alpha`), never on a
+-- literal — a literal 1 asks about seven different things at once.
+local SECRET_ASPECT_NAME
+
+function ns.SecretAspectName(v)
+  if not SECRET_ASPECT_NAME then
+    SECRET_ASPECT_NAME = {}
+    local names = {}
+    local A = Enum and Enum.SecretAspect
+    if type(A) == "table" then
+      for name, value in pairs(A) do
+        if type(value) == "number" and type(name) == "string" then
+          names[value] = names[value] or {}
+          local list = names[value]
+          list[#list + 1] = name
+        end
+      end
+    end
+    for value, list in pairs(names) do
+      table.sort(list)
+      SECRET_ASPECT_NAME[value] = (#list > 1)
+        and (list[1] .. "+" .. tostring(#list - 1)) or list[1]
+    end
+  end
+  return SECRET_ASPECT_NAME[v] or ("?" .. tostring(v))
+end
+
+-- ns.ReadCooldownDuration(spellID, ignoreGCD) -> (durationObject, hasSecretValues) | nil, reason
+--
+-- THE OTHER ROUTE TO A COOLDOWN, and the one `ns.ReadCooldown` above cannot take.  That
+-- reader is COMBAT-GATED because `C_Spell.GetSpellCooldown` returns a `SpellCooldownInfo`
+-- table carrying `SecretWhenCooldownsRestricted` [T1 src: SpellDocumentation.lua:249] —
+-- i.e. the numbers go secret in a pull, which is exactly when the HUD wants them.
+-- `C_Spell.GetSpellCooldownDuration(spellIdentifier, ignoreGCD)` answers the SAME question
+-- with a `LuaDurationObject` and carries NO secrecy predicate at all [:267]: the object is
+-- ordinary, and the secret timing stays inside it where C can still read it.  A duration
+-- object cannot be turned back into a number by us, but it CAN be handed to
+-- `Cooldown:SetCooldownFromDurationObject` / `StatusBar:SetTimerDuration` /
+-- a `DurationTextBinding` — the sanctioned display route (§4.8).
+--
+-- ⚠ NO COMBAT GATE, DELIBERATELY — do not copy the fence down from `ns.ReadCharges`.  That
+-- fence records a MEASUREMENT (GetSpellCharges reads secret in restricted combat); this API
+-- has no predicate to gate on, and gating pre-emptively would make the measurement
+-- impossible.  The whole point of the call is that it survives the pull.
+--
+-- The SECOND return is the load-bearing one.  `LuaDurationObject:HasSecretValues()` is
+-- `ReturnsNeverSecret = true` [T1 src: LuaDurationObjectAPIDocumentation.lua:350-352], so it
+-- is a FREE, ALWAYS-READABLE ORACLE for "did this object actually pick up a secret" — the
+-- only readback a caller gets on this channel, since the number itself never surfaces.
+--
+-- Returns nil + a REASON on any refusal, never a zero duration dressed as an answer.
+-- Written here rather than in the temporary instrument that discovered it, beside
+-- `ns.SpellUsable` whose header already anticipates exactly this shape.
+function ns.ReadCooldownDuration(spellID, ignoreGCD)
+  if type(spellID) ~= "number" or ns.IsSecret(spellID) then return nil, "unreadable spellID" end
+  if not (C_Spell and C_Spell.GetSpellCooldownDuration) then
+    return nil, "C_Spell.GetSpellCooldownDuration absent"
+  end
+  local ok, dur = pcall(C_Spell.GetSpellCooldownDuration, spellID, ignoreGCD and true or false)
+  if not ok then return nil, "GetSpellCooldownDuration raised" end
+  -- `MayReturnNothing = true` on the API, so an unknown spell is nil rather than an error.
+  if dur == nil then return nil, "no duration object" end
+  if ns.IsSecret(dur) or ns.IsSecretTable(dur) then return nil, "duration object reads secret" end
+  -- The method probe is a pcall'd CALL rather than an ns.HasMethod index, because a duration
+  -- object is not guaranteed to be a plain table (ns.HasMethod requires type(obj)=="table"
+  -- and would report a userdata-backed object as method-less, which is a wrong finding).
+  local hsv
+  if not pcall(function() hsv = dur:HasSecretValues() end) then
+    return nil, "HasSecretValues raised — not a duration object"
+  end
+  return dur, hsv and true or false
+end
+
 -- Human string for a value, flagging Secret Values in red.  Never compares a
 -- secret (that would error/taint) — it only asks issecretvalue().
 function ns.Describe(v)

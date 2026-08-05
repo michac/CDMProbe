@@ -11,6 +11,7 @@ Util.lua
 Viewers.lua
 AlertTape.lua
 Assist.lua
+CurveLab.lua
 SpecRegistry.lua
 SpecDemonology.lua
 CoachDemonology.lua

@@ -66,14 +66,13 @@ local eventName = function(v) return ns.AlertEventName(v) end
 -- The three-way read.  classify() names WHAT we got; sample() renders it only when
 -- it is safe to render.  Both are pcall'd: a restricted read may throw outright.
 --------------------------------------------------------------------------------
+-- PROMOTED to `ns.ClassOf` (Util.lua) alongside CurveLab.lua: this file, Assist.lua and
+-- CurveLab.lua each held a private copy, and three copies is the trigger.  Only the
+-- `ok` wrapper stays local — "the call threw" is a CALL outcome, not a value class, and
+-- collapsing the two is how a refusal starts reading as a nil.
 local function classify(ok, v)
   if not ok then return "threw" end
-  if v == nil then return "nil" end
-  if ns.IsSecret(v) then return "SECRET" end
-  local t = type(v)
-  if t == "number" then return "num" end
-  if t == "boolean" then return "bool" end
-  return t
+  return ns.ClassOf(v)
 end
 
 local function sample(ok, v)

@@ -34,6 +34,13 @@ local DEFAULTS = {
   -- `assist_on`).  One row per readability-CLASS change; deleted with Assist.lua once the
   -- "does GetNextCastSpell survive combat" answer lands in the KB.
   assist = {},
+  -- TEMPORARY — the curve / secret-display discovery lab (`/cdmp curve watch`, off unless
+  -- `curvelab_on`).  One row per VERDICT change across the source × sink matrix.  Deleted
+  -- with CurveLab.lua once "which visual channels can carry a secret" lands in
+  -- knowledge/addon-dev/security-taint-and-restricted-data.md §4.8.  ⚠ NO `curvelab_on`
+  -- default entry, deliberately: absent means OFF (see `hud` above), and only a table-valued
+  -- store needs seeding.
+  curvelab = {},
   -- The ACCEPTANCE RECORDER's ring (`/cdmp flight`).  One row per change of ANSWER SHAPE
   -- across a whole in-game pass; read by `wowkb.cdmp flight`, which turns it into a
   -- PASS/FAIL report.  Wiped on every arm — a flight is one session.

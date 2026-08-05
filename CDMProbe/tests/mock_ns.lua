@@ -139,16 +139,61 @@ end
 -- One shape covers all three (a fontstring is never asked to CreateFrame, a frame
 -- is never Play()ed — over-providing methods is harmless; MISSING one surfaces as
 -- a clear "attempt to call nil", which is the honest failure we want).
+--------------------------------------------------------------------------------
+-- SECRET ASPECTS — the 12.0 readback channel, modelled rather than stubbed.
+--------------------------------------------------------------------------------
+-- ⚠ THIS IS THE `issecrettable`-HARDCODED-`false` SHAPE, and it is why it is modelled at
+-- all.  A collaborator that always answers the same thing makes real branches unreachable
+-- while every suite stays green — that bug sat in this file for the whole life of the addon.
+-- So: a setter carrying `SecretArgumentsAddAspect` marks the object **only when the value it
+-- actually received is secret**, exactly as the client does.  Without that conditional,
+-- CurveLab's two central verdicts — `WORKED` (an aspect flipped) and `INERT` (a secret was
+-- accepted and NOTHING flipped) — are inexpressible, and the instrument could not be tested
+-- at all.  `harness_spec.lua` covers this.
+--
+-- Keyed by the enum VALUE, because `HasSecretAspect(aspect)` is called with the value.  The
+-- names here are the ones the generated docs declare per setter, transcribed by hand.
+local function anySecret(...)
+  for i = 1, select("#", ...) do
+    if H.secret[(select(i, ...))] == true then return true end
+  end
+  return false
+end
+
+local function addAspects(self, ...)
+  self._aspects = self._aspects or {}
+  local E = _G.Enum and _G.Enum.SecretAspect
+  for i = 1, select("#", ...) do
+    local v = E and E[(select(i, ...))]
+    if v ~= nil then self._aspects[v] = true end
+  end
+end
+
+-- WHOLE-OBJECT SECRECY + ANCHOR CONTAGION — the (b) outcome of the three in
+-- security-taint-and-restricted-data.md §4.6.  A secret-accepting setter with NO declared
+-- aspect marks the object as having secret values, which marks its anchoring data secret and
+-- propagates DOWN the anchor chain to dependents (never up).  `_dependents` is populated by
+-- SetPoint below, so the propagation modelled here is the anchor chain and nothing else —
+-- which is precisely the Tier-2 rule CurveLab's canary exists to falsify.
+local function markSecretValues(self)
+  self._hasSecretValues = true
+  self._anchoringSecret = true
+  for _, dep in ipairs(self._dependents or {}) do
+    dep._hasSecretValues = true
+    dep._anchoringSecret = true
+  end
+end
+
 local function newStub()
   local t = { _scripts = {}, _events = {}, _level = 1 }
   local function chain(self) return self end
   for _, m in ipairs({
     "SetAllPoints", "SetScale",
     "SetJustifyH", "SetJustifyV", "SetBlendMode",
-    "SetTexture", "SetMask", "SetDrawLayer", "SetTexCoord",
+    "SetMask", "SetDrawLayer", "SetTexCoord",
     -- Mask OBJECTS (the RingedFrameTemplate idiom the cue dot uses), not the SetMask path.
     "AddMaskTexture", "RemoveMaskTexture",
-    "SetFrameStrata", "SetAtlas",
+    "SetFrameStrata",
     -- The moveable-panel surface (HudVirtual Phase 2).  `EnableMouse` is RECORDING (below):
     -- "does the panel eat clicks right now" is the lock state's user-visible half.
     "SetMovable", "RegisterForDrag", "StartMoving", "StopMovingOrSizing", "SetClampedToScreen",
@@ -166,13 +211,60 @@ local function newStub()
   -- real pixels off-game, so busted asserts on what the stub was TOLD: colour,
   -- points, size, shown-state.  These replace the silent chain no-ops so a spec can
   -- read `dot._color` / `dot._points` / `dot._shown` after a Draw (mock_ns header).
-  function t:SetColorTexture(r, g, b, a) self._color = { r, g, b, a }; return self end
-  function t:SetVertexColor(r, g, b, a) self._color = { r, g, b, a }; return self end
-  function t:SetTextColor(r, g, b, a)   self._textColor = { r, g, b, a }; return self end
+  -- ⚠ `SetColorTexture` IS ONE OF THE FIVE ASPECT-LESS SETTERS
+  -- [SimpleTextureBaseAPIDocumentation.lua:313] — it accepts a secret and declares NO
+  -- aspect, so it marks the whole object instead.  Modelling it as aspect-ADDING (the easy
+  -- copy-paste from SetVertexColor) would make the contagion column unfalsifiable.
+  function t:SetColorTexture(r, g, b, a)
+    self._color = { r, g, b, a }
+    if anySecret(r, g, b, a) then markSecretValues(self) end
+    return self
+  end
+  function t:SetVertexColor(r, g, b, a)
+    self._color = { r, g, b, a }
+    if anySecret(r, g, b, a) then addAspects(self, "VertexColor", "Alpha") end
+    return self
+  end
+  function t:GetVertexColor()
+    local c = self._color
+    if not c then return nil end
+    return c[1], c[2], c[3], c[4]
+  end
+  function t:SetVertexColorFromBoolean(v, ifTrue, ifFalse)
+    if anySecret(v) then
+      addAspects(self, "VertexColor", "Alpha")
+    else
+      -- ⚠ UNPACKED, not stored whole: the *FromBoolean setters take ColorMixin TABLES while
+      -- `_color` is the array `GetVertexColor` unpacks.  Storing the table put a nil in
+      -- slot 1, so GetVertexColor's class silently went `num` -> `nil` on a call that
+      -- succeeded — a harness artefact indistinguishable from a real readback change.
+      local c = v and ifTrue or ifFalse
+      if type(c) == "table" then self._color = { c.r, c.g, c.b, c.a } end
+    end
+    return self
+  end
+  function t:SetTextColor(r, g, b, a)
+    self._textColor = { r, g, b, a }
+    if anySecret(r, g, b, a) then addAspects(self, "VertexColor", "Alpha") end
+    return self
+  end
+  -- The other four aspect-less setters.  ⚠ `SetTexture` / `SetAtlas` were chainable no-ops
+  -- until CurveLab; a no-op cannot express "took a secret and poisoned the anchor chain".
+  function t:SetTexture(a) self._texture = a; if anySecret(a) then markSecretValues(self) end; return self end
+  function t:SetAtlas(a)   self._atlas   = a; if anySecret(a) then markSecretValues(self) end; return self end
+  function t:SetStartColor(c) self._startColor = c; if anySecret(c) then markSecretValues(self) end; return self end
+  function t:SetEndColor(c)   self._endColor   = c; if anySecret(c) then markSecretValues(self) end; return self end
   function t:SetPoint(point, rel, relPoint, dx, dy)
     self._points = self._points or {}
     self._points[#self._points + 1] =
       { point = point, rel = rel, relPoint = relPoint, dx = dx, dy = dy }
+    -- THE ANCHOR CHAIN, recorded on the ANCHOR rather than the anchoree, because contagion
+    -- travels down it (§4.6(b)) and that direction is the whole property under test.
+    if type(rel) == "table" and rel ~= self then
+      rel._dependents = rel._dependents or {}
+      rel._dependents[#rel._dependents + 1] = self
+      if rel._hasSecretValues then self._hasSecretValues, self._anchoringSecret = true, true end
+    end
     return self
   end
   function t:ClearAllPoints() self._points = {}; return self end
@@ -187,7 +279,102 @@ local function newStub()
   function t:IsMouseEnabled() return self._mouse and true or false end
   -- RECORDING, not a chain no-op: HudVirtual's resting-dim vs cued-lit distinction IS an
   -- alpha, so a spec has to be able to read back what it was set to (GetAlpha below).
-  function t:SetAlpha(a)   self._alpha = a; return self end
+  -- ⚠⚠ THE CRITICAL ONE.  `SetAlpha` declares `SecretArgumentsAddAspect = {Alpha}`
+  -- [SimpleRegionAPIDocumentation.lua:125] and is `AllowedWhenTainted`, so it is the one
+  -- setter CurveLab can reach with a secret AND read back — the aspect flip is what
+  -- separates `WORKED` from `INERT`.  It must add the aspect ONLY when the value received is
+  -- secret; an unconditional flip would make every cell read WORKED and INERT unreachable.
+  function t:SetAlpha(a)
+    self._alpha = a
+    if anySecret(a) then addAspects(self, "Alpha") end
+    return self
+  end
+  function t:SetAlphaFromBoolean(v, ifTrue, ifFalse)
+    if anySecret(v) then addAspects(self, "Alpha")
+    else self._alpha = v and ifTrue or ifFalse end
+    return self
+  end
+  -- ⚠ `GetEffectiveAlpha` is `RequiresScriptObjectAlphaAccess`
+  -- [SimpleFrameAPIDocumentation.lua:336] — it REFUSES once the Alpha aspect is set, and
+  -- that THROW is a POSITIVE result for CurveLab (the refusal IS the proof).  Modelled, not
+  -- stubbed, because a getter that always answers makes the positive branch unreachable.
+  function t:GetEffectiveAlpha()
+    if self._aspects and _G.Enum and _G.Enum.SecretAspect
+      and self._aspects[_G.Enum.SecretAspect.Alpha] then
+      error("mock_ns: GetEffectiveAlpha refused — object has the Alpha aspect", 0)
+    end
+    return self._alpha or 1
+  end
+  -- The same shape for the Desaturation channel, which has NO non-throwing readback at all
+  -- (`IsDesaturated` is `RequiresScriptObjectDesaturationAccess`,
+  -- SimpleTextureBaseAPIDocumentation.lua:242).
+  function t:SetDesaturation(v)
+    self._desaturation = v
+    if anySecret(v) then addAspects(self, "Desaturation") end
+    return self
+  end
+  function t:SetDesaturated(v)
+    self._desaturated = v
+    if anySecret(v) then addAspects(self, "Desaturation") end
+    return self
+  end
+  function t:IsDesaturated()
+    if self._aspects and _G.Enum and _G.Enum.SecretAspect
+      and self._aspects[_G.Enum.SecretAspect.Desaturation] then
+      error("mock_ns: IsDesaturated refused — object has the Desaturation aspect", 0)
+    end
+    return self._desaturated and true or false
+  end
+  function t:SetRotation(r)
+    self._rotation = r
+    if anySecret(r) then addAspects(self, "Rotation") end
+    return self
+  end
+  function t:GetRotation() return self._rotation or 0 end
+  -- StatusBar.  `SetValue` / `SetMinMaxValues` both add `{BarValue}`
+  -- [SimpleStatusBarAPIDocumentation.lua:218, 333]; `SetStatusBarColor` adds
+  -- `{VertexColor, Alpha}` [:261].
+  function t:SetValue(v)
+    self._barValue = v
+    if anySecret(v) then addAspects(self, "BarValue") end
+    return self
+  end
+  function t:GetValue() return self._barValue end
+  function t:SetMinMaxValues(lo, hi)
+    self._barMin, self._barMax = lo, hi
+    if anySecret(lo, hi) then addAspects(self, "BarValue") end
+    return self
+  end
+  function t:GetMinMaxValues() return self._barMin, self._barMax end
+  function t:SetStatusBarColor(r, g, b, a)
+    self._color = { r, g, b, a }
+    if anySecret(r, g, b, a) then addAspects(self, "VertexColor", "Alpha") end
+    return self
+  end
+  -- THE DURATION SINKS.  These take an OBJECT, never a secret argument, so they add NO
+  -- aspect and mark nothing — the readback is the object's own `HasSecretValues`.
+  function t:SetTimerDuration(dur) self._timerDuration = dur; return self end
+  function t:GetTimerDuration() return self._timerDuration end
+  function t:SetCooldownFromDurationObject(dur) self._durationObject = dur; return self end
+  -- ⚠ THE NEGATIVE CONTROL.  `Cooldown:SetCooldown` is `AllowedWhenUntainted`
+  -- [FrameAPICooldownDocumentation.lua:280], so a tainted caller passing a secret is
+  -- REFUSED — the sharpest pairing in the corpus (same widget, same fact, forbidden route).
+  -- It must throw here or CurveLab's most important negative control cannot be tested.
+  function t:SetCooldown(start, dur)
+    if anySecret(start, dur) then
+      error("mock_ns: SetCooldown refused a secret (AllowedWhenUntainted)", 0)
+    end
+    self._cooldown = { start, dur }
+    return self
+  end
+  -- THE ASPECT READBACK ITSELF (SimpleFrameScriptObjectAPIDocumentation.lua:52, 38) and the
+  -- whole-object / anchor queries (:69, SimpleScriptRegionAPIDocumentation.lua:367).
+  function t:HasSecretAspect(a) return (self._aspects and self._aspects[a]) == true end
+  function t:HasAnySecretAspect()
+    return self._aspects ~= nil and next(self._aspects) ~= nil
+  end
+  function t:HasSecretValues()   return self._hasSecretValues == true end
+  function t:IsAnchoringSecret() return self._anchoringSecret == true end
   function t:Show()        self._shown = true;  return self end
   function t:Hide()        self._shown = false; return self end
   function t:SetShown(v)   self._shown = v and true or false; return self end
@@ -222,7 +409,19 @@ local function newStub()
   function t:GetParent() return self._parent end
   function t:SetFont(...) return true end                 -- ns.SetFont branches on this
   function t:GetFont() return "font", 12, "" end
-  function t:SetText(s) self._text = s; return self end
+  -- `SetText` / `SetFormattedText` both add `{Text}` and are `AllowedWhenTainted`
+  -- [SimpleFontStringAPIDocumentation.lua:653, 528] — the route a SECRET STRING (an aura's
+  -- `GetAuraApplicationDisplayCount`) has to take, since stacks come back as text.
+  function t:SetText(s)
+    self._text = s
+    if anySecret(s) then addAspects(self, "Text") end
+    return self
+  end
+  function t:SetFormattedText(s)
+    self._text = s
+    if anySecret(s) then addAspects(self, "Text") end
+    return self
+  end
   function t:GetText() return self._text end
   function t:GetAlpha() return self._alpha or 1 end
   function t:GetWidth()  return (self._size and self._size[1]) or 48 end
@@ -323,6 +522,22 @@ function H.installGlobals()
                 CooldownViewerAlertEventType = {
                   Available = 1, PandemicTime = 2, OnCooldown = 3,
                   ChargeGained = 4, OnAuraApplied = 5, OnAuraRemoved = 6,
+                },
+                -- LuaCurveObjectConstantsDocumentation.lua:13-16, verbatim.
+                LuaCurveType = { Linear = 0, Step = 1, Cosine = 2, Cubic = 3 },
+                -- SecretAspectConstantsDocumentation.lua:13-41, verbatim — including the
+                -- ⚠ SEVEN NAMES ALIASED TO 1, which are in the SHIPPED FILE and not a
+                -- transcription slip.  Reproduced faithfully so a consumer that keys on a
+                -- literal instead of a member breaks HERE rather than in game.
+                SecretAspect = {
+                  ObjectDebug = 1, ObjectName = 1, ObjectType = 1, ObjectSecrets = 1,
+                  ObjectSecurity = 1, Attributes = 1, Hierarchy = 1,
+                  ID = 2, Toplevel = 4, Text = 8, SecureText = 16, Shown = 32, Scale = 64,
+                  Alpha = 128, FrameLevel = 256, ScrollRange = 512, Cursor = 1024,
+                  VertexColor = 2048, Desaturation = 4096, TexCoords = 8192,
+                  BarValue = 16384, Cooldown = 32768, Rotation = 65536,
+                  MinimumWidth = 131072, Padding = 262144, CooldownStyle = 524288,
+                  TooltipTexture = 1048576, ButtonState = 2097152, ScrollOffset = 4194304,
                 } }
   -- ⚠ ALL THREE ARE INERT — they hand back a cancellable handle and NEVER FIRE.  A ticker
   -- that fired would make every module owning one (HudDriver at 10 Hz, Flight at 1 Hz)
@@ -479,6 +694,14 @@ function H.installGlobals()
   _G.GetMacroSpell = function(id) return H.macros and H.macros[id] or nil end
   _G.GetBindingKey = function(cmd) return H.bindings and H.bindings[cmd] or nil end
   _G.UIParent = _G.UIParent or newStub()   -- the Renderer's default root token target
+  -- ⚠ AND ITS SECRET STATE IS RESET, unlike the object itself.  UIParent is deliberately
+  -- kept across H.fresh() (the Renderer holds references to it), but CurveLab's CANARY asks
+  -- `UIParent:IsAnchoringSecret()` — so a test that poisons it would leak a permanently
+  -- halted lab into every later spec file.  Same leak `installGlobals` exists to close.
+  _G.UIParent._anchoringSecret = nil
+  _G.UIParent._hasSecretValues = nil
+  _G.UIParent._aspects         = nil
+  _G.UIParent._dependents      = nil
 end
 
 -- Installed at load as well as from H.fresh(), so a module dofile'd before any test still
