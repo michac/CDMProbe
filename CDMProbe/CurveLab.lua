@@ -1690,6 +1690,20 @@ local function ensureStackPanel()
   f:SetPoint("CENTER", UIParent, "CENTER", 0, 220)
   f:SetFrameStrata("TOOLTIP")
   f:SetFrameLevel(1000)
+  -- ⚠ A VISIBLE BACKDROP, AND IT IS NOT DECORATION.  This cue's entire signal is the
+  -- PRESENCE of text, which makes every failure mode look identical: threshold unmet, aura
+  -- down, read refused, and "it is drawing somewhere you are not looking" all render as
+  -- nothing at all.  Two rounds of this thread were spent guessing between them.  An
+  -- always-on panel collapses that: if you can see the box, the draw path works and the
+  -- absence of a number is a REAL answer; if you cannot, the problem is placement and
+  -- nothing about the threshold is in question.
+  local bg = f:CreateTexture(nil, "BACKGROUND")
+  bg:SetAllPoints(f)
+  bg:SetColorTexture(0, 0, 0, 0.55)
+  local edge = f:CreateTexture(nil, "BORDER")
+  edge:SetPoint("TOPLEFT", f, "TOPLEFT", -1, 1)
+  edge:SetPoint("BOTTOMRIGHT", f, "TOPRIGHT", 1, 0)
+  edge:SetColorTexture(0.35, 0.95, 0.45, 0.9)
   f:Show()
   f.rows = {}
   stackPanel = f
@@ -1898,6 +1912,36 @@ function stackLines(records)
   return out
 end
 
+-- Paint an arbitrary literal through the real paint path (the self-test's whole point:
+-- it must not be a private copy, or it could pass while the shipped path fails — the
+-- `rt fx` lesson, addon/CLAUDE.md).
+function L.PaintLiteral(t, text) return paintStack(t, text) end
+
+-- Where the panel actually IS, read back off the widget rather than off our intentions.
+function L.StackGeometry()
+  local out = {}
+  out[#out + 1] = string.format("  anchor mode   %s", tostring(L.stackAnchor))
+  local p = stackPanel
+  if not p then
+    out[#out + 1] = "  |cffff4040the screen panel has not been created|r"
+    return out
+  end
+  local shown = (p.IsShown and p:IsShown()) and "yes" or "NO"
+  local pt, _, relPt, x, y = p:GetPoint()
+  out[#out + 1] = string.format("  panel shown   %s   strata=%s level=%s",
+    shown, tostring(p.GetFrameStrata and p:GetFrameStrata()),
+    tostring(p.GetFrameLevel and p:GetFrameLevel()))
+  out[#out + 1] = string.format("  panel at      %s -> %s  (%s, %s)   size %sx%s",
+    tostring(pt), tostring(relPt), tostring(x), tostring(y),
+    tostring(p.GetWidth and math.floor(p:GetWidth() or 0)),
+    tostring(p.GetHeight and math.floor(p:GetHeight() or 0)))
+  for k, row in pairs(p.rows or {}) do
+    out[#out + 1] = string.format("  row %-6s    label=%q value shown=%s",
+      k, tostring(row.label:GetText()), tostring(row.value:IsShown()))
+  end
+  return out
+end
+
 L.StackLines = stackLines
 
 --------------------------------------------------------------------------------
@@ -1960,6 +2004,19 @@ ns.RegisterCommand("curve",
           where == "screen" and "  (a fixed panel above centre — the READ still comes from "
             .. "the CDM item, only the DRAW moved)" or "  (anchored to each CDM frame)")
       end
+      if stackArg:find("test") then
+        -- ⚠ THE BISECT.  Paints a KNOWN, NON-SECRET string through the exact same paint
+        -- path.  If this shows and a real reading does not, the draw works and the secret
+        -- string is the problem; if this does not show either, nothing about secrecy is in
+        -- question and it is placement.  Guessing between those cost two rounds.
+        L.StackCue(true)
+        for _, t in ipairs(L.StackTargets()) do L.PaintLiteral(t, "TEST" .. t.min) end
+        ns.Heading("stack cue SELF-TEST — a plain, non-secret string in the real paint path")
+        for _, line in ipairs(L.StackGeometry()) do ns.Print(line) end
+        return ns.Print("  |cff808080see TEST7 / TEST4? then the DRAW works and any missing "
+          .. "number is a real answer. See nothing? it is placement, and secrecy is not "
+          .. "involved. Clears on the next refresh.|r")
+      end
       if stackArg:find("locate") then
         L.StackCue(true)
         ns.Heading("stack cue — WHERE IT DRAWS (10 s, a ▼marker, not a reading)")
@@ -1983,7 +2040,7 @@ ns.RegisterCommand("curve",
       end
       ns.Heading("stack cue — a threshold cue on a SECRET stack count")
       for _, line in ipairs(stackLines()) do ns.Print(line) end
-      ns.Printf("  drawing on |cffffffff%s|r", tostring(L.stackAnchor))
+      for _, line in ipairs(L.StackGeometry()) do ns.Print(line) end
       return ns.Print("  |cffffd100/cdmp curve stack|r on | off | locate | where screen|item "
         .. "| imps <n> | core <n>")
     end
