@@ -343,6 +343,35 @@ describe("CurveLab — the curve / secret-display lab", function()
         :find("CLOSED", 1, true))
     end)
 
+    it("⚠ never COMPARES the instance id — it branches on the CLASS", function()
+      -- `id == nil` is a comparison, and §4.2's table says a secret cannot survive one.  So
+      -- the moment `item.auraInstanceID` reads secret — precisely the case this cue exists
+      -- to detect — the comparison THROWS, StackRefresh dies, and the panel silently freezes
+      -- displaying its last good state.  Which looks exactly like "the threshold is never
+      -- met".  The harness models a secret that ERRORS on comparison, so this is real.
+      local secretId = H.secretValue()
+      local it = fakeItem(secretId)
+      installViewer(it)
+      -- A comparison against the sentinel must never be reached; if StackRead does one, this
+      -- errors out rather than returning a verdict.
+      local ok, rec = pcall(L.StackRead, L.StackTargets()[1])
+      assert.is_true(ok, "StackRead must not raise on a secret instance id")
+      assert.equals("id-unreadable", rec.state)
+      assert.equals("SECRET", rec.idClass)
+    end)
+
+    it("a refresh that throws is REPORTED, never swallowed", function()
+      -- A bare pcall in the ticker is how a frozen panel became unexplainable: the refresh
+      -- threw every tick, the error went nowhere, and the labels sat on their last good read
+      -- forever.  An instrument that cannot report its own breakage reports a WRONG ANSWER.
+      installViewer(fakeItem(4242))
+      ns.db.curvelab_stack = true
+      L.stackError = "boom: the refresh raised"
+      local joined = table.concat(L.StackGeometry(), "\n")
+      assert.is_not_nil(joined:find("THROWING", 1, true))
+      assert.is_not_nil(joined:find("boom", 1, true))
+    end)
+
     it("keeps `aura-down` and `id-unreadable` as different findings", function()
       -- Both draw nothing.  One means "you do not have the buff", the other means "we are
       -- not allowed to ask" — opposite implications for whether the cue works at all.

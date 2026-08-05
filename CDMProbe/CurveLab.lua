@@ -1637,7 +1637,13 @@ function L.StackRead(t)
     return rec
   end
   rec.idClass = classOf(id)
-  if id == nil then rec.state = "aura-down"; return rec end
+  -- ⚠ BRANCH ON THE **CLASS**, NEVER ON THE VALUE.  `id == nil` is a COMPARISON, and §4.2's
+  -- table says a secret cannot survive one — so the moment `item.auraInstanceID` reads
+  -- secret (which is precisely the case this cue exists to detect) the comparison THROWS,
+  -- the refresh dies, and the panel silently freezes displaying its last good state.  This
+  -- is the Assist banner's lesson exactly: `if spellID ~= self.last…` is the operation that
+  -- cannot be done.  `classOf` already asked `issecretvalue` FIRST, so the class is safe.
+  if rec.idClass == "nil" then rec.state = "aura-down"; return rec end
   if rec.idClass ~= "num" then
     -- A secret instance id cannot be passed on (AllowedWhenUntainted) — the technique is
     -- closed for this aura and the report must say so rather than draw nothing quietly.
@@ -1812,7 +1818,8 @@ local function paintStack(t, text, rec)
       -- Colour-coded so the healthy case reads as healthy at a glance: `ok` is the cue
       -- working and simply below threshold; anything else is a reason it CANNOT fire.
       local hue = (st == "ok") and "|cff88ff88" or "|cffff8080"
-      row.label:SetText(string.format("%s  >=%d   %s%s|r", t.label, t.min, hue, st))
+      row.label:SetText(string.format("%s  >=%d   %s%s|r%s", t.label, t.min, hue, st,
+        L.stackError and ("  |cffff4040REFRESH ERROR|r") or ""))
       row.label:Show()
       pcall(row.value.SetText, row.value, text)
       row.value:Show()
@@ -1888,7 +1895,19 @@ function L.StackCue(on)
   if on then
     if stackPanel then stackPanel:Show() end
     -- 5 Hz: stacks move fast on Demonology and the cue is the only signal.
-    stackTicker = C_Timer.NewTicker(0.2, function() pcall(L.StackRefresh) end)
+    -- ⚠⚠ THE TICKER MUST NOT SWALLOW ITS OWN FAILURE.  A bare `pcall` here is how a frozen
+    -- panel became unexplainable: the refresh threw every tick, the error went nowhere, and
+    -- the labels sat displaying their last successful read forever — which looks exactly
+    -- like "the threshold is never met".  An instrument that cannot report its own breakage
+    -- reports a wrong answer instead.
+    stackTicker = C_Timer.NewTicker(0.2, function()
+      local okRun, err = pcall(L.StackRefresh)
+      if okRun then
+        L.stackError = nil
+      else
+        L.stackError = stashErr(err)
+      end
+    end)
     L.StackRefresh()
   else
     for _, pool in pairs(stackFrames) do
@@ -1935,6 +1954,11 @@ function L.PaintLiteral(t, text) return paintStack(t, text) end
 function L.StackGeometry()
   local out = {}
   out[#out + 1] = string.format("  anchor mode   %s", tostring(L.stackAnchor))
+  if L.stackError then
+    out[#out + 1] = "  |cffff4040refresh is THROWING|r — the panel is frozen on its last "
+      .. "good read, which is why it looks like the threshold is never met:"
+    out[#out + 1] = "      " .. tostring(L.stackError)
+  end
   local p = stackPanel
   if not p then
     out[#out + 1] = "  |cffff4040the screen panel has not been created|r"
