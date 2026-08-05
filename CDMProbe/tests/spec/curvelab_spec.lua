@@ -468,6 +468,34 @@ describe("CurveLab — the curve / secret-display lab", function()
       assert.equals("ok", L.stackLast.imps.state)
     end)
 
+    it("the DURATION row reads an object, never a number", function()
+      -- A different mechanism from the threshold cue above: no curve, no quantisation.
+      -- `GetSpellCooldownDuration` hands back an ordinary object carrying secret timing, and
+      -- the sink consumes it in C — so there is nothing for the client to refuse.  `hsv` is
+      -- the free always-readable oracle for "is it actually carrying a secret".
+      local dur = fakeDuration(true)
+      _G.C_Spell.GetSpellCooldownDuration = function() return dur end
+      local rec = L.DurationRead(L.DurationTargets()[1])
+      assert.equals("ok", rec.state)
+      assert.is_true(rec.hsv)
+      assert.are.equal(dur, rec.duration)
+    end)
+
+    it("a duration that cannot be read is `unreadable`, never a zero bar", function()
+      -- A zero-length bar and "we could not ask" look identical on screen and mean opposite
+      -- things — the absent-is-never-zero rule, one level up.
+      _G.C_Spell.GetSpellCooldownDuration = nil
+      local rec = L.DurationRead(L.DurationTargets()[1])
+      assert.equals("unreadable", rec.state)
+      assert.is_nil(rec.duration)
+    end)
+
+    it("tracks Summon Demonic Tyrant by default, and can be re-aimed", function()
+      assert.equals(265187, L.DurationTargets()[1].spellID)
+      assert.equals(198013, L.SetDurationSpell("tyrant", 198013).spellID)
+      assert.is_nil(L.SetDurationSpell("nope", 1))
+    end)
+
     it("its STATE is part of the ring's dedup key", function()
       -- ⚠ It was NOT, and a 13-row Demonology capture carried exactly TWO stack rows: the
       -- cue's transitions (`aura-down` -> `ok` -> `id-unreadable`) are invisible to the

@@ -1564,6 +1564,61 @@ STACK_TARGETS = {
 
 function L.StackTargets() return STACK_TARGETS end
 
+--------------------------------------------------------------------------------
+-- THE DURATION ROW — an in-combat cooldown countdown, which this HUD has never had.
+--------------------------------------------------------------------------------
+-- ⚠ THIS IS THE ONE THE MATRIX SAID WOULD PAY OFF, and it is a different mechanism from the
+-- stack cue above.  No curve, no threshold, no quantisation: `C_Spell.GetSpellCooldownDuration`
+-- hands back a `LuaDurationObject` that CARRIES the secret timing internally and is itself
+-- an ordinary object, and `StatusBar:SetTimerDuration` consumes it in C.  The number never
+-- enters Lua, so there is nothing to be refused.
+--
+-- MEASURED 2026-08-04 (§4.8.1 finding 1): all three duration sinks read WORKED with
+-- `hsv=?>1` in combat and `anchor=0>0/0>0` — it carries the secret AND does not poison the
+-- anchor chain, unlike every text route.
+--
+-- ⚠ `RemainingTime`, not the default.  `SetTimerDuration`'s direction defaults to
+-- `ElapsedTime` [SimpleStatusBarConstantsDocumentation.lua:39-40], which fills as the
+-- cooldown burns — the opposite of a cooldown bar, and a silent one: it animates
+-- convincingly while meaning the reverse.
+--
+-- ⚠ AND THE BAR NEEDS A TEXTURE.  A texture-less StatusBar cost a whole round earlier in
+-- this file's life (`SetStatusBarColor` answered "Object did not allow secret.").
+local DURATION_TARGETS = {
+  { key = "tyrant", spellID = 265187, label = "Summon Demonic Tyrant",
+    color = { 0.62, 0.40, 0.92 } },
+}
+
+function L.DurationTargets() return DURATION_TARGETS end
+
+function L.SetDurationSpell(key, id)
+  for _, t in ipairs(DURATION_TARGETS) do
+    if t.key == key then
+      t.spellID = id
+      t.label = ns.SpellName(id) or ("spell " .. tostring(id))
+      return t
+    end
+  end
+  return nil
+end
+
+-- One target's read.  `hsv` is the free always-readable oracle: TRUE means the object is
+-- actually carrying secret timing, i.e. the cooldown is live and restricted.
+function L.DurationRead(t)
+  local rec = { key = t.key, spellID = t.spellID, label = t.label }
+  local dur, hsvOrErr = ns.ReadCooldownDuration(t.spellID, false)
+  if dur == nil then
+    rec.state, rec.err = "unreadable", tostring(hsvOrErr)
+    return rec
+  end
+  rec.state, rec.hsv, rec.duration = "ok", hsvOrErr and true or false, dur
+  -- `IsZero` is NOT secret-gated and answers "is anything actually running" — the
+  -- difference between "off cooldown" and "we could not tell", which must not merge.
+  local z = callMethod(dur, "IsZero")
+  rec.zero = boolOf(z)
+  return rec
+end
+
 function L.SetStackThreshold(key, n)
   for _, t in ipairs(STACK_TARGETS) do
     if t.key == key then t.min = n; return t end
@@ -1706,7 +1761,7 @@ local stackPanel
 local function ensureStackPanel()
   if stackPanel then return stackPanel end
   local f = CreateFrame("Frame", nil, UIParent)
-  f:SetSize(340, 118)
+  f:SetSize(360, 168)
   -- Above centre: clear of the action bars, inside the eye's rotation-scanning arc.
   f:SetPoint("CENTER", UIParent, "CENTER", 0, 220)
   f:SetFrameStrata("TOOLTIP")
@@ -1735,6 +1790,57 @@ end
 -- threshold is met.  ⚠ BOTH ARE ANCHORED TO THE PANEL, never to each other — the value
 -- string takes a secret, which marks its anchoring secret and propagates DOWN to dependents
 -- (§4.8.1), so anything hung off it would be poisoned for no reason.  The value is a leaf.
+-- A DURATION ROW: label, a real StatusBar driven by the duration OBJECT, and a
+-- `DurationTextBinding` countdown.  All three sinks at once, because all three measured
+-- WORKED and seeing them agree is itself the check.
+local function durationPanelRow(t, index)
+  local p = ensureStackPanel()
+  p.durRows = p.durRows or {}
+  if p.durRows[t.key] then return p.durRows[t.key] end
+  local y = -(#STACK_TARGETS * 54) - (index - 1) * 40
+  local label = p:CreateFontString(nil, "OVERLAY")
+  ns.SetFont(label, 12)
+  label:SetTextColor(0.62, 0.62, 0.66, 1)
+  label:SetPoint("TOPLEFT", p, "TOPLEFT", 0, y)
+
+  local bar = CreateFrame("StatusBar", nil, p)
+  -- ⚠ A TEXTURE, ALWAYS.  A texture-less StatusBar refused a secret outright earlier in this
+  -- file's life and read as a Tier-1 contradiction for a whole round.
+  bar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
+  bar:SetStatusBarColor(t.color[1], t.color[2], t.color[3], 0.95)
+  bar:SetSize(300, 14)
+  bar:SetPoint("TOPLEFT", p, "TOPLEFT", 0, y - 15)
+  local bg = bar:CreateTexture(nil, "BACKGROUND")
+  bg:SetAllPoints(bar)
+  bg:SetColorTexture(0.15, 0.15, 0.18, 0.9)
+
+  -- The countdown TEXT, via the sanctioned binding.  ⚠ This is the route that does NOT
+  -- poison the anchor chain (§4.8.1 finding 4): the binding writes the text C-side, where
+  -- `FontString:SetText` with a secret marks anchoring secret.  Anchored to the PANEL, and
+  -- nothing is ever anchored to it.
+  local text = p:CreateFontString(nil, "OVERLAY")
+  ns.SetFont(text, 15, "OUTLINE")
+  text:SetTextColor(1, 1, 1, 1)
+  text:SetPoint("LEFT", bar, "RIGHT", 8, 0)
+
+  local binding
+  if type(C_DurationUtil) == "table"
+    and type(C_DurationUtil.CreateDurationTextBinding) == "function" then
+    local okB, b = pcall(C_DurationUtil.CreateDurationTextBinding)
+    if okB and b then
+      pcall(function()
+        b:SetFontString(text)
+        b:SetUpdateInterval(0.1)
+        b:SetZeroDurationText("")
+        b:SetExpiredText("")
+      end)
+      binding = b
+    end
+  end
+  p.durRows[t.key] = { label = label, bar = bar, text = text, binding = binding }
+  return p.durRows[t.key]
+end
+
 local function stackPanelRow(t, index)
   local p = ensureStackPanel()
   if p.rows[t.key] then return p.rows[t.key] end
@@ -1870,6 +1976,40 @@ function L.StackRefresh()
     -- completely different problem from the threshold not being met.
     rec.painted = paintStack(t, (rec.state == "ok") and rec.value or "", rec)
   end
+  -- THE DURATION ROWS ride the same refresh, because they answer the same shape of question
+  -- and share the panel.
+  local durOut = {}
+  for i, t in ipairs(DURATION_TARGETS) do
+    local rec = L.DurationRead(t)
+    durOut[t.key] = rec
+    if L.stackAnchor == "screen" then
+      local row = durationPanelRow(t, i)
+      if row then
+        local hue = (rec.state == "ok") and "|cff88ff88" or "|cffff8080"
+        row.label:SetText(string.format("%s   %s%s|r%s", t.label, hue,
+          tostring(rec.state), rec.hsv and "  |cffffd100secret-borne|r" or ""))
+        if rec.state == "ok" then
+          -- ⚠ THE TWO LINES THIS ROW EXISTS FOR.  A duration OBJECT into a C-side sink; the
+          -- remaining time never enters Lua, so there is nothing for the client to refuse.
+          pcall(function()
+            row.bar:SetTimerDuration(rec.duration, nil,
+              Enum and Enum.StatusBarTimerDirection
+                and Enum.StatusBarTimerDirection.RemainingTime)
+          end)
+          if row.binding then pcall(function()
+            row.binding:SetDuration(rec.duration)
+            row.binding:Enable()
+          end) end
+          row.bar:Show(); row.text:Show()
+        else
+          row.bar:Hide()
+          pcall(function() row.text:SetText("") end)
+        end
+      end
+    end
+  end
+  L.durationLast = durOut
+
   L.stackLast = out
   return out
 end
@@ -1988,6 +2128,12 @@ function L.StackGeometry()
     tostring(pt), tostring(relPt), tostring(x), tostring(y),
     tostring(p.GetWidth and math.floor(p:GetWidth() or 0)),
     tostring(p.GetHeight and math.floor(p:GetHeight() or 0)))
+  for _, t in ipairs(DURATION_TARGETS) do
+    local r = (L.durationLast or {})[t.key] or {}
+    out[#out + 1] = string.format("  dur %-6s    %s (%s)  state=%s hsv=%s zero=%s%s",
+      t.key, tostring(t.label), tostring(t.spellID), tostring(r.state),
+      tostring(r.hsv), tostring(r.zero), r.err and ("  " .. tostring(r.err)) or "")
+  end
   for k, row in pairs(p.rows or {}) do
     out[#out + 1] = string.format("  row %-6s    label=%q value shown=%s",
       k, tostring(row.label:GetText()), tostring(row.value:IsShown()))
@@ -2048,6 +2194,14 @@ ns.RegisterCommand("curve",
         return ns.Printf("stack cue: %s now fires at |cffffffff>= %d|r stacks%s",
           t.label, t.min, wasOff and "  (and the cue is now |cff88ff88ON|r)" or "")
       end
+      local dkey, did = stackArg:match("^dur%s+(%a+)%s+(%d+)$")
+      if dkey and did then
+        local t = L.SetDurationSpell(dkey, tonumber(did))
+        if not t then return ns.Printf("no duration target '%s' — try tyrant", dkey) end
+        L.StackCue(true)
+        return ns.Printf("duration bar: %s now tracks |cffffffff%d|r (%s)",
+          dkey, t.spellID, t.label)
+      end
       local where = stackArg:match("^where%s+(%a+)$")
       if where == "screen" or where == "item" then
         L.stackAnchor = where
@@ -2095,7 +2249,7 @@ ns.RegisterCommand("curve",
       for _, line in ipairs(stackLines()) do ns.Print(line) end
       for _, line in ipairs(L.StackGeometry()) do ns.Print(line) end
       return ns.Print("  |cffffd100/cdmp curve stack|r on | off | locate | where screen|item "
-        .. "| imps <n> | core <n>")
+        .. "| imps <n> | core <n> | dur tyrant <spellID>")
     end
     if rest:find("clear") then
       ns.db.curvelab = {}
