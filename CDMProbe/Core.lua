@@ -13,6 +13,12 @@ ns.version = (C_AddOns and C_AddOns.GetAddOnMetadata and C_AddOns.GetAddOnMetada
 -- is the addon's only recorder now.  Stale `reports`/`probe`/`logMode`/… keys in an
 -- existing CDMProbeDB are harmless — nothing reads them — so there is no migration.
 local DEFAULTS = {
+  -- Every capture stream lands here, keyed by stream name. One store, one shape, one
+  -- reader (`wowkb.capture`). See references/capture-and-dump-standard.md.
+  captures = {},
+  -- The dump panel's saved point: `{ point, relPoint, x, y }`. Empty means "no saved
+  -- position" — DumpPanel falls back to centre, as HudVirtual does.
+  dumpPanel = {},
   -- `ns.db.hud` is the pipeline HUD's enable BOOL.  No default entry: absent == off;
   -- HudDriver's OnLogin drops a stale TABLE-shaped value, and SetHud writes it after.
   -- `ns.db.hudSound` is the CUE SOUND's enable bool — one play per change of the cue set
@@ -34,13 +40,6 @@ local DEFAULTS = {
   -- `assist_on`).  One row per readability-CLASS change; deleted with Assist.lua once the
   -- "does GetNextCastSpell survive combat" answer lands in the KB.
   assist = {},
-  -- TEMPORARY — the curve / secret-display discovery lab (`/cdmp curve watch`, off unless
-  -- `curvelab_on`).  One row per VERDICT change across the source × sink matrix.  Deleted
-  -- with CurveLab.lua once "which visual channels can carry a secret" lands in
-  -- knowledge/addon-dev/security-taint-and-restricted-data.md §4.8.  ⚠ NO `curvelab_on`
-  -- default entry, deliberately: absent means OFF (see `hud` above), and only a table-valued
-  -- store needs seeding.
-  curvelab = {},
   -- The ACCEPTANCE RECORDER's ring (`/cdmp flight`).  One row per change of ANSWER SHAPE
   -- across a whole in-game pass; read by `wowkb.cdmp flight`, which turns it into a
   -- PASS/FAIL report.  Wiped on every arm — a flight is one session.

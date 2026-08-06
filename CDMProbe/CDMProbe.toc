@@ -6,12 +6,12 @@
 ## SavedVariables: CDMProbeDB
 
 Core.lua
+Capture.lua
 Mode.lua
 Util.lua
 Viewers.lua
 AlertTape.lua
 Assist.lua
-CurveLab.lua
 SpecRegistry.lua
 SpecDemonology.lua
 CoachDemonology.lua
@@ -36,3 +36,5 @@ DecisionLog.lua
 HudProcGlow.lua
 HudDriver.lua
 Flight.lua
+DumpPanel.lua
+Dumps.lua
